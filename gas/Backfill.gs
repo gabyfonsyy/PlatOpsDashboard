@@ -9,7 +9,9 @@
  * per team's first-ever setup. Safe to re-run: already-complete teams are skipped.
  */
 
-const BACKFILL_WINDOW_DAYS = 730;
+// Calendar-aligned, not a rolling window — matches the RAW_<TEAM>_<YEAR> tab sharding
+// (2024/2025/2026) rather than "the last 730 days from whenever this happens to run."
+const BACKFILL_START_DATE = '2024-01-01';
 
 function runInitialBackfill() {
   const teams = getActiveTeamsConfig_();
@@ -76,7 +78,7 @@ function runInitialBackfill() {
 }
 
 function buildJqlBackfillFull_(team) {
-  return `project = ${team.jira_project_key} AND created >= -${BACKFILL_WINDOW_DAYS}d ORDER BY created ASC`;
+  return `project = ${team.jira_project_key} AND created >= "${BACKFILL_START_DATE}" ORDER BY created ASC`;
 }
 
 function markTeamBackfillComplete_(projectKey, ticketsSynced) {
