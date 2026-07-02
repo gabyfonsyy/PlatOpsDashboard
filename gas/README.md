@@ -155,6 +155,36 @@ these functions first, so it never creates duplicates).
 for all teams** — `syncTeam_` intentionally no-ops until `SYNC_CHECKPOINT.last_full_backfill_completed_at`
 is set, so installing triggers early just means synced-nothing runs every 2h until then, which is harmless but pointless.
 
+## Reviewing ERROR_LOG
+
+Sync failures that shouldn't abort the whole run (currently: unparseable
+`customfield_11153` text-datetime values) are logged to `PlatOps - Jira Data` →
+`ERROR_LOG` instead of throwing. Periodically:
+
+1. Sort/filter by `field` to spot a recurring pattern (e.g. one product's tickets
+   always fail — often means their `customfield_11153` values come from a slightly
+   different format than the `YYYY-MM-DD HH:mm:ss` regex in `parseResolvedDateField_`
+   expects).
+2. Cross-reference `issue_key` against Jira directly to see the real raw value and
+   adjust the regex/parsing if a new format shows up.
+3. There's no automatic cleanup — old rows stay until you delete them manually; the
+   table is small enough (one row per failure) that this doesn't need automation yet.
+
+## Load-testing before relying on this for a real MBR/QBR
+
+Once the full 2-year backfill and a few aggregation runs have completed, load the
+Next.js dashboard against the real dataset and check:
+
+- `[team]` page load time with `range=year` (the widest `METRICS_DAILY` scan)
+- `[team]/performance` with several months selected
+- Whether `METRICS_DAILY` has grown roughly as predicted (~13k rows for 3 teams x 2
+  years x ~6 issue types) — if it's far larger, issue types may be more numerous than
+  expected and worth checking `TEAMS_CONFIG.issue_types_csv` accuracy
+
+If page loads feel slow, the fix is almost always in `MetricsApi.gs` (e.g. cache
+`getMetricsDailyRowsInRange_`'s full-sheet read across calls within one request) —
+the raw ticket tabs should never be in the request path at all.
+
 ## Manifest (appsscript.json)
 
 `gas/appsscript.json` sets the project timezone to `Asia/Manila` (matches the
