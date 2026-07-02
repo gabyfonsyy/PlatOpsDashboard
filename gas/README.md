@@ -49,6 +49,7 @@ For readability, arrange them (drag in the editor's left file list) as:
    JIRA_API_TOKEN=<your dedicated Jira API token — do not reuse Operations Hub's or Jira Tagging's>
    GEMINI_API_KEY=<Gemini free-tier API key>
    API_SHARED_SECRET=<generate a random string, e.g. `openssl rand -hex 24`>
+   ALERT_EMAIL=<your email — recommended; see Troubleshooting below if omitted>
    ```
 4. In the editor, select the `setupAll` function (top dropdown) and click **Run**.
    First run will prompt for authorization — grant access to both spreadsheets.
@@ -65,6 +66,25 @@ For readability, arrange them (drag in the editor's left file list) as:
    GAS_WEB_APP_URL=<the /exec URL from step 7>
    GAS_API_KEY=<the same value as API_SHARED_SECRET from step 3>
    ```
+
+## Troubleshooting
+
+**`sendAlertEmail_ failed to send email: ... Session.getEffectiveUser ... Required permissions: userinfo.email`**
+— `sendAlertEmail_` (Utils.gs) falls back to `Session.getEffectiveUser().getEmail()`
+when `ALERT_EMAIL` isn't set, and that call needs the `userinfo.email` OAuth scope.
+Since this project hand-writes `oauthScopes` in `appsscript.json`, only scopes listed
+there are granted — nothing is auto-added. Two fixes, do both:
+1. Set the `ALERT_EMAIL` script property (see step 3) — avoids needing that scope at all.
+2. If you want the fallback to work too (e.g. you forget to set `ALERT_EMAIL` on a future
+   redeploy): make sure your `appsscript.json` includes
+   `https://www.googleapis.com/auth/userinfo.email` in `oauthScopes`, then re-run any
+   function once so Apps Script re-prompts for authorization with the new scope — a
+   manifest scope change alone doesn't retroactively grant it.
+
+This failure is caught inside `sendAlertEmail_`'s own try/catch, so it only prevented
+the alert email itself — it doesn't mean the sync/aggregation/backfill run that
+triggered it actually failed. Check `SYNC_CHECKPOINT.last_sync_status` for the real
+outcome.
 
 ## Why the shared secret is a query param, not a header
 
