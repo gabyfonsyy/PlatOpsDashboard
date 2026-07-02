@@ -45,19 +45,28 @@ function jiraFetchWithRetry_(url, options) {
 }
 
 /**
- * One page of JQL search results.
- * Returns { issues, startAt, maxResults, total }.
+ * One page of JQL search results via /rest/api/3/search/jql — the endpoint Atlassian
+ * replaced /rest/api/3/search with (the old one returns HTTP 410 Gone as of their 2025
+ * migration, see CHANGE-2046). Pagination is now token-based, not offset-based:
+ * pass `pageToken` falsy for the first page; the response's `nextPageToken` is empty/
+ * absent on the last page instead of a `total` count (the new endpoint doesn't return
+ * a total at all). Returns { issues, nextPageToken }.
  */
-function jiraSearchIssues_(jql, startAt, maxResults, fields) {
+function jiraSearchIssues_(jql, pageToken, maxResults, fields) {
   const base = getScriptProperty_('JIRA_BASE_URL');
-  const params = {
+  const payload = {
     jql: jql,
-    startAt: String(startAt),
-    maxResults: String(maxResults),
-    fields: (fields || ['*all']).join(','),
+    maxResults: maxResults,
+    fields: fields || ['*all'],
   };
-  const query = Object.keys(params).map((k) => `${k}=${encodeURIComponent(params[k])}`).join('&');
-  return jiraFetchWithRetry_(`${base}/rest/api/3/search?${query}`);
+  if (pageToken) payload.nextPageToken = pageToken;
+
+  const result = jiraFetchWithRetry_(`${base}/rest/api/3/search/jql`, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+  });
+  return { issues: result.issues || [], nextPageToken: result.nextPageToken || '' };
 }
 
 /** Fetches the FULL changelog for one issue, transparently paginating (maxResults=100/page). */

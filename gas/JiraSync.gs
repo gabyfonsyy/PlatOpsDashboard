@@ -38,21 +38,20 @@ function syncTeam_(team) {
   const jql = buildJqlIncremental_(team, checkpoint.last_synced_updated_ts);
   const fields = buildJiraFieldList_(team);
 
-  let startAt = 0;
-  let total = Infinity;
+  let pageToken;
   let maxUpdated = checkpoint.last_synced_updated_ts || '';
   let count = 0;
 
-  while (startAt < total) {
-    const page = jiraSearchIssues_(jql, startAt, 100, fields);
-    total = page.total;
+  while (true) {
+    const page = jiraSearchIssues_(jql, pageToken, 100, fields);
     page.issues.forEach((issue) => {
       processAndUpsertIssue_(team, issue);
       count++;
       if (!maxUpdated || issue.fields.updated > maxUpdated) maxUpdated = issue.fields.updated;
     });
-    startAt += page.issues.length;
-    if (page.issues.length === 0) break;
+
+    if (!page.nextPageToken || page.issues.length === 0 || page.nextPageToken === pageToken) break;
+    pageToken = page.nextPageToken;
   }
 
   flushDirtyDates_(team.team_key);

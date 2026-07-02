@@ -19,15 +19,17 @@ function runInitialBackfill() {
     const checkpoint = readSyncCheckpoint_(team.jira_project_key);
     if (checkpoint.last_full_backfill_completed_at) continue;
 
-    const startAt = Number(checkpoint.backfill_cursor) || 0;
+    // backfill_cursor holds an opaque nextPageToken string (falsy/empty = first page) —
+    // /rest/api/3/search/jql paginates by token, not numeric offset (see JiraClient.gs).
+    const pageToken = checkpoint.backfill_cursor || undefined;
     const jql = buildJqlBackfillFull_(team);
     const fields = buildJiraFieldList_(team);
 
     let page;
     try {
-      page = jiraSearchIssues_(jql, startAt, 100, fields);
+      page = jiraSearchIssues_(jql, pageToken, 100, fields);
     } catch (err) {
-      notifyFailure_(`runInitialBackfill failed for ${team.jira_project_key} at startAt=${startAt}`, err);
+      notifyFailure_(`runInitialBackfill failed for ${team.jira_project_key}`, err);
       writeSyncStatus_(team.jira_project_key, {
         last_sync_status: 'FAILED',
         last_sync_run_at: nowIso_(),
@@ -38,22 +40,33 @@ function runInitialBackfill() {
       return;
     }
 
+    if (page.nextPageToken && page.nextPageToken === pageToken) {
+      // Guards against a reported /rest/api/3/search/jql bug where nextPageToken can
+      // fail to advance (Atlassian community reports of endless identical pages) —
+      // stop and surface it rather than looping forever burning Jira API quota.
+      const message = `Backfill stalled for ${team.jira_project_key}: nextPageToken did not advance past the same page.`;
+      writeSyncStatus_(team.jira_project_key, { last_sync_status: 'FAILED', last_sync_run_at: nowIso_(), last_sync_error_message: message });
+      notifyFailure_(`runInitialBackfill stalled for ${team.jira_project_key}`, message);
+      return; // do not reschedule — needs a human to check the Jira response before retrying
+    }
+
     page.issues.forEach((issue) => processAndUpsertIssue_(team, issue));
     flushDirtyDates_(team.team_key);
 
-    const nextStartAt = startAt + page.issues.length;
-    if (page.issues.length > 0 && nextStartAt < page.total) {
+    const ticketsSoFar = (Number(checkpoint.tickets_synced_last_run) || 0) + page.issues.length;
+
+    if (page.nextPageToken && page.issues.length > 0) {
       writeSyncStatus_(team.jira_project_key, {
-        backfill_cursor: nextStartAt,
+        backfill_cursor: page.nextPageToken,
         last_sync_status: 'IN_PROGRESS',
         last_sync_run_at: nowIso_(),
-        tickets_synced_last_run: nextStartAt,
+        tickets_synced_last_run: ticketsSoFar,
       });
       scheduleBackfillContinuation_();
       return; // end this execution slice — the continuation trigger resumes it
     }
 
-    markTeamBackfillComplete_(team.jira_project_key, nextStartAt);
+    markTeamBackfillComplete_(team.jira_project_key, ticketsSoFar);
     // Falls through to the next team in this SAME execution if there's one —
     // small teams (DE/DEV) can finish well within one 6-minute run.
   }
@@ -71,7 +84,7 @@ function markTeamBackfillComplete_(projectKey, ticketsSynced) {
   writeSyncStatus_(projectKey, {
     last_full_backfill_completed_at: now,
     last_synced_updated_ts: now, // incremental sync picks up from here going forward
-    backfill_cursor: 0,
+    backfill_cursor: '',
     last_sync_status: 'SUCCESS',
     last_sync_run_at: now,
     tickets_synced_last_run: ticketsSynced,

@@ -69,6 +69,14 @@ For readability, arrange them (drag in the editor's left file list) as:
 
 ## Troubleshooting
 
+**`Jira request failed (HTTP 410): The requested API has been removed. Please migrate to the /rest/api/3/search/jql API`**
+— Atlassian fully removed `/rest/api/3/search` in 2025. `JiraClient.gs`'s
+`jiraSearchIssues_` now calls `/rest/api/3/search/jql` instead, which paginates via an
+opaque `nextPageToken` string rather than `startAt`/`total` (the new endpoint doesn't
+return a total count at all). `SYNC_CHECKPOINT.backfill_cursor` now stores that token
+string instead of a numeric offset. If you started a backfill before this fix, no
+cleanup is needed — the failed run never wrote a cursor, so it just restarts from page 1.
+
 **`sendAlertEmail_ failed to send email: ... Session.getEffectiveUser ... Required permissions: userinfo.email`**
 — `sendAlertEmail_` (Utils.gs) falls back to `Session.getEffectiveUser().getEmail()`
 when `ALERT_EMAIL` isn't set, and that call needs the `userinfo.email` OAuth scope.
