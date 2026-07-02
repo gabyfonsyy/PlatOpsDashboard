@@ -16,11 +16,27 @@ Both live in the Drive folder `Platform Operations Dashboard` (under `Platform O
 They start empty — running `setupAll()` (below) builds every tab, header row, and
 pre-filled config row.
 
+## File order
+
+Functionally irrelevant — Apps Script merges every `.gs` file into one global scope
+before any entry point runs, so cross-file function calls work regardless of order.
+For readability, arrange them (drag in the editor's left file list) as:
+
+1. `Config.gs` — Script Properties + `getTeamsConfig_()`, everything else depends on this
+2. `Utils.gs` — shared helpers (`sheetToObjects_`, `uuid_`, dates, `withLock_`, alert email)
+3. `JiraClient.gs` — Jira REST auth/fetch/retry, no sync logic
+4. `JiraSync.gs` — incremental sync (the core mapping/parsing logic, shared with backfill)
+5. `Backfill.gs` — one-time historical load, self-continuing
+6. `Code.gs` — the `doGet`/`doPost` router, ties everything together
+7. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`
+8. `Setup.gs` — one-time bootstrap, not called by the router
+9. (later) `Aggregation.gs`, `MetricsApi.gs`, `Insights.gs`, `Triggers.gs` last
+
 ## First-time setup
 
 1. Go to [script.google.com](https://script.google.com) → New project. Rename it `PlatOpsDashboard`.
 2. Paste each `.gs` file in this folder into a matching file in the Apps Script editor
-   (Setup, Config, Utils, Code, LeaveApi, RtoApi, ProjectsApi — more land in later milestones).
+   (see file order above — more files land in later milestones).
 3. Project Settings → Script Properties → add:
    ```
    SPREADSHEET_ID_JIRA=1raCFx9Bk-VQjIjrggcMGP8KwRvcfM9zELnc9dRm2iYk
@@ -73,9 +89,29 @@ curl -X POST "<URL>?route=leave&action=create&apiKey=<KEY>" \
   -d '{"employee_name":"Test User","team_key":"ST","leave_type":"Vacation","start_date":"2026-07-10","end_date":"2026-07-11","num_days":2,"created_by":"gabriellef@sprout.ph"}'
 ```
 
+## Running the initial Jira backfill (Milestone 2)
+
+Once `JiraClient.gs`, `JiraSync.gs`, and `Backfill.gs` are pasted in and Script
+Properties include your dedicated `JIRA_EMAIL`/`JIRA_API_TOKEN`:
+
+1. Select `runInitialBackfill` in the function dropdown and click **Run**.
+2. It processes ~100 issues per execution and reschedules itself automatically
+   (a one-off trigger firing ~1s later) until every active team's 2-year backfill is
+   done — this runs unattended across many short executions, expect several hours of
+   wall-clock time for ST given ~15-18k tickets/year.
+3. Check progress anytime in `PlatOps - Jira Data` → `SYNC_CHECKPOINT` tab
+   (`last_sync_status`, `tickets_synced_last_run`, `backfill_cursor`).
+4. You'll get an email (via `sendAlertEmail_`, to your own address by default — set an
+   `ALERT_EMAIL` script property to redirect it) when all teams finish, or if a page
+   fails outright (it still reschedules itself after logging the failure).
+5. **Before running the full 2-year backfill**, validate against a small slice first —
+   temporarily edit `buildJqlBackfillFull_` in `Backfill.gs` to `created >= -30d`, run
+   it, inspect the resulting `RAW_ST_<year>` rows (especially `resolved_datetime`,
+   `first_out_of_backlog_todo`, `on_hold_entered_at/exited_at`) against a few tickets
+   you know the real history of in the Jira UI, then revert to `-730d` and re-run.
+
 ## Files landing in later milestones
 
-- `JiraClient.gs`, `JiraSync.gs`, `Backfill.gs` — Milestone 2 (Jira sync)
 - `Aggregation.gs`, `MetricsApi.gs` — Milestone 3 (precomputed metrics)
 - `Insights.gs` — Milestone 5 (Gemini narratives)
 - `Triggers.gs` — installs the time-driven triggers once all of the above exist

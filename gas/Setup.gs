@@ -16,16 +16,9 @@ function setupJiraDataSpreadsheet_() {
   const ss = SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_JIRA'));
   const currentYear = new Date().getFullYear();
 
-  const rawHeaders = [
-    'issue_key', 'project_key', 'issue_type', 'status', 'created', 'updated',
-    'resolved_datetime', 'resolved_raw_text', 'first_out_of_backlog_todo',
-    'fcr_value', 'escalation_value', 'assigned_se', 'assigned_cod', 'due_date',
-    'product', 'holding_reason', 'rejection_category', 'cancellation_reason',
-    'on_hold_entered_at', 'on_hold_exited_at', 'assignee_display_name',
-    'reporter_display_name', 'last_synced_at',
-  ];
+  // RAW_TICKET_HEADERS lives in JiraSync.gs — shared here so the two never drift apart.
   ['ST', 'DE', 'DEV'].forEach((team) => {
-    ensureTab_(ss, `RAW_${team}_${currentYear}`, rawHeaders);
+    ensureTab_(ss, `RAW_${team}_${currentYear}`, RAW_TICKET_HEADERS);
   });
 
   ensureTab_(ss, 'METRICS_DAILY', [

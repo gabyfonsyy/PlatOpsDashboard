@@ -75,3 +75,22 @@ function quarterLabel_(date) {
   const q = Math.floor(date.getMonth() / 3) + 1;
   return `${date.getFullYear()}-Q${q}`;
 }
+
+/**
+ * Best-effort ops email (failures and completion notices) — swallows its own errors so
+ * a broken mail quota never masks the original failure being reported. Set an
+ * ALERT_EMAIL script property to target a distribution list instead of the script owner.
+ */
+function sendAlertEmail_(subject, body) {
+  try {
+    const email = PropertiesService.getScriptProperties().getProperty('ALERT_EMAIL')
+      || Session.getEffectiveUser().getEmail();
+    MailApp.sendEmail(email, `[PlatOpsDashboard] ${subject}`, String(body && body.stack ? body.stack : body));
+  } catch (mailErr) {
+    Logger.log(`sendAlertEmail_ failed to send email: ${mailErr}`);
+  }
+}
+
+function notifyFailure_(subject, err) {
+  sendAlertEmail_(subject, err);
+}
