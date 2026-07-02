@@ -27,10 +27,12 @@ For readability, arrange them (drag in the editor's left file list) as:
 3. `JiraClient.gs` — Jira REST auth/fetch/retry, no sync logic
 4. `JiraSync.gs` — incremental sync (the core mapping/parsing logic, shared with backfill)
 5. `Backfill.gs` — one-time historical load, self-continuing
-6. `Code.gs` — the `doGet`/`doPost` router, ties everything together
-7. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`
-8. `Setup.gs` — one-time bootstrap, not called by the router
-9. (later) `Aggregation.gs`, `MetricsApi.gs`, `Insights.gs`, `Triggers.gs` last
+6. `Aggregation.gs` — precomputes METRICS_DAILY / METRICS_BY_ASSIGNEE_MONTHLY from raw rows
+7. `MetricsApi.gs` — read-only rollup API the frontend actually queries
+8. `Code.gs` — the `doGet`/`doPost` router, ties everything together
+9. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`
+10. `Setup.gs` — one-time bootstrap, not called by the router
+11. (later) `Insights.gs`, `Triggers.gs` last
 
 ## First-time setup
 
@@ -110,8 +112,23 @@ Properties include your dedicated `JIRA_EMAIL`/`JIRA_API_TOKEN`:
    `first_out_of_backlog_todo`, `on_hold_entered_at/exited_at`) against a few tickets
    you know the real history of in the Jira UI, then revert to `-730d` and re-run.
 
+## Aggregation + metrics (Milestone 3)
+
+After a sync run (or backfill slice) has populated some raw ticket rows, run
+`aggregateAllTeams` manually once to precompute `METRICS_DAILY` and
+`METRICS_BY_ASSIGNEE_MONTHLY` for the first time (it normally runs on its own 2h
+trigger once `Triggers.gs` is installed — see Milestone 6). Then smoke-test:
+
+```bash
+curl "<URL>?route=metrics&apiKey=<KEY>&team=ST&range=month&period=2026-07"
+curl "<URL>?route=assignee-metrics&apiKey=<KEY>&team=ST&range=month&period=2026-07"
+```
+
+Hand-verify the returned `fcrRate`/`escalationRate`/`backlogAgingRate`/lead-cycle-time
+averages against a handful of tickets you know the history of before trusting the
+numbers for a real MBR/QBR.
+
 ## Files landing in later milestones
 
-- `Aggregation.gs`, `MetricsApi.gs` — Milestone 3 (precomputed metrics)
 - `Insights.gs` — Milestone 5 (Gemini narratives)
 - `Triggers.gs` — installs the time-driven triggers once all of the above exist

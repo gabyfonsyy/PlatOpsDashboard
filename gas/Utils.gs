@@ -76,6 +76,10 @@ function quarterLabel_(date) {
   return `${date.getFullYear()}-Q${q}`;
 }
 
+/** Shared rounding helpers — used by both Aggregation.gs and MetricsApi.gs. */
+function round2_(n) { return Math.round(n * 100) / 100; }
+function round4_(n) { return Math.round(n * 10000) / 10000; }
+
 /**
  * Best-effort ops email (failures and completion notices) — swallows its own errors so
  * a broken mail quota never masks the original failure being reported. Set an
