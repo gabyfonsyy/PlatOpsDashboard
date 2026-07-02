@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { getTeamByKey } from "@/lib/teams";
-import { getAssigneeMetrics } from "@/lib/metrics";
+import { getAssigneeMetrics, getInsight } from "@/lib/metrics";
 import { resolveFilters } from "@/lib/date-ranges";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { AssigneeTable } from "@/components/dashboard/AssigneeTable";
@@ -16,7 +16,19 @@ export default async function TeamPerformancePage({
   if (!team) notFound();
 
   const { range, period } = resolveFilters(searchParams);
-  const data = await getAssigneeMetrics(team.team_key, range, period);
+  const [data, insight] = await Promise.all([
+    getAssigneeMetrics(team.team_key, range, period),
+    getInsight(`TEAM:${team.team_key}`),
+  ]);
+
+  // Flags come from the daily Gemini run's deterministic outlier detection (Insights.gs),
+  // not recomputed live here — cached flags are keyed by employee name, merged onto rows.
+  const flagsByEmployee = new Map<string, string[]>();
+  (insight?.flags ?? []).forEach((f) => {
+    const label = f.code ?? f.metric;
+    flagsByEmployee.set(f.employee, [...(flagsByEmployee.get(f.employee) ?? []), label]);
+  });
+  const assignees = data.assignees.map((a) => ({ ...a, flags: flagsByEmployee.get(a.name) ?? [] }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -27,7 +39,7 @@ export default async function TeamPerformancePage({
         </div>
         <FilterBar />
       </div>
-      <AssigneeTable assignees={data.assignees} />
+      <AssigneeTable assignees={assignees} />
     </div>
   );
 }

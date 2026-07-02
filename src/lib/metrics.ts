@@ -32,7 +32,7 @@ export type AssigneeMetric = {
   flags: string[];
 };
 
-export type InsightFlag = { employee: string; metric: string; severity: string; detail: string };
+export type InsightFlag = { employee: string; metric: string; severity: string; detail: string; code?: string };
 
 export type CachedInsight = {
   scope: string;

@@ -29,10 +29,11 @@ For readability, arrange them (drag in the editor's left file list) as:
 5. `Backfill.gs` — one-time historical load, self-continuing
 6. `Aggregation.gs` — precomputes METRICS_DAILY / METRICS_BY_ASSIGNEE_MONTHLY from raw rows
 7. `MetricsApi.gs` — read-only rollup API the frontend actually queries
-8. `Code.gs` — the `doGet`/`doPost` router, ties everything together
-9. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`
-10. `Setup.gs` — one-time bootstrap, not called by the router
-11. (later) `Insights.gs`, `Triggers.gs` last
+8. `Insights.gs` — Gemini narrative generation + deterministic outlier detection
+9. `Code.gs` — the `doGet`/`doPost` router, ties everything together
+10. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`
+11. `Setup.gs` — one-time bootstrap, not called by the router
+12. `Triggers.gs` — installs every recurring trigger, run last of all
 
 ## First-time setup
 
@@ -128,7 +129,37 @@ Hand-verify the returned `fcrRate`/`escalationRate`/`backlogAgingRate`/lead-cycl
 averages against a handful of tickets you know the history of before trusting the
 numbers for a real MBR/QBR.
 
-## Files landing in later milestones
+## Gemini insights (Milestone 5)
 
-- `Insights.gs` — Milestone 5 (Gemini narratives)
-- `Triggers.gs` — installs the time-driven triggers once all of the above exist
+`GEMINI_API_KEY` must already be set in Script Properties (see step 3). Smoke-test once
+`Insights.gs` is pasted in:
+
+1. Select `generateInsightsAllTeams` in the function dropdown and click **Run**.
+2. Check `PlatOps - Manager Data` → `INSIGHTS_CACHE` — one row per team (`TEAM:ST`, etc.)
+   plus `ROLLUP:ALL`, each with `generation_status = SUCCESS` and a `narrative_text`.
+3. Read the narratives for hallucination/accuracy before trusting them for a real
+   MBR/QBR — the prompt only receives aggregated numbers (never raw tickets), but LLM
+   output should still be spot-checked, especially early on.
+4. Confirm `gemini-2.0-flash` (the model id hardcoded in `Insights.gs`) is still current
+   on the [Gemini API free tier](https://ai.google.dev/gemini-api/docs/pricing) — model
+   availability shifts over time.
+
+## Installing the recurring triggers (after Milestones 1-5 are all deployed)
+
+Run `installTriggers` once from the editor. It installs `syncAllTeams` (every 2h),
+`aggregateAllTeams` (every 2h, staggered ~2min later), and `generateInsightsAllTeams`
+(daily, ~6am Asia/Manila) — and is safe to re-run any time (it clears old triggers for
+these functions first, so it never creates duplicates).
+
+**Do this only after the initial 2-year backfill (`runInitialBackfill`) has completed
+for all teams** — `syncTeam_` intentionally no-ops until `SYNC_CHECKPOINT.last_full_backfill_completed_at`
+is set, so installing triggers early just means synced-nothing runs every 2h until then, which is harmless but pointless.
+
+## Manifest (appsscript.json)
+
+`gas/appsscript.json` sets the project timezone to `Asia/Manila` (matches the
+`TIMEZONE` constant hardcoded in `Utils.gs`, which the text-datetime parsing and daily
+trigger scheduling both depend on), the Web App access/executeAs settings, and the
+OAuth scopes needed (Sheets, external requests for Jira/Gemini, and mail for alerts).
+In the Apps Script editor: Project Settings → check "Show `appsscript.json` manifest
+file in editor", then paste this file's contents in to replace the default.
