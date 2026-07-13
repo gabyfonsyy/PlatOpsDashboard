@@ -7,7 +7,18 @@ import type { TeamConfig } from "@/lib/teams";
 import type { RosterMember } from "@/lib/types";
 import { teamSelectOptions } from "@/lib/utils";
 
-export const LEAVE_TYPES = ["Vacation", "Sick", "Emergency", "Bereavement", "Maternity", "Paternity", "Unpaid", "Other"];
+export const LEAVE_TYPES = [
+  "Vacation",
+  "Sick",
+  "Emergency",
+  "Bereavement",
+  "Maternity",
+  "Paternity",
+  "PTO",
+  "Compensatory Time Off",
+  "Unpaid",
+  "Other",
+];
 export const LEAVE_STATUSES = ["Approved", "Pending", "Cancelled"];
 
 export const leaveSchema = z
@@ -15,6 +26,8 @@ export const leaveSchema = z
     team_key: z.string().min(1, "Required"),
     employee_name: z.string().min(1, "Required"),
     leave_type: z.string().min(1, "Required"),
+    // Free-text type, used only when leave_type === "Other".
+    leave_type_other: z.string().optional().default(""),
     duration_type: z.enum(["Full Day", "Half Day"]),
     half_day_period: z.string().optional().default(""),
     start_date: z.string().min(1, "Required"),
@@ -26,6 +39,10 @@ export const leaveSchema = z
   .refine((v) => v.duration_type === "Full Day" || v.half_day_period !== "", {
     message: "Pick which half",
     path: ["half_day_period"],
+  })
+  .refine((v) => v.leave_type !== "Other" || (v.leave_type_other ?? "").trim() !== "", {
+    message: "Specify the leave type",
+    path: ["leave_type_other"],
   });
 
 export type LeaveFormValues = z.infer<typeof leaveSchema>;
@@ -39,13 +56,27 @@ export function inclusiveDays(start: string, end: string): number {
   return Math.round((e - s) / 86_400_000) + 1;
 }
 
+/** Resolves the stored leave_type: the free-text value when "Other" is chosen, else the preset. */
+export function resolveLeaveType(values: Pick<LeaveFormValues, "leave_type" | "leave_type_other">): string {
+  return values.leave_type === "Other" ? (values.leave_type_other ?? "").trim() : values.leave_type;
+}
+
+/** Splits a stored leave_type back into the select value + free-text field for editing. */
+export function splitLeaveType(stored: string): { leave_type: string; leave_type_other: string } {
+  const v = (stored || "").trim();
+  if (!v) return { leave_type: "", leave_type_other: "" };
+  if (v === "Other") return { leave_type: "Other", leave_type_other: "" };
+  if (LEAVE_TYPES.includes(v)) return { leave_type: v, leave_type_other: "" };
+  return { leave_type: "Other", leave_type_other: v };
+}
+
 /** Shapes raw form values into the API payload — normalising half-day (single date) vs full-day. */
 export function buildLeavePayload(values: LeaveFormValues) {
   const isHalf = values.duration_type === "Half Day";
   return {
     employee_name: values.employee_name,
     team_key: values.team_key,
-    leave_type: values.leave_type,
+    leave_type: resolveLeaveType(values),
     start_date: values.start_date,
     end_date: isHalf ? values.start_date : values.end_date || values.start_date,
     num_days: values.num_days,
@@ -74,6 +105,8 @@ export function LeaveFormFields({
   const { register, watch, setValue, formState: { errors } } = form;
 
   const teamKey = watch("team_key");
+  const leaveType = watch("leave_type");
+  const isOtherType = leaveType === "Other";
   const durationType = watch("duration_type");
   const startDate = watch("start_date");
   const endDate = watch("end_date");
@@ -129,6 +162,18 @@ export function LeaveFormFields({
         </select>
         {errors.leave_type && <p className="form-error">{errors.leave_type.message}</p>}
       </div>
+
+      {isOtherType && (
+        <div>
+          <label className="form-label">Specify Type</label>
+          <input
+            {...register("leave_type_other")}
+            className="form-input"
+            placeholder="e.g. Jury Duty"
+          />
+          {errors.leave_type_other && <p className="form-error">{errors.leave_type_other.message}</p>}
+        </div>
+      )}
 
       <div>
         <label className="form-label">Duration</label>

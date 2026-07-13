@@ -11,6 +11,7 @@ import { formatManilaDate } from "@/lib/format";
 import {
   leaveSchema,
   buildLeavePayload,
+  splitLeaveType,
   LeaveFormFields,
   type LeaveFormValues,
 } from "@/components/forms/leave-fields";
@@ -18,10 +19,12 @@ import {
 /** Maps a stored record into the form's shape (half-day derivation + Manila-normalised dates). */
 function recordToFormValues(r: LeaveRecord): LeaveFormValues {
   const isHalf = String(r.half_day_period || "").trim() !== "";
+  const { leave_type, leave_type_other } = splitLeaveType(r.leave_type);
   return {
     team_key: r.team_key,
     employee_name: r.employee_name,
-    leave_type: r.leave_type,
+    leave_type,
+    leave_type_other,
     duration_type: isHalf ? "Half Day" : "Full Day",
     half_day_period: r.half_day_period || "",
     start_date: formatManilaDate(r.start_date),
