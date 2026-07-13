@@ -1,8 +1,9 @@
 import { getTeams } from "@/lib/teams";
+import { getRoster } from "@/lib/roster";
 import { fetchGas } from "@/lib/gas-client";
-import type { RtoRecord, RtoSummaryRow } from "@/lib/types";
+import type { RtoRecord, RtoSummaryRow, RosterMember } from "@/lib/types";
 import { RtoForm } from "@/components/forms/RtoForm";
-import { DeleteButton } from "@/components/ui/DeleteButton";
+import { RtoRecordsTable } from "@/components/forms/RtoRecordsTable";
 import { formatPercent } from "@/lib/format";
 
 export default async function RtoPage({
@@ -10,16 +11,19 @@ export default async function RtoPage({
 }: {
   searchParams: Record<string, string | string[] | undefined>;
 }) {
-  const teams = await getTeams().catch(() => []);
   const team = typeof searchParams.team === "string" ? searchParams.team : undefined;
   const startDate = typeof searchParams.startDate === "string" ? searchParams.startDate : undefined;
   const endDate = typeof searchParams.endDate === "string" ? searchParams.endDate : undefined;
 
-  const result = await fetchGas<{ records: RtoRecord[]; summary?: RtoSummaryRow[] }>(
-    "rto",
-    { team, startDate, endDate },
-    { cache: "no-store" }
-  ).catch(() => ({ records: [] as RtoRecord[], summary: undefined as RtoSummaryRow[] | undefined }));
+  const [teams, roster, result] = await Promise.all([
+    getTeams().catch(() => [] as Awaited<ReturnType<typeof getTeams>>),
+    getRoster().catch(() => [] as RosterMember[]),
+    fetchGas<{ records: RtoRecord[]; summary?: RtoSummaryRow[] }>(
+      "rto",
+      { team, startDate, endDate },
+      { cache: "no-store" }
+    ).catch(() => ({ records: [] as RtoRecord[], summary: undefined as RtoSummaryRow[] | undefined })),
+  ]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -28,7 +32,7 @@ export default async function RtoPage({
         <p className="text-sm text-neutral-500 mt-1">Manager-entered attendance log and compliance summary.</p>
       </div>
 
-      <RtoForm teams={teams} />
+      <RtoForm teams={teams} roster={roster} />
 
       <form method="get" className="card p-4 flex flex-wrap items-end gap-3">
         <div>
@@ -71,37 +75,7 @@ export default async function RtoPage({
         </div>
       )}
 
-      <div className="card overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-neutral-50 border-b border-neutral-200">
-            <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
-              <th className="px-4 py-3">Employee</th>
-              <th className="px-4 py-3">Team</th>
-              <th className="px-4 py-3">Date</th>
-              <th className="px-4 py-3">Attendance</th>
-              <th className="px-4 py-3">Notes</th>
-              <th className="px-4 py-3" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-100">
-            {result.records.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-neutral-400">No RTO records yet.</td>
-              </tr>
-            )}
-            {result.records.map((r) => (
-              <tr key={r.rto_id}>
-                <td className="px-4 py-3 font-medium text-neutral-900">{r.employee_name}</td>
-                <td className="px-4 py-3">{r.team_key}</td>
-                <td className="px-4 py-3">{r.date}</td>
-                <td className="px-4 py-3">{r.attendance_type}</td>
-                <td className="px-4 py-3 text-neutral-500">{r.notes}</td>
-                <td className="px-4 py-3"><DeleteButton endpoint="/api/gas/rto" id={r.rto_id} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <RtoRecordsTable records={result.records} teams={teams} roster={roster} />
     </div>
   );
 }

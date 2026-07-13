@@ -51,6 +51,7 @@ function getTeamsConfig_() {
     has_holding_reason: parseBool_(r.has_holding_reason),
     has_rejection_category: parseBool_(r.has_rejection_category),
     has_cancellation_reason: parseBool_(r.has_cancellation_reason),
+    has_in_progress_tracking: parseBool_(r.has_in_progress_tracking),
     backlog_status_names_csv: String(r.backlog_status_names_csv || ''),
     issue_types_csv: String(r.issue_types_csv || ''),
     color_accent: String(r.color_accent || '#18A558'),

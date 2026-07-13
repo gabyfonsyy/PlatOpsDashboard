@@ -8,8 +8,8 @@ const RAW_TICKET_HEADERS = [
   'issue_key', 'project_key', 'issue_type', 'status', 'created', 'updated',
   'resolved_datetime', 'resolved_raw_text', 'first_out_of_backlog_todo',
   'fcr_value', 'escalation_value', 'assigned_se', 'assigned_cod', 'due_date',
-  'product', 'holding_reason', 'rejection_category', 'cancellation_reason',
-  'on_hold_entered_at', 'on_hold_exited_at', 'assignee_display_name',
+  'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
+  'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at',
 ];
 
@@ -74,14 +74,28 @@ function processAndUpsertIssue_(team, issue) {
     const changelog = jiraGetChangelog_(issue.key);
     row.first_out_of_backlog_todo = extractCycleTimeStart_(changelog, team.backlog_status_names_csv);
     if (team.has_holding_reason) {
-      const pickup = extractHoldingPickup_(changelog);
-      row.on_hold_entered_at = pickup.enteredAt;
-      row.on_hold_exited_at = pickup.exitedAt;
+      const cycles = extractHoldingCyclesWithReasons_(changelog);
+      row.holding_reasons_json = JSON.stringify(cycles.map((c) => c.reason).filter(Boolean));
+      row.total_on_hold_minutes = round2_(cycles.reduce((sum, c) => {
+        return c.exitedAt ? sum + (new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000 : sum;
+      }, 0));
+    }
+    if (team.has_in_progress_tracking) {
+      const inProgressCycles = extractInProgressCycles_(changelog);
+      row.total_in_progress_minutes = round2_(inProgressCycles.reduce((sum, c) => {
+        return c.exitedAt ? sum + (new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000 : sum;
+      }, 0));
     }
   }
 
   upsertRawTicketRow_(team.team_key, row);
   markDirtyDate_(team.team_key, toIsoDate_(new Date(row.created)));
+  // Also mark the resolved date dirty so the resolved-by-resolved-date trend
+  // (tickets_resolved_on_date in METRICS_DAILY) recomputes for that day — the day a
+  // ticket resolves is usually different from the day it was created.
+  if (row.resolved_datetime) {
+    markDirtyDate_(team.team_key, toIsoDate_(new Date(row.resolved_datetime)));
+  }
 }
 
 function buildJqlIncremental_(team, sinceTs) {
@@ -109,13 +123,13 @@ function mapIssueToRawRow_(team, issue, resolved) {
     escalation_value: extractJiraFieldValue_(fields.customfield_10146),
     assigned_se: team.assignee_field_id === 'customfield_10189' ? extractJiraFieldValue_(fields.customfield_10189) : '',
     assigned_cod: team.assignee_field_id === 'customfield_10097' ? extractJiraFieldValue_(fields.customfield_10097) : '',
-    due_date: extractJiraFieldValue_(fields.customfield_10881),
+    due_date: extractJiraFieldValue_(fields.duedate),
     product: extractJiraFieldValue_(fields.customfield_10197),
-    holding_reason: extractJiraFieldValue_(fields.customfield_11463),
+    holding_reasons_json: '[]',
     rejection_category: extractJiraFieldValue_(fields.customfield_11496),
     cancellation_reason: extractJiraFieldValue_(fields.customfield_11285),
-    on_hold_entered_at: '',
-    on_hold_exited_at: '',
+    total_on_hold_minutes: 0,
+    total_in_progress_minutes: 0,
     assignee_display_name: fields.assignee ? fields.assignee.displayName : '',
     reporter_display_name: fields.reporter ? fields.reporter.displayName : '',
     last_synced_at: nowIso_(),
@@ -152,7 +166,18 @@ function parseResolvedDateField_(team, fields, issueKey) {
     return { value: new Date(raw), rawText: '' };
   }
 
-  const match = String(raw).match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  // customfield_11153 is *usually* the plain "YYYY-MM-DD HH:mm:ss" format below, but some
+  // tickets carry a full ISO-8601 datetime with an explicit offset (e.g.
+  // "2026-05-11T15:29:03.000+0000") written by a different automation. ISO strings carry
+  // their own timezone, so new Date() parses them unambiguously — handle them before the
+  // manual space-format parse rather than logging them as unparseable.
+  const str = String(raw);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(str)) {
+    const isoDate = new Date(str);
+    if (!isNaN(isoDate.getTime())) return { value: isoDate, rawText: '' };
+  }
+
+  const match = str.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
   if (!match) {
     logSyncError_(team.team_key, issueKey, 'resolved_datetime', raw, 'Unparseable text datetime');
     return { value: null, rawText: String(raw) };
@@ -175,6 +200,8 @@ function issueNeedsChangelog_(team, fields, resolvedValue) {
   const backlogNames = team.backlog_status_names_csv.split(',').map((s) => s.trim().toLowerCase());
   if (backlogNames.indexOf(status) !== -1) return false;
 
+  if (team.has_holding_reason) return true;
+  if (team.has_in_progress_tracking) return true;
   return !!resolvedValue || status === 'on hold';
 }
 
@@ -193,20 +220,81 @@ function extractCycleTimeStart_(changelog, backlogStatusNamesCsv) {
   return '';
 }
 
-/** First entry into "On Hold", and the next status change after it (handles only the first hold cycle). */
-function extractHoldingPickup_(changelog) {
+/**
+ * Walks the changelog chronologically and returns every On Hold cycle as
+ * { enteredAt, exitedAt, reason }, where `reason` is the value of customfield_11463
+ * at the moment the ticket entered On Hold. Jira batches field changes that happen
+ * simultaneously into one changelog entry, so the reason and status transition appear
+ * together when set via automation — both are processed in the same pass.
+ * Supports tickets that cycle through On Hold multiple times (e.g. PlatOps dependency
+ * → client feedback → L3 dependency).
+ */
+function extractHoldingCyclesWithReasons_(changelog) {
+  let currentReason = null;
+  const cycles = [];
+  let cycleStart = null;
+
+  for (let i = 0; i < changelog.length; i++) {
+    const items = changelog[i].items || [];
+
+    items.forEach((item) => {
+      if (item.field === 'customfield_11463' || item.fieldId === 'customfield_11463') {
+        currentReason = item.toString || null;
+      }
+    });
+
+    const statusItem = items.find((item) => item.field === 'status');
+    if (!statusItem) continue;
+
+    const toStatus = (statusItem.toString || '').toLowerCase();
+    const fromStatus = (statusItem.fromString || '').toLowerCase();
+
+    if (toStatus === 'on hold') {
+      cycleStart = changelog[i].created;
+    } else if (fromStatus === 'on hold' && cycleStart) {
+      cycles.push({ enteredAt: cycleStart, exitedAt: changelog[i].created, reason: currentReason || '' });
+      cycleStart = null;
+    }
+  }
+
+  if (cycleStart) {
+    cycles.push({ enteredAt: cycleStart, exitedAt: null, reason: currentReason || '' });
+  }
+
+  return cycles;
+}
+
+/**
+ * Walks the changelog chronologically and returns every In Progress cycle as
+ * { enteredAt, exitedAt } — mirrors extractHoldingCyclesWithReasons_'s multi-cycle
+ * handling but for "In Progress" and without reason-tracking (not applicable here).
+ * Captures active-effort time even for tickets that bounce back into In Progress
+ * multiple times (e.g. In Progress -> On Hold -> In Progress -> On Hold -> For Checking).
+ */
+function extractInProgressCycles_(changelog) {
+  const cycles = [];
+  let cycleStart = null;
+
   for (let i = 0; i < changelog.length; i++) {
     const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
-    if (!statusItem || (statusItem.toString || '').toLowerCase() !== 'on hold') continue;
+    if (!statusItem) continue;
 
-    const enteredAt = changelog[i].created;
-    for (let j = i + 1; j < changelog.length; j++) {
-      const nextStatusItem = (changelog[j].items || []).find((item) => item.field === 'status');
-      if (nextStatusItem) return { enteredAt: enteredAt, exitedAt: changelog[j].created };
+    const toStatus = (statusItem.toString || '').toLowerCase();
+    const fromStatus = (statusItem.fromString || '').toLowerCase();
+
+    if (toStatus === 'in progress') {
+      cycleStart = changelog[i].created;
+    } else if (fromStatus === 'in progress' && cycleStart) {
+      cycles.push({ enteredAt: cycleStart, exitedAt: changelog[i].created });
+      cycleStart = null;
     }
-    return { enteredAt: enteredAt, exitedAt: '' };
   }
-  return { enteredAt: '', exitedAt: '' };
+
+  if (cycleStart) {
+    cycles.push({ enteredAt: cycleStart, exitedAt: null });
+  }
+
+  return cycles;
 }
 
 function getOrCreateRawTab_(teamKey, year) {

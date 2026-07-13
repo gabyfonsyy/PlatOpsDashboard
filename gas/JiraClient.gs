@@ -87,13 +87,12 @@ function jiraGetChangelog_(issueKey) {
 
 /** The field IDs every team config needs pulled from Jira, deduped, plus always-needed standard fields. */
 function buildJiraFieldList_(teamConfig) {
-  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution'];
+  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate'];
   const custom = [
     teamConfig.resolved_date_field_id,
     teamConfig.assignee_field_id,
     'customfield_10143', // First Contact Resolution
     'customfield_10146', // Ticket Escalation
-    'customfield_10881', // Due Date
     'customfield_10197', // Product
     'customfield_11463', // Ticket Holding Reason
     'customfield_11496', // Ticket Rejection Category

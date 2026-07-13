@@ -67,6 +67,17 @@ function toIsoDate_(date) {
   return Utilities.formatDate(date, TIMEZONE, 'yyyy-MM-dd');
 }
 
+/**
+ * Coerces a sheet cell (a Date object, an ISO timestamp string, or a plain 'yyyy-MM-dd')
+ * to a plain 'yyyy-MM-dd' string in Manila time — so date-only fields never leak a time
+ * component or an off-by-one from UTC serialization. Blank stays blank.
+ */
+function toDisplayDate_(value) {
+  if (value === '' || value === null || value === undefined) return '';
+  const d = (value instanceof Date) ? value : new Date(value);
+  return isNaN(d.getTime()) ? String(value) : toIsoDate_(d);
+}
+
 function monthLabel_(date) {
   return Utilities.formatDate(date, TIMEZONE, 'yyyy-MM');
 }

@@ -213,6 +213,37 @@ If page loads feel slow, the fix is almost always in `MetricsApi.gs` (e.g. cache
 `getMetricsDailyRowsInRange_`'s full-sheet read across calls within one request) —
 the raw ticket tabs should never be in the request path at all.
 
+## Active-effort-time tracking (ST only)
+
+Tracks total minutes an ST ticket actually spent In Progress, summed across every
+cycle — handles tickets that bounce In Progress → On Hold → In Progress → ... →
+resolved, unlike `cycle_time` (which is one elapsed span from first-out-of-backlog
+to resolution and includes On Hold/For Checking time). Gated by
+`TEAMS_CONFIG.has_in_progress_tracking` (TRUE for ST, FALSE for DE/DEV) — the
+extraction reuses the changelog fetch ST already makes for holding-reason tracking,
+so this adds no extra Jira API calls for ST.
+
+Rollout steps for the already-provisioned spreadsheets (fresh `setupAll()` runs pick
+this up automatically):
+
+1. Run `migrateAddInProgressTracking` (Setup.gs) once — adds
+   `has_in_progress_tracking` to `TEAMS_CONFIG` (TRUE for ST), `total_in_progress_minutes`
+   to every `RAW_ST_<year>`/`RAW_DE_<year>`/`RAW_DEV_<year>` tab, and
+   `avg_in_progress_minutes` to `METRICS_BY_ASSIGNEE_MONTHLY`.
+2. Run `runStInProgressRebackfill` (Backfill.gs) once — backfills
+   `total_in_progress_minutes` into ST's existing RAW rows (self-continuing across
+   executions like the other backfills; only touches tickets that were ever In Progress).
+3. Run `aggregateAllTeams` (or wait for its next trigger) to recompute
+   `avg_in_progress_minutes` in `METRICS_BY_ASSIGNEE_MONTHLY` from the backfilled data.
+4. Smoke-test: `curl "<URL>?route=assignee-metrics&apiKey=<KEY>&team=ST&range=month&period=2026-07"`
+   — each assignee should have a non-null `avgInProgressMinutes`.
+
+**Week-range caveat:** `avgInProgressMinutes` (like the existing `avgLeadTimeMinutes`/
+`avgCycleTimeMinutes`) is rolled up from `METRICS_BY_ASSIGNEE_MONTHLY`, which is
+monthly-grain — `range=week` sums the entire month(s) overlapping that week, not just
+the week's days. Pre-existing limitation of the assignee-metrics endpoint, not new to
+this feature.
+
 ## Manifest (appsscript.json)
 
 `gas/appsscript.json` sets the project timezone to `Asia/Manila` (matches the

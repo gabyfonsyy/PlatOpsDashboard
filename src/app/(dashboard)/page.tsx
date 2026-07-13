@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { getTeams } from "@/lib/teams";
+import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
 import { resolveFilters } from "@/lib/date-ranges";
-import { formatMinutes, formatPercent, formatNumber } from "@/lib/format";
+import { formatMinutesDecimalValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { InsightPanel } from "@/components/dashboard/InsightPanel";
@@ -52,12 +53,28 @@ export default async function RollupPage({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <MetricCard
           label="Ticket Volume"
-          value={formatNumber(rollupMetrics.ticketVolume)}
-          sublabel={`${rollupMetrics.ticketsCreated} created, ${rollupMetrics.ticketsResolved} resolved`}
+          value={formatNumber(rollupMetrics.ticketsCreated)}
+          sublabel={`${formatNumber(rollupMetrics.ticketsResolvedInPeriod)} resolved`}
+          tooltip="Total tickets created across all teams during the selected period. The sublabel shows how many tickets were resolved during the period (by resolved date)."
         />
-        <MetricCard label="Lead Time" value={formatMinutes(rollupMetrics.leadTimeAvgMinutes)} />
-        <MetricCard label="Cycle Time" value={formatMinutes(rollupMetrics.cycleTimeAvgMinutes)} />
-        <MetricCard label="Backlog Aging" value={formatPercent(rollupMetrics.backlogAgingRate)} />
+        <MetricCard
+          label="Lead Time"
+          value={formatMinutesDecimalValue(rollupMetrics.leadTimeAvgMinutes)}
+          sublabel={formatDurationBreakdown(rollupMetrics.leadTimeAvgMinutes)}
+          tooltip="Average time from ticket creation to resolution, across all tickets resolved in the period."
+        />
+        <MetricCard
+          label="Cycle Time"
+          value={formatMinutesDecimalValue(rollupMetrics.cycleTimeAvgMinutes)}
+          sublabel={formatDurationBreakdown(rollupMetrics.cycleTimeAvgMinutes)}
+          tooltip="Average time from when work started (ticket left Backlog/To Do) to resolution, across tickets resolved in the period."
+        />
+        <MetricCard
+          label="Backlog Aging"
+          value={formatPercent(rollupMetrics.backlogAgingRate)}
+          sublabel={`${formatNumber(rollupMetrics.overdueCount)} of ${formatNumber(rollupMetrics.ticketsResolvedInPeriod)} resolved overdue`}
+          tooltip="Overdue tickets ÷ total tickets resolved in the period. Overdue = resolved after the due date (resolved date > due date)."
+        />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -65,12 +82,12 @@ export default async function RollupPage({
           const m = perTeamMetrics[i];
           return (
             <Link key={t.team_key} href={`/${t.team_key.toLowerCase()}`} className="card p-5 hover:border-sprout-300 transition-colors">
-              <p className="text-sm font-medium text-neutral-900">{t.team_name}</p>
+              <p className="text-sm font-medium text-neutral-900">{teamLabel(t.team_name)}</p>
               <p className="text-xs text-neutral-400 mt-0.5">{t.jira_project_key}</p>
               <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
                 <div>
                   <p className="text-xs text-neutral-400">Volume</p>
-                  <p className="font-medium text-neutral-900">{formatNumber(m.ticketVolume)}</p>
+                  <p className="font-medium text-neutral-900">{formatNumber(m.ticketsCreated)}</p>
                 </div>
                 <div>
                   <p className="text-xs text-neutral-400">Backlog Aging</p>

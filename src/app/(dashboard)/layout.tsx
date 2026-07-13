@@ -1,10 +1,11 @@
 import { TopNav } from "@/components/layout/TopNav";
 import { getTeams } from "@/lib/teams";
+import { teamLabel } from "@/lib/utils";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   // GAS may not be deployed yet during early setup — degrade to no team tabs rather than crash.
   const teams = await getTeams().catch(() => []);
-  const teamTabs = teams.map((t) => ({ key: t.team_key.toLowerCase(), label: t.team_name }));
+  const teamTabs = teams.map((t) => ({ key: t.team_key.toLowerCase(), label: teamLabel(t.team_name) }));
 
   return (
     <div className="min-h-screen flex flex-col">

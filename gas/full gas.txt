@@ -1,0 +1,3067 @@
+/**
+ * Script Properties accessors and the TEAMS_CONFIG reader that drives every
+ * sync/aggregation/API function (see Section 8, scalability path, in the plan).
+ */
+
+const REQUIRED_SCRIPT_PROPERTIES = [
+  'SPREADSHEET_ID_JIRA',
+  'SPREADSHEET_ID_MANAGER',
+  'JIRA_BASE_URL',
+  'JIRA_EMAIL',
+  'JIRA_API_TOKEN',
+  'GEMINI_API_KEY',
+  'API_SHARED_SECRET',
+];
+
+function getScriptProperty_(key) {
+  const value = PropertiesService.getScriptProperties().getProperty(key);
+  if (!value) throw new Error(`Missing required Script Property: ${key}`);
+  return value;
+}
+
+/** Fails loudly and lists every missing property, rather than one at a time. */
+function assertConfigured_() {
+  const props = PropertiesService.getScriptProperties().getProperties();
+  const missing = REQUIRED_SCRIPT_PROPERTIES.filter((k) => !props[k]);
+  if (missing.length) {
+    throw new Error(`Missing Script Properties: ${missing.join(', ')}`);
+  }
+}
+
+function getJiraDataSpreadsheet_() {
+  return SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_JIRA'));
+}
+
+function getManagerDataSpreadsheet_() {
+  return SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_MANAGER'));
+}
+
+/** Reads TEAMS_CONFIG and coerces boolean/number columns — the single source every module reads from. */
+function getTeamsConfig_() {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('TEAMS_CONFIG');
+  const rows = sheetToObjects_(sheet);
+  return rows.map((r) => ({
+    team_key: String(r.team_key).trim(),
+    team_name: String(r.team_name).trim(),
+    jira_project_key: String(r.jira_project_key).trim(),
+    resolved_date_field_type: String(r.resolved_date_field_type).trim(),
+    resolved_date_field_id: String(r.resolved_date_field_id).trim(),
+    assignee_field_id: String(r.assignee_field_id).trim(),
+    has_fcr_escalation: parseBool_(r.has_fcr_escalation),
+    has_holding_reason: parseBool_(r.has_holding_reason),
+    has_rejection_category: parseBool_(r.has_rejection_category),
+    has_cancellation_reason: parseBool_(r.has_cancellation_reason),
+    has_in_progress_tracking: parseBool_(r.has_in_progress_tracking),
+    backlog_status_names_csv: String(r.backlog_status_names_csv || ''),
+    issue_types_csv: String(r.issue_types_csv || ''),
+    color_accent: String(r.color_accent || '#18A558'),
+    active: parseBool_(r.active),
+    sort_order: Number(r.sort_order) || 0,
+  }));
+}
+
+function getActiveTeamsConfig_() {
+  return getTeamsConfig_().filter((t) => t.active);
+}
+
+function getTeamConfigByProjectKey_(projectKey) {
+  return getTeamsConfig_().find((t) => t.jira_project_key === projectKey);
+}
+
+function parseBool_(value) {
+  if (typeof value === 'boolean') return value;
+  return String(value).trim().toUpperCase() === 'TRUE';
+}
+/**
+ * Shared helpers: sheet<->object mapping, date formatting, UUIDs, and a lock wrapper
+ * for CRUD write safety (LEAVE/RTO/PROJECTS writes race with manual edits + concurrent requests).
+ */
+
+const TIMEZONE = 'Asia/Manila';
+
+/** Reads a sheet's header row (row 1) and maps every data row into an object keyed by header name. */
+function sheetToObjects_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return [];
+
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+
+  return values
+    .filter((row) => row.some((cell) => cell !== '' && cell !== null))
+    .map((row, i) => {
+      const obj = { _row: i + 2 }; // 1-indexed sheet row, for in-place updates
+      headers.forEach((h, colIdx) => { obj[h] = row[colIdx]; });
+      return obj;
+    });
+}
+
+/** Converts an object into a row array matching the sheet's current header order. */
+function objectToSheetRow_(sheet, obj) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  return headers.map((h) => (h in obj ? obj[h] : ''));
+}
+
+function appendObjectToSheet_(sheet, obj) {
+  sheet.appendRow(objectToSheetRow_(sheet, obj));
+}
+
+/** Overwrites an existing row (1-indexed) with the given object's values. */
+function updateSheetRow_(sheet, rowIndex, obj) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const row = headers.map((h) => (h in obj ? obj[h] : sheet.getRange(rowIndex, headers.indexOf(h) + 1).getValue()));
+  sheet.getRange(rowIndex, 1, 1, headers.length).setValues([row]);
+}
+
+function deleteSheetRow_(sheet, rowIndex) {
+  sheet.deleteRow(rowIndex);
+}
+
+/** Runs `fn` under a document lock (max 30s wait) so concurrent writes don't clobber each other. */
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function uuid_() {
+  return Utilities.getUuid();
+}
+
+function nowIso_() {
+  return Utilities.formatDate(new Date(), TIMEZONE, "yyyy-MM-dd'T'HH:mm:ssXXX");
+}
+
+function toIsoDate_(date) {
+  return Utilities.formatDate(date, TIMEZONE, 'yyyy-MM-dd');
+}
+
+/**
+ * Coerces a sheet cell (a Date object, an ISO timestamp string, or a plain 'yyyy-MM-dd')
+ * to a plain 'yyyy-MM-dd' string in Manila time — so date-only fields never leak a time
+ * component or an off-by-one from UTC serialization. Blank stays blank.
+ */
+function toDisplayDate_(value) {
+  if (value === '' || value === null || value === undefined) return '';
+  const d = (value instanceof Date) ? value : new Date(value);
+  return isNaN(d.getTime()) ? String(value) : toIsoDate_(d);
+}
+
+function monthLabel_(date) {
+  return Utilities.formatDate(date, TIMEZONE, 'yyyy-MM');
+}
+
+function quarterLabel_(date) {
+  const q = Math.floor(date.getMonth() / 3) + 1;
+  return `${date.getFullYear()}-Q${q}`;
+}
+
+/** Shared rounding helpers — used by both Aggregation.gs and MetricsApi.gs. */
+function round2_(n) { return Math.round(n * 100) / 100; }
+function round4_(n) { return Math.round(n * 10000) / 10000; }
+
+/**
+ * Best-effort ops email (failures and completion notices) — swallows its own errors so
+ * a broken mail quota never masks the original failure being reported. Set an
+ * ALERT_EMAIL script property to target a distribution list instead of the script owner.
+ */
+function sendAlertEmail_(subject, body) {
+  try {
+    const email = PropertiesService.getScriptProperties().getProperty('ALERT_EMAIL')
+      || Session.getEffectiveUser().getEmail();
+    MailApp.sendEmail(email, `[PlatOpsDashboard] ${subject}`, String(body && body.stack ? body.stack : body));
+  } catch (mailErr) {
+    Logger.log(`sendAlertEmail_ failed to send email: ${mailErr}`);
+  }
+}
+
+function notifyFailure_(subject, err) {
+  sendAlertEmail_(subject, err);
+}
+/**
+ * Thin Jira Cloud REST v3 client: auth, retry-with-backoff, JQL search (paginated),
+ * and changelog fetch (paginated). No sync/business logic lives here — see JiraSync.gs.
+ */
+
+function getJiraAuthHeader_() {
+  const email = getScriptProperty_('JIRA_EMAIL');
+  const token = getScriptProperty_('JIRA_API_TOKEN');
+  return 'Basic ' + Utilities.base64Encode(`${email}:${token}`);
+}
+
+const JIRA_RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
+const JIRA_MAX_RETRIES = 3;
+
+/** UrlFetchApp wrapper with exponential backoff (1s, 2s, 4s) on 429/5xx. Throws on non-retryable errors. */
+function jiraFetchWithRetry_(url, options) {
+  const opts = Object.assign({
+    method: 'get',
+    headers: { Authorization: getJiraAuthHeader_(), Accept: 'application/json' },
+    muteHttpExceptions: true,
+  }, options || {});
+
+  let lastError;
+  for (let attempt = 0; attempt <= JIRA_MAX_RETRIES; attempt++) {
+    let response;
+    try {
+      response = UrlFetchApp.fetch(url, opts);
+    } catch (err) {
+      lastError = err;
+      Utilities.sleep(1000 * Math.pow(2, attempt));
+      continue;
+    }
+
+    const code = response.getResponseCode();
+    if (code >= 200 && code < 300) return JSON.parse(response.getContentText());
+
+    if (JIRA_RETRYABLE_STATUS_CODES.indexOf(code) !== -1 && attempt < JIRA_MAX_RETRIES) {
+      Utilities.sleep(1000 * Math.pow(2, attempt));
+      continue;
+    }
+
+    throw new Error(`Jira request failed (HTTP ${code}): ${response.getContentText().slice(0, 500)}`);
+  }
+  throw new Error(`Jira request failed after ${JIRA_MAX_RETRIES} retries: ${lastError}`);
+}
+
+/**
+ * One page of JQL search results via /rest/api/3/search/jql — the endpoint Atlassian
+ * replaced /rest/api/3/search with (the old one returns HTTP 410 Gone as of their 2025
+ * migration, see CHANGE-2046). Pagination is now token-based, not offset-based:
+ * pass `pageToken` falsy for the first page; the response's `nextPageToken` is empty/
+ * absent on the last page instead of a `total` count (the new endpoint doesn't return
+ * a total at all). Returns { issues, nextPageToken }.
+ */
+function jiraSearchIssues_(jql, pageToken, maxResults, fields) {
+  const base = getScriptProperty_('JIRA_BASE_URL');
+  const payload = {
+    jql: jql,
+    maxResults: maxResults,
+    fields: fields || ['*all'],
+  };
+  if (pageToken) payload.nextPageToken = pageToken;
+
+  const result = jiraFetchWithRetry_(`${base}/rest/api/3/search/jql`, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify(payload),
+  });
+  return { issues: result.issues || [], nextPageToken: result.nextPageToken || '' };
+}
+
+/** Fetches the FULL changelog for one issue, transparently paginating (maxResults=100/page). */
+function jiraGetChangelog_(issueKey) {
+  const base = getScriptProperty_('JIRA_BASE_URL');
+  let startAt = 0;
+  const all = [];
+  while (true) {
+    const page = jiraFetchWithRetry_(
+      `${base}/rest/api/3/issue/${issueKey}/changelog?startAt=${startAt}&maxResults=100`
+    );
+    all.push.apply(all, page.values);
+    startAt += page.values.length;
+    if (startAt >= page.total || page.values.length === 0) break;
+  }
+  return all; // oldest first, per Jira's default changelog ordering
+}
+
+/** The field IDs every team config needs pulled from Jira, deduped, plus always-needed standard fields. */
+function buildJiraFieldList_(teamConfig) {
+  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate'];
+  const custom = [
+    teamConfig.resolved_date_field_id,
+    teamConfig.assignee_field_id,
+    'customfield_10143', // First Contact Resolution
+    'customfield_10146', // Ticket Escalation
+    'customfield_10197', // Product
+    'customfield_11463', // Ticket Holding Reason
+    'customfield_11496', // Ticket Rejection Category
+    'customfield_11285', // Cancellation Reason
+  ];
+  return standard.concat(custom);
+}
+/**
+ * Incremental Jira sync (runs every 2h once a team's backfill is complete).
+ * See Backfill.gs for the one-time historical load that populates SYNC_CHECKPOINT
+ * with `last_full_backfill_completed_at` in the first place.
+ */
+
+const RAW_TICKET_HEADERS = [
+  'issue_key', 'project_key', 'issue_type', 'status', 'created', 'updated',
+  'resolved_datetime', 'resolved_raw_text', 'first_out_of_backlog_todo',
+  'fcr_value', 'escalation_value', 'assigned_se', 'assigned_cod', 'due_date',
+  'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
+  'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
+  'reporter_display_name', 'last_synced_at',
+];
+
+function syncAllTeams() {
+  getActiveTeamsConfig_().forEach((team) => {
+    try {
+      syncTeam_(team);
+    } catch (err) {
+      writeSyncStatus_(team.jira_project_key, {
+        last_sync_status: 'FAILED',
+        last_sync_run_at: nowIso_(),
+        last_sync_error_message: String(err),
+      });
+      notifyFailure_(`syncAllTeams failed for ${team.jira_project_key}`, err);
+    }
+  });
+}
+
+function syncTeam_(team) {
+  const checkpoint = readSyncCheckpoint_(team.jira_project_key);
+  if (!checkpoint.last_full_backfill_completed_at) {
+    Logger.log(`Skipping incremental sync for ${team.jira_project_key}: backfill not complete yet.`);
+    return;
+  }
+
+  const jql = buildJqlIncremental_(team, checkpoint.last_synced_updated_ts);
+  const fields = buildJiraFieldList_(team);
+
+  let pageToken;
+  let maxUpdated = checkpoint.last_synced_updated_ts || '';
+  let count = 0;
+
+  while (true) {
+    const page = jiraSearchIssues_(jql, pageToken, 100, fields);
+    page.issues.forEach((issue) => {
+      processAndUpsertIssue_(team, issue);
+      count++;
+      if (!maxUpdated || issue.fields.updated > maxUpdated) maxUpdated = issue.fields.updated;
+    });
+
+    if (!page.nextPageToken || page.issues.length === 0 || page.nextPageToken === pageToken) break;
+    pageToken = page.nextPageToken;
+  }
+
+  flushDirtyDates_(team.team_key);
+  writeSyncStatus_(team.jira_project_key, {
+    last_synced_updated_ts: maxUpdated,
+    last_sync_status: 'SUCCESS',
+    last_sync_run_at: nowIso_(),
+    last_sync_error_message: '',
+    tickets_synced_last_run: count,
+  });
+}
+
+/** Shared by both incremental sync and backfill (Backfill.gs). */
+function processAndUpsertIssue_(team, issue) {
+  const fields = issue.fields;
+  const resolved = parseResolvedDateField_(team, fields, issue.key);
+  const row = mapIssueToRawRow_(team, issue, resolved);
+
+  if (issueNeedsChangelog_(team, fields, resolved.value)) {
+    const changelog = jiraGetChangelog_(issue.key);
+    row.first_out_of_backlog_todo = extractCycleTimeStart_(changelog, team.backlog_status_names_csv);
+    if (team.has_holding_reason) {
+      const cycles = extractHoldingCyclesWithReasons_(changelog);
+      row.holding_reasons_json = JSON.stringify(cycles.map((c) => c.reason).filter(Boolean));
+      row.total_on_hold_minutes = round2_(cycles.reduce((sum, c) => {
+        return c.exitedAt ? sum + (new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000 : sum;
+      }, 0));
+    }
+    if (team.has_in_progress_tracking) {
+      const inProgressCycles = extractInProgressCycles_(changelog);
+      row.total_in_progress_minutes = round2_(inProgressCycles.reduce((sum, c) => {
+        return c.exitedAt ? sum + (new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000 : sum;
+      }, 0));
+    }
+  }
+
+  upsertRawTicketRow_(team.team_key, row);
+  markDirtyDate_(team.team_key, toIsoDate_(new Date(row.created)));
+  // Also mark the resolved date dirty so the resolved-by-resolved-date trend
+  // (tickets_resolved_on_date in METRICS_DAILY) recomputes for that day — the day a
+  // ticket resolves is usually different from the day it was created.
+  if (row.resolved_datetime) {
+    markDirtyDate_(team.team_key, toIsoDate_(new Date(row.resolved_datetime)));
+  }
+}
+
+function buildJqlIncremental_(team, sinceTs) {
+  return `project = ${team.jira_project_key} AND updated >= "${formatJqlDateTime_(sinceTs)}" ORDER BY updated ASC`;
+}
+
+function formatJqlDateTime_(isoString) {
+  const date = isoString ? new Date(isoString) : new Date(0);
+  return Utilities.formatDate(date, TIMEZONE, 'yyyy/MM/dd HH:mm');
+}
+
+function mapIssueToRawRow_(team, issue, resolved) {
+  const fields = issue.fields;
+  return {
+    issue_key: issue.key,
+    project_key: team.jira_project_key,
+    issue_type: fields.issuetype ? fields.issuetype.name : '',
+    status: fields.status ? fields.status.name : '',
+    created: fields.created,
+    updated: fields.updated,
+    resolved_datetime: resolved.value ? resolved.value.toISOString() : '',
+    resolved_raw_text: resolved.rawText || '',
+    first_out_of_backlog_todo: '',
+    fcr_value: extractJiraFieldValue_(fields.customfield_10143),
+    escalation_value: extractJiraFieldValue_(fields.customfield_10146),
+    assigned_se: team.assignee_field_id === 'customfield_10189' ? extractJiraFieldValue_(fields.customfield_10189) : '',
+    assigned_cod: team.assignee_field_id === 'customfield_10097' ? extractJiraFieldValue_(fields.customfield_10097) : '',
+    due_date: extractJiraFieldValue_(fields.duedate),
+    product: extractJiraFieldValue_(fields.customfield_10197),
+    holding_reasons_json: '[]',
+    rejection_category: extractJiraFieldValue_(fields.customfield_11496),
+    cancellation_reason: extractJiraFieldValue_(fields.customfield_11285),
+    total_on_hold_minutes: 0,
+    total_in_progress_minutes: 0,
+    assignee_display_name: fields.assignee ? fields.assignee.displayName : '',
+    reporter_display_name: fields.reporter ? fields.reporter.displayName : '',
+    last_synced_at: nowIso_(),
+  };
+}
+
+/**
+ * Jira custom fields come back in several shapes depending on field type (select,
+ * multi-select, user picker, plain text). Handles all of them generically rather than
+ * guessing one shape per field — verify against real payloads during Milestone 2 testing.
+ */
+function extractJiraFieldValue_(field) {
+  if (field === null || field === undefined) return '';
+  if (typeof field === 'string' || typeof field === 'number') return field;
+  if (Array.isArray(field)) return field.map(extractJiraFieldValue_).filter(String).join(', ');
+  if (typeof field === 'object') {
+    if ('displayName' in field) return field.displayName;
+    if ('value' in field) return field.value;
+    if ('name' in field) return field.name;
+  }
+  return String(field);
+}
+
+/**
+ * native: Jira returns a full ISO datetime with offset, e.g. "2026-06-05T14:07:58.000+0800" — `new Date()` parses it directly.
+ * text: customfield_11153 is a plain string like "2026-06-05 14:07:58" — `new Date(...)` on that exact format is
+ * unreliable across Apps Script locales, so it's parsed explicitly and constructed in the script's Asia/Manila timezone.
+ */
+function parseResolvedDateField_(team, fields, issueKey) {
+  const raw = fields[team.resolved_date_field_id];
+  if (!raw) return { value: null, rawText: '' };
+
+  if (team.resolved_date_field_type === 'native') {
+    return { value: new Date(raw), rawText: '' };
+  }
+
+  // customfield_11153 is *usually* the plain "YYYY-MM-DD HH:mm:ss" format below, but some
+  // tickets carry a full ISO-8601 datetime with an explicit offset (e.g.
+  // "2026-05-11T15:29:03.000+0000") written by a different automation. ISO strings carry
+  // their own timezone, so new Date() parses them unambiguously — handle them before the
+  // manual space-format parse rather than logging them as unparseable.
+  const str = String(raw);
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(str)) {
+    const isoDate = new Date(str);
+    if (!isNaN(isoDate.getTime())) return { value: isoDate, rawText: '' };
+  }
+
+  const match = str.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) {
+    logSyncError_(team.team_key, issueKey, 'resolved_datetime', raw, 'Unparseable text datetime');
+    return { value: null, rawText: String(raw) };
+  }
+  const y = Number(match[1]), mo = Number(match[2]), d = Number(match[3]);
+  const h = Number(match[4]), mi = Number(match[5]), s = Number(match[6]);
+  return { value: new Date(y, mo - 1, d, h, mi, s), rawText: String(raw) };
+}
+
+/**
+ * DE/DEV always need the changelog to find cycle-time-start (proxied here by has_fcr_escalation=false,
+ * since only ST-shaped teams have that field — see TEAMS_CONFIG). ST only needs it once a ticket has
+ * left Backlog/To Do AND either resolved or currently On Hold, to avoid the expensive changelog call
+ * for tickets still untouched in the backlog.
+ */
+function issueNeedsChangelog_(team, fields, resolvedValue) {
+  if (!team.has_fcr_escalation) return true;
+
+  const status = (fields.status && fields.status.name || '').toLowerCase();
+  const backlogNames = team.backlog_status_names_csv.split(',').map((s) => s.trim().toLowerCase());
+  if (backlogNames.indexOf(status) !== -1) return false;
+
+  if (team.has_holding_reason) return true;
+  if (team.has_in_progress_tracking) return true;
+  return !!resolvedValue || status === 'on hold';
+}
+
+/** First changelog entry where status moved FROM a backlog-ish status TO anything else. */
+function extractCycleTimeStart_(changelog, backlogStatusNamesCsv) {
+  const backlogNames = backlogStatusNamesCsv.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  for (let i = 0; i < changelog.length; i++) {
+    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    if (!statusItem) continue;
+    const from = (statusItem.fromString || '').toLowerCase();
+    const to = (statusItem.toString || '').toLowerCase();
+    if (backlogNames.indexOf(from) !== -1 && backlogNames.indexOf(to) === -1) {
+      return changelog[i].created;
+    }
+  }
+  return '';
+}
+
+/**
+ * Walks the changelog chronologically and returns every On Hold cycle as
+ * { enteredAt, exitedAt, reason }, where `reason` is the value of customfield_11463
+ * at the moment the ticket entered On Hold. Jira batches field changes that happen
+ * simultaneously into one changelog entry, so the reason and status transition appear
+ * together when set via automation — both are processed in the same pass.
+ * Supports tickets that cycle through On Hold multiple times (e.g. PlatOps dependency
+ * → client feedback → L3 dependency).
+ */
+function extractHoldingCyclesWithReasons_(changelog) {
+  let currentReason = null;
+  const cycles = [];
+  let cycleStart = null;
+
+  for (let i = 0; i < changelog.length; i++) {
+    const items = changelog[i].items || [];
+
+    items.forEach((item) => {
+      if (item.field === 'customfield_11463' || item.fieldId === 'customfield_11463') {
+        currentReason = item.toString || null;
+      }
+    });
+
+    const statusItem = items.find((item) => item.field === 'status');
+    if (!statusItem) continue;
+
+    const toStatus = (statusItem.toString || '').toLowerCase();
+    const fromStatus = (statusItem.fromString || '').toLowerCase();
+
+    if (toStatus === 'on hold') {
+      cycleStart = changelog[i].created;
+    } else if (fromStatus === 'on hold' && cycleStart) {
+      cycles.push({ enteredAt: cycleStart, exitedAt: changelog[i].created, reason: currentReason || '' });
+      cycleStart = null;
+    }
+  }
+
+  if (cycleStart) {
+    cycles.push({ enteredAt: cycleStart, exitedAt: null, reason: currentReason || '' });
+  }
+
+  return cycles;
+}
+
+/**
+ * Walks the changelog chronologically and returns every In Progress cycle as
+ * { enteredAt, exitedAt } - mirrors extractHoldingCyclesWithReasons_'s multi-cycle
+ * handling but for "In Progress" and without reason-tracking (not applicable here).
+ * Captures active-effort time even for tickets that bounce back into In Progress
+ * multiple times (e.g. In Progress -> On Hold -> In Progress -> On Hold -> For Checking).
+ */
+function extractInProgressCycles_(changelog) {
+  const cycles = [];
+  let cycleStart = null;
+
+  for (let i = 0; i < changelog.length; i++) {
+    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    if (!statusItem) continue;
+
+    const toStatus = (statusItem.toString || '').toLowerCase();
+    const fromStatus = (statusItem.fromString || '').toLowerCase();
+
+    if (toStatus === 'in progress') {
+      cycleStart = changelog[i].created;
+    } else if (fromStatus === 'in progress' && cycleStart) {
+      cycles.push({ enteredAt: cycleStart, exitedAt: changelog[i].created });
+      cycleStart = null;
+    }
+  }
+
+  if (cycleStart) {
+    cycles.push({ enteredAt: cycleStart, exitedAt: null });
+  }
+
+  return cycles;
+}
+
+function getOrCreateRawTab_(teamKey, year) {
+  const tabName = `RAW_${teamKey}_${year}`;
+  const ss = getJiraDataSpreadsheet_();
+  let sheet = ss.getSheetByName(tabName);
+  if (!sheet) {
+    sheet = ss.insertSheet(tabName);
+    sheet.getRange(1, 1, 1, RAW_TICKET_HEADERS.length).setValues([RAW_TICKET_HEADERS]);
+    sheet.getRange(1, 1, 1, RAW_TICKET_HEADERS.length).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+/** Per-execution cache of issue_key -> row number, so a sync run doesn't re-scan column A per issue (avoids O(n^2)). */
+var _rawIndexCache_ = {};
+
+function getRawTicketIndex_(sheet, tabKey) {
+  if (_rawIndexCache_[tabKey]) return _rawIndexCache_[tabKey];
+  const lastRow = sheet.getLastRow();
+  const map = {};
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, 1).getValues().forEach((r, i) => {
+      if (r[0]) map[r[0]] = i + 2;
+    });
+  }
+  const index = { map: map, nextRow: lastRow + 1 };
+  _rawIndexCache_[tabKey] = index;
+  return index;
+}
+
+function upsertRawTicketRow_(teamKey, row) {
+  const year = new Date(row.created).getFullYear();
+  const tabKey = `${teamKey}_${year}`;
+  const sheet = getOrCreateRawTab_(teamKey, year);
+  const index = getRawTicketIndex_(sheet, tabKey);
+  const existingRow = index.map[row.issue_key];
+
+  if (existingRow) {
+    updateSheetRow_(sheet, existingRow, row);
+  } else {
+    appendObjectToSheet_(sheet, row);
+    index.map[row.issue_key] = index.nextRow;
+    index.nextRow += 1;
+  }
+}
+
+/** Accumulated in memory during a sync run, written once per team via flushDirtyDates_ (avoids a sheet write per issue). */
+var _dirtyDatesCache_ = {};
+
+function markDirtyDate_(teamKey, isoDate) {
+  if (!_dirtyDatesCache_[teamKey]) _dirtyDatesCache_[teamKey] = {};
+  _dirtyDatesCache_[teamKey][isoDate] = true;
+}
+
+function flushDirtyDates_(teamKey) {
+  const pending = _dirtyDatesCache_[teamKey];
+  if (!pending) return;
+  const newDates = Object.keys(pending);
+  if (!newDates.length) return;
+
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('AGG_CHECKPOINT');
+  const rows = sheetToObjects_(sheet);
+  const existing = rows.find((r) => r.team_key === teamKey);
+  const currentDates = existing && existing.dirty_dates_json ? JSON.parse(existing.dirty_dates_json) : [];
+  const merged = Array.from(new Set(currentDates.concat(newDates)));
+
+  if (existing) {
+    updateSheetRow_(sheet, existing._row, { dirty_dates_json: JSON.stringify(merged) });
+  } else {
+    appendObjectToSheet_(sheet, { team_key: teamKey, last_aggregated_at: '', dirty_dates_json: JSON.stringify(merged) });
+  }
+  delete _dirtyDatesCache_[teamKey];
+}
+
+function readSyncCheckpoint_(projectKey) {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('SYNC_CHECKPOINT');
+  const rows = sheetToObjects_(sheet);
+  return rows.find((r) => r.project_key === projectKey) || { project_key: projectKey };
+}
+
+function writeSyncStatus_(projectKey, patch) {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('SYNC_CHECKPOINT');
+  const rows = sheetToObjects_(sheet);
+  const existing = rows.find((r) => r.project_key === projectKey);
+  const record = Object.assign({}, existing, patch, { project_key: projectKey });
+  if (existing) {
+    updateSheetRow_(sheet, existing._row, record);
+  } else {
+    appendObjectToSheet_(sheet, record);
+  }
+}
+
+function logSyncError_(teamKey, issueKey, field, rawValue, message) {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('ERROR_LOG');
+  appendObjectToSheet_(sheet, {
+    timestamp: nowIso_(),
+    team_key: teamKey,
+    issue_key: issueKey,
+    field: field,
+    raw_value: String(rawValue),
+    error_message: message,
+  });
+}
+/**
+ * One-time historical backfill (2 years, per team). A single execution cannot finish
+ * this — Apps Script caps executions at 6 minutes — so this processes ONE JQL page
+ * (100 issues, with changelog fetch for the subset that needs it) per execution, then
+ * reschedules itself via a one-off trigger firing ~1s later, until every active team's
+ * SYNC_CHECKPOINT.last_full_backfill_completed_at is set.
+ *
+ * Run manually from the Apps Script editor (select runInitialBackfill, click Run) once
+ * per team's first-ever setup. Safe to re-run: already-complete teams are skipped.
+ */
+
+// Calendar-aligned, not a rolling window — matches the RAW_<TEAM>_<YEAR> tab sharding
+// (2024/2025/2026) rather than "the last 730 days from whenever this happens to run."
+const BACKFILL_START_DATE = '2024-01-01';
+
+function runInitialBackfill() {
+  const teams = getActiveTeamsConfig_();
+
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    const checkpoint = readSyncCheckpoint_(team.jira_project_key);
+    if (checkpoint.last_full_backfill_completed_at) continue;
+
+    // backfill_cursor holds an opaque nextPageToken string (falsy/empty = first page) —
+    // /rest/api/3/search/jql paginates by token, not numeric offset (see JiraClient.gs).
+    const pageToken = checkpoint.backfill_cursor || undefined;
+    const jql = buildJqlBackfillFull_(team);
+    const fields = buildJiraFieldList_(team);
+
+    let page;
+    try {
+      page = jiraSearchIssues_(jql, pageToken, 100, fields);
+    } catch (err) {
+      notifyFailure_(`runInitialBackfill failed for ${team.jira_project_key}`, err);
+      writeSyncStatus_(team.jira_project_key, {
+        last_sync_status: 'FAILED',
+        last_sync_run_at: nowIso_(),
+        last_sync_error_message: String(err),
+      });
+      // Reschedule anyway — a transient Jira outage shouldn't permanently strand the backfill.
+      scheduleBackfillContinuation_();
+      return;
+    }
+
+    if (page.nextPageToken && page.nextPageToken === pageToken) {
+      // Guards against a reported /rest/api/3/search/jql bug where nextPageToken can
+      // fail to advance (Atlassian community reports of endless identical pages) —
+      // stop and surface it rather than looping forever burning Jira API quota.
+      const message = `Backfill stalled for ${team.jira_project_key}: nextPageToken did not advance past the same page.`;
+      writeSyncStatus_(team.jira_project_key, { last_sync_status: 'FAILED', last_sync_run_at: nowIso_(), last_sync_error_message: message });
+      notifyFailure_(`runInitialBackfill stalled for ${team.jira_project_key}`, message);
+      return; // do not reschedule — needs a human to check the Jira response before retrying
+    }
+
+    for (const issue of page.issues) {
+      try {
+        processAndUpsertIssue_(team, issue);
+      } catch (issueErr) {
+        Logger.log(`processAndUpsertIssue_ failed for ${issue.key}: ${issueErr}`);
+        logSyncError_(team.team_key, issue.key, 'upsert', '', String(issueErr));
+      }
+    }
+    flushDirtyDates_(team.team_key);
+
+    const ticketsSoFar = (Number(checkpoint.tickets_synced_last_run) || 0) + page.issues.length;
+
+    if (page.nextPageToken && page.issues.length > 0) {
+      writeSyncStatus_(team.jira_project_key, {
+        backfill_cursor: page.nextPageToken,
+        last_sync_status: 'IN_PROGRESS',
+        last_sync_run_at: nowIso_(),
+        tickets_synced_last_run: ticketsSoFar,
+      });
+      scheduleBackfillContinuation_();
+      return; // end this execution slice — the continuation trigger resumes it
+    }
+
+    markTeamBackfillComplete_(team.jira_project_key, ticketsSoFar);
+    // Falls through to the next team in this SAME execution if there's one —
+    // small teams (DE/DEV) can finish well within one 6-minute run.
+  }
+
+  deleteBackfillContinuationTrigger_();
+  sendAlertEmail_('Initial backfill complete for all teams', 'All active teams have finished their 2-year historical Jira backfill.');
+}
+
+function buildJqlBackfillFull_(team) {
+  return `project = ${team.jira_project_key} AND created >= "${BACKFILL_START_DATE}" ORDER BY created ASC`;
+}
+
+function markTeamBackfillComplete_(projectKey, ticketsSynced) {
+  const now = nowIso_();
+  writeSyncStatus_(projectKey, {
+    last_full_backfill_completed_at: now,
+    last_synced_updated_ts: now, // incremental sync picks up from here going forward
+    backfill_cursor: '',
+    last_sync_status: 'SUCCESS',
+    last_sync_run_at: now,
+    tickets_synced_last_run: ticketsSynced,
+  });
+}
+
+function scheduleBackfillContinuation_() {
+  deleteBackfillContinuationTrigger_();
+  ScriptApp.newTrigger('runInitialBackfill').timeBased().after(1000).create();
+}
+
+function deleteBackfillContinuationTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runInitialBackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
+ * Targeted re-backfill for ST on-hold holding reasons. Only fetches ST tickets that
+ * have ever been in "On Hold" status (status WAS "On Hold") since the holding-reason
+ * field was introduced, re-extracts all on-hold cycles via changelog, and upserts
+ * holding_reasons_json + total_on_hold_minutes into the existing RAW rows.
+ *
+ * Uses Script Properties (ST_HOLDING_REBACKFILL_CURSOR) for its cursor so it never
+ * touches SYNC_CHECKPOINT or interferes with the regular sync triggers.
+ *
+ * Run once manually. Adjust ST_HOLDING_BACKFILL_SINCE below if the holding-reason
+ * field was introduced on a date other than 2025-01-01.
+ */
+const ST_HOLDING_BACKFILL_SINCE = '2025-01-01';
+const ST_HOLDING_CURSOR_KEY = 'ST_HOLDING_REBACKFILL_CURSOR';
+
+function runStHoldingRebackfill() {
+  const team = getActiveTeamsConfig_().find((t) => t.team_key === 'ST');
+  if (!team) throw new Error('ST team not found in active config — check TEAMS_CONFIG.');
+
+  const props = PropertiesService.getScriptProperties();
+  const pageToken = props.getProperty(ST_HOLDING_CURSOR_KEY) || undefined;
+
+  const jql = `project = ${team.jira_project_key} AND created >= "${ST_HOLDING_BACKFILL_SINCE}" AND status WAS "On Hold" ORDER BY created ASC`;
+  const fields = buildJiraFieldList_(team);
+
+  let page;
+  try {
+    page = jiraSearchIssues_(jql, pageToken, 100, fields);
+  } catch (err) {
+    notifyFailure_('runStHoldingRebackfill: Jira fetch failed', err);
+    deleteStHoldingTrigger_();
+    ScriptApp.newTrigger('runStHoldingRebackfill').timeBased().after(5000).create();
+    return;
+  }
+
+  if (page.nextPageToken && page.nextPageToken === pageToken) {
+    notifyFailure_('runStHoldingRebackfill stalled', 'nextPageToken did not advance — check Jira response.');
+    deleteStHoldingTrigger_();
+    return;
+  }
+
+  for (const issue of page.issues) {
+    try {
+      processAndUpsertIssue_(team, issue);
+    } catch (issueErr) {
+      Logger.log(`runStHoldingRebackfill failed for ${issue.key}: ${issueErr}`);
+      logSyncError_(team.team_key, issue.key, 'holding_rebackfill', '', String(issueErr));
+    }
+  }
+  flushDirtyDates_(team.team_key);
+
+  if (page.nextPageToken && page.issues.length > 0) {
+    props.setProperty(ST_HOLDING_CURSOR_KEY, page.nextPageToken);
+    deleteStHoldingTrigger_();
+    ScriptApp.newTrigger('runStHoldingRebackfill').timeBased().after(1000).create();
+    return;
+  }
+
+  props.deleteProperty(ST_HOLDING_CURSOR_KEY);
+  deleteStHoldingTrigger_();
+  sendAlertEmail_(
+    'ST holding re-backfill complete',
+    `All ST tickets since ${ST_HOLDING_BACKFILL_SINCE} that were ever On Hold have been re-processed with multi-cycle holding data.`
+  );
+}
+
+function deleteStHoldingTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runStHoldingRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
+ * Targeted re-backfill for ST's total_in_progress_minutes (active-effort-time tracking).
+ * Only fetches ST tickets that have ever been In Progress since BACKFILL_START_DATE,
+ * re-extracts all in-progress cycles via changelog, and upserts total_in_progress_minutes
+ * into the existing RAW rows. Run once, after migrateAddInProgressTracking (Setup.gs) and
+ * after has_in_progress_tracking is confirmed TRUE for ST in TEAMS_CONFIG.
+ *
+ * Uses Script Properties (ST_IN_PROGRESS_REBACKFILL_CURSOR) for its cursor so it never
+ * touches SYNC_CHECKPOINT or interferes with the regular sync triggers.
+ */
+const ST_IN_PROGRESS_CURSOR_KEY = 'ST_IN_PROGRESS_REBACKFILL_CURSOR';
+
+function runStInProgressRebackfill() {
+  const team = getActiveTeamsConfig_().find((t) => t.team_key === 'ST');
+  if (!team) throw new Error('ST team not found in active config - check TEAMS_CONFIG.');
+  if (!team.has_in_progress_tracking) {
+    throw new Error('ST.has_in_progress_tracking is not TRUE - run migrateAddInProgressTracking first.');
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  const pageToken = props.getProperty(ST_IN_PROGRESS_CURSOR_KEY) || undefined;
+
+  const jql = `project = ${team.jira_project_key} AND created >= "${BACKFILL_START_DATE}" AND status WAS "In Progress" ORDER BY created ASC`;
+  const fields = buildJiraFieldList_(team);
+
+  let page;
+  try {
+    page = jiraSearchIssues_(jql, pageToken, 100, fields);
+  } catch (err) {
+    notifyFailure_('runStInProgressRebackfill: Jira fetch failed', err);
+    deleteStInProgressTrigger_();
+    ScriptApp.newTrigger('runStInProgressRebackfill').timeBased().after(5000).create();
+    return;
+  }
+
+  if (page.nextPageToken && page.nextPageToken === pageToken) {
+    notifyFailure_('runStInProgressRebackfill stalled', 'nextPageToken did not advance - check Jira response.');
+    deleteStInProgressTrigger_();
+    return;
+  }
+
+  for (const issue of page.issues) {
+    try {
+      processAndUpsertIssue_(team, issue);
+    } catch (issueErr) {
+      Logger.log(`runStInProgressRebackfill failed for ${issue.key}: ${issueErr}`);
+      logSyncError_(team.team_key, issue.key, 'in_progress_rebackfill', '', String(issueErr));
+    }
+  }
+  flushDirtyDates_(team.team_key);
+
+  if (page.nextPageToken && page.issues.length > 0) {
+    props.setProperty(ST_IN_PROGRESS_CURSOR_KEY, page.nextPageToken);
+    deleteStInProgressTrigger_();
+    ScriptApp.newTrigger('runStInProgressRebackfill').timeBased().after(1000).create();
+    return;
+  }
+
+  props.deleteProperty(ST_IN_PROGRESS_CURSOR_KEY);
+  deleteStInProgressTrigger_();
+  sendAlertEmail_(
+    'ST in-progress re-backfill complete',
+    `All ST tickets since ${BACKFILL_START_DATE} that were ever In Progress have been re-processed with total_in_progress_minutes. Run aggregateAllTeams to recompute avg_in_progress_minutes.`
+  );
+}
+
+function deleteStInProgressTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runStInProgressRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
+ * Lightweight re-backfill that corrects the RAW `due_date` column after it was switched from the
+ * wrong custom field to Jira's native `duedate`. Unlike runInitialBackfill it does NOT re-fetch
+ * changelogs or rewrite whole rows — it pulls only `created` + `duedate` per ticket and patches
+ * just the due_date cell in the existing RAW row (one batched column write per year tab per page).
+ *
+ * Self-continuing across executions via per-team Script Property cursors, all active teams. Run
+ * once from the editor. When it finishes, run backfillResolvedOnDate + backfillResolvedInMonth so
+ * Backlog Aging recomputes from the corrected due dates. Safe to re-run (clear the DONE_ props to
+ * force a full redo).
+ */
+const DUEDATE_REBACKFILL_CURSOR_PREFIX = 'DUEDATE_REBACKFILL_CURSOR_';
+const DUEDATE_REBACKFILL_DONE_PREFIX = 'DUEDATE_REBACKFILL_DONE_';
+
+function runDueDateRebackfill() {
+  const props = PropertiesService.getScriptProperties();
+  const teams = getActiveTeamsConfig_();
+
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    if (props.getProperty(DUEDATE_REBACKFILL_DONE_PREFIX + team.team_key)) continue;
+
+    const pageToken = props.getProperty(DUEDATE_REBACKFILL_CURSOR_PREFIX + team.team_key) || undefined;
+    const jql = buildJqlBackfillFull_(team);
+
+    let page;
+    try {
+      page = jiraSearchIssues_(jql, pageToken, 100, ['created', 'duedate']);
+    } catch (err) {
+      notifyFailure_(`runDueDateRebackfill: Jira fetch failed for ${team.jira_project_key}`, err);
+      deleteDueDateRebackfillTrigger_();
+      ScriptApp.newTrigger('runDueDateRebackfill').timeBased().after(5000).create();
+      return;
+    }
+
+    if (page.nextPageToken && page.nextPageToken === pageToken) {
+      notifyFailure_(`runDueDateRebackfill stalled for ${team.jira_project_key}`, 'nextPageToken did not advance — check Jira response.');
+      deleteDueDateRebackfillTrigger_();
+      return;
+    }
+
+    // Group this page's due-date updates by the ticket's created-year (RAW tabs are sharded by it).
+    const updatesByYear = {};
+    page.issues.forEach((issue) => {
+      const created = issue.fields && issue.fields.created;
+      if (!created) return;
+      const year = new Date(created).getFullYear();
+      (updatesByYear[year] = updatesByYear[year] || {})[issue.key] =
+        extractJiraFieldValue_(issue.fields.duedate);
+    });
+    Object.keys(updatesByYear).forEach((year) => applyDueDateUpdates_(team.team_key, year, updatesByYear[year]));
+
+    if (page.nextPageToken && page.issues.length > 0) {
+      props.setProperty(DUEDATE_REBACKFILL_CURSOR_PREFIX + team.team_key, page.nextPageToken);
+      deleteDueDateRebackfillTrigger_();
+      ScriptApp.newTrigger('runDueDateRebackfill').timeBased().after(1000).create();
+      return;
+    }
+
+    props.setProperty(DUEDATE_REBACKFILL_DONE_PREFIX + team.team_key, nowIso_());
+    props.deleteProperty(DUEDATE_REBACKFILL_CURSOR_PREFIX + team.team_key);
+  }
+
+  deleteDueDateRebackfillTrigger_();
+  sendAlertEmail_(
+    'Due-date re-backfill complete',
+    'All active teams have had RAW due_date corrected from Jira native duedate. Now run backfillResolvedOnDate and backfillResolvedInMonth so Backlog Aging recomputes.'
+  );
+}
+
+/** Patches the due_date cell for the given issue keys in one RAW_<team>_<year> tab (single batched write). */
+function applyDueDateUpdates_(teamKey, year, keyToDue) {
+  const sheet = getOrCreateRawTab_(teamKey, year);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const keyCol = headers.indexOf('issue_key');
+  const dueCol = headers.indexOf('due_date');
+  if (keyCol === -1 || dueCol === -1) return;
+
+  const keys = sheet.getRange(2, keyCol + 1, lastRow - 1, 1).getValues();
+  const dues = sheet.getRange(2, dueCol + 1, lastRow - 1, 1).getValues();
+  let changed = false;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i][0];
+    if (k && Object.prototype.hasOwnProperty.call(keyToDue, k)) {
+      dues[i][0] = keyToDue[k];
+      changed = true;
+    }
+  }
+  if (changed) sheet.getRange(2, dueCol + 1, dues.length, 1).setValues(dues);
+}
+
+function deleteDueDateRebackfillTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runDueDateRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+/**
+ * Precomputes METRICS_DAILY and METRICS_BY_ASSIGNEE_MONTHLY from raw ticket rows.
+ * Runs every 2h, ~15min after syncAllTeams. Only touches "dirty" dates (tracked by
+ * JiraSync.gs's markDirtyDate_/flushDirtyDates_), so a run with few changed tickets
+ * stays fast even as raw tabs grow into the tens of thousands of rows.
+ *
+ * The frontend NEVER reads raw ticket tabs directly — only these precomputed tables,
+ * via MetricsApi.gs.
+ */
+
+function aggregateAllTeams() {
+  getActiveTeamsConfig_().forEach((team) => {
+    try {
+      aggregateTeam_(team);
+    } catch (err) {
+      notifyFailure_(`aggregateAllTeams failed for ${team.team_key}`, err);
+    }
+  });
+}
+
+function aggregateTeam_(team) {
+  const agg = readAggCheckpoint_(team.team_key);
+  let remainingDates = agg.dirty_dates_json ? JSON.parse(agg.dirty_dates_json) : [];
+  if (!remainingDates.length) return;
+
+  // Group by year so each RAW_<team>_<year> tab is read at most once per run.
+  const datesByYear = {};
+  remainingDates.forEach((d) => {
+    const year = d.slice(0, 4);
+    (datesByYear[year] = datesByYear[year] || []).push(d);
+  });
+
+  // Complete resolved-by-resolved-date index (issueType -> isoDate -> count) across ALL of the
+  // team's raw years. Needed because a dirty date's resolved count can include older, unchanged
+  // tickets that happened to resolve that day, so an index built from the dirty years alone would
+  // undercount. buildResolvedIndex_ reads only the issue_type + resolved_datetime columns to keep
+  // this cheap; if a team ever grows large enough that this dominates the run, promote it to a
+  // maintained RESOLVED_DAILY table instead.
+  const resolvedIdx = buildResolvedIndex_(team.team_key);
+  const resolvedIndex = resolvedIdx.resolved;
+  const overdueIndex = resolvedIdx.overdue;
+  const fcrYesIndex = resolvedIdx.fcrYes;
+  const escQualifyingIndex = resolvedIdx.escQualifying;
+
+  const affectedMonths = {};
+
+  // Process one year at a time and save the checkpoint after each year. A 6-minute
+  // timeout therefore saves real progress — the next run resumes from the next year
+  // rather than restarting the entire dirty list from scratch.
+  for (const year of Object.keys(datesByYear).sort()) {
+    const sheet = getOrCreateRawTab_(team.team_key, year);
+    const allRows = sheetToObjects_(sheet);
+
+    // Bucket rows by created-date once so each dirty date is a map lookup instead
+    // of a full-array filter — O(rows) total for the year instead of O(dates * rows).
+    const rowsByDate = {};
+    allRows.forEach((r) => {
+      if (!r.created) return;
+      const isoDate = toIsoDate_(new Date(r.created));
+      (rowsByDate[isoDate] = rowsByDate[isoDate] || []).push(r);
+    });
+
+    datesByYear[year].forEach((isoDate) => {
+      const rowsForDate = rowsByDate[isoDate] || [];
+
+      const byIssueType = {};
+      rowsForDate.forEach((r) => {
+        const type = r.issue_type || 'Unspecified';
+        (byIssueType[type] = byIssueType[type] || []).push(r);
+      });
+
+      // Union of issue types created on this date OR resolved on this date — so a date with
+      // resolutions but no creations still produces a row carrying its resolved-on-date count.
+      const types = {};
+      Object.keys(byIssueType).forEach((t) => { types[t] = true; });
+      Object.keys(resolvedIndex).forEach((t) => { if (resolvedIndex[t][isoDate]) types[t] = true; });
+
+      Object.keys(types).forEach((issueType) => {
+        const bucket = computeDailyBucket_(team, byIssueType[issueType] || []);
+        bucket.tickets_resolved_on_date =
+          (resolvedIndex[issueType] && resolvedIndex[issueType][isoDate]) || 0;
+        bucket.overdue_resolved_on_date =
+          (overdueIndex[issueType] && overdueIndex[issueType][isoDate]) || 0;
+        bucket.fcr_yes_resolved_on_date =
+          (fcrYesIndex[issueType] && fcrYesIndex[issueType][isoDate]) || 0;
+        bucket.escalation_qualifying_resolved_on_date =
+          (escQualifyingIndex[issueType] && escQualifyingIndex[issueType][isoDate]) || 0;
+        upsertMetricsDailyRow_(team.team_key, issueType, isoDate, bucket);
+      });
+
+      affectedMonths[isoDate.slice(0, 7)] = true;
+    });
+
+    remainingDates = remainingDates.filter((d) => d.slice(0, 4) !== year);
+    writeAggCheckpoint_(team.team_key, { dirty_dates_json: JSON.stringify(remainingDates) });
+  }
+
+  const resolvedByAssigneeMonth = buildResolvedByAssigneeMonth_(team);
+  Object.keys(affectedMonths).forEach((month) => recomputeAssigneeMonthly_(team, month, resolvedByAssigneeMonth));
+  writeAggCheckpoint_(team.team_key, { last_aggregated_at: nowIso_(), dirty_dates_json: '[]' });
+}
+
+/** Sorted list of years for which a RAW_<team>_<year> tab exists. */
+function listRawYears_(teamKey) {
+  const prefix = `RAW_${teamKey}_`;
+  return getJiraDataSpreadsheet_().getSheets()
+    .map((s) => s.getName())
+    .filter((n) => n.indexOf(prefix) === 0 && /^\d{4}$/.test(n.slice(prefix.length)))
+    .map((n) => n.slice(prefix.length))
+    .sort();
+}
+
+/**
+ * "Real" escalation for the Escalation Rate: the Ticket Escalation field holds something other
+ * than N/A, CA, SE, or blank (case-insensitive, trimmed). CA/SE are non-escalation dispositions,
+ * so they don't count as escalated.
+ */
+function isRealEscalation_(esc) {
+  if (!esc) return false;
+  const v = String(esc).trim().toUpperCase();
+  return v !== '' && v !== 'N/A' && v !== 'CA' && v !== 'SE';
+}
+
+/**
+ * Rows to drop from per-assignee PERFORMANCE metrics only (team scorecards are unaffected): the
+ * Automation for Jira bot always, and Unassigned tickets that only fell into the Unassigned bucket
+ * because they reached a terminal status nobody works — Archived/Rejected on ST-shaped teams
+ * (has_fcr_escalation), Cancelled on DE/DEV. Genuinely-unassigned active tickets are kept.
+ */
+function excludeFromAssigneePerf_(team, assignee, status) {
+  if (assignee === 'Automation for Jira') return true;
+  if (assignee === 'Unassigned') {
+    const s = String(status || '').trim().toLowerCase();
+    const terminal = team.has_fcr_escalation ? ['archived', 'rejected'] : ['cancelled', 'canceled'];
+    return terminal.indexOf(s) !== -1;
+  }
+  return false;
+}
+
+/**
+ * Builds resolved-by-resolved-date counts across every raw year for the team, returning
+ * { resolved: {issueType -> isoDate -> count}, overdue: {issueType -> isoDate -> count} } where
+ * "overdue" = tickets whose resolved_datetime > due_date (both parsed). resolved_datetime is
+ * already normalized to ISO at sync time (parseResolvedDateField_ handles DE/DEV's text field),
+ * so new Date() is safe here. Reads only issue_type, resolved_datetime, and due_date columns.
+ */
+function buildResolvedIndex_(teamKey) {
+  const resolved = {};
+  const overdue = {};
+  const fcrYes = {};
+  const escQualifying = {};
+  listRawYears_(teamKey).forEach((year) => {
+    const sheet = getOrCreateRawTab_(teamKey, year);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const typeCol = headers.indexOf('issue_type');
+    const resolvedCol = headers.indexOf('resolved_datetime');
+    const dueCol = headers.indexOf('due_date');
+    const fcrCol = headers.indexOf('fcr_value');
+    const escCol = headers.indexOf('escalation_value');
+    if (resolvedCol === -1) return;
+
+    const types = sheet.getRange(2, typeCol + 1, lastRow - 1, 1).getValues();
+    const resolvedVals = sheet.getRange(2, resolvedCol + 1, lastRow - 1, 1).getValues();
+    const dueVals = dueCol !== -1 ? sheet.getRange(2, dueCol + 1, lastRow - 1, 1).getValues() : null;
+    const fcrVals = fcrCol !== -1 ? sheet.getRange(2, fcrCol + 1, lastRow - 1, 1).getValues() : null;
+    const escVals = escCol !== -1 ? sheet.getRange(2, escCol + 1, lastRow - 1, 1).getValues() : null;
+    for (let i = 0; i < resolvedVals.length; i++) {
+      const raw = resolvedVals[i][0];
+      if (!raw) continue;
+      const rDate = new Date(raw);
+      const rd = toIsoDate_(rDate);
+      const type = types[i][0] || 'Unspecified';
+      (resolved[type] = resolved[type] || {});
+      resolved[type][rd] = (resolved[type][rd] || 0) + 1;
+      const dueRaw = dueVals ? dueVals[i][0] : null;
+      const dueIso = dueRaw ? toDisplayDate_(dueRaw) : '';
+      // Overdue is a DATE comparison, not datetime. due_date is date-only, so `new Date(dueRaw)`
+      // is midnight of that day; comparing it against the resolved timestamp flags every same-day
+      // resolution as late. rd is already the resolved calendar date (Manila) — overdue only when
+      // the ticket is resolved on a strictly LATER calendar day than its due date.
+      if (dueIso && rd > dueIso) {
+        (overdue[type] = overdue[type] || {});
+        overdue[type][rd] = (overdue[type][rd] || 0) + 1;
+      }
+      // FCR=Yes and "real" escalations, bucketed by RESOLVED date — these back FCR Rate and
+      // Escalation Rate, both taken over tickets resolved in the period (denominator =
+      // tickets_resolved_on_date). fcr_value/escalation_value exist only on FCR/escalation teams;
+      // when the columns are absent these indexes stay empty.
+      if (fcrVals && fcrVals[i][0] === 'Yes') {
+        (fcrYes[type] = fcrYes[type] || {});
+        fcrYes[type][rd] = (fcrYes[type][rd] || 0) + 1;
+      }
+      if (escVals && isRealEscalation_(escVals[i][0])) {
+        (escQualifying[type] = escQualifying[type] || {});
+        escQualifying[type][rd] = (escQualifying[type][rd] || 0) + 1;
+      }
+    }
+  });
+  return { resolved: resolved, overdue: overdue, fcrYes: fcrYes, escQualifying: escQualifying };
+}
+
+/**
+ * One-time backfill of tickets_resolved_on_date across existing METRICS_DAILY history (the
+ * incremental aggregateTeam_ only fills it for dates touched since the feature shipped). Run
+ * once, from the editor, AFTER migrateAddResolvedOnDate. Writes the whole column in a single
+ * batched setValues per run (per-row updates would time out), then appends rows for any
+ * (issue_type, date) that had resolutions but no created-based row yet.
+ */
+function backfillResolvedOnDate() {
+  getActiveTeamsConfig_().forEach((team) => backfillResolvedOnDateForTeam_(team));
+  Logger.log('backfillResolvedOnDate done.');
+}
+
+function backfillResolvedOnDateForTeam_(team) {
+  const idx = buildResolvedIndex_(team.team_key);
+  const resolvedIndex = idx.resolved;
+  const overdueIndex = idx.overdue;
+  const fcrYesIndex = idx.fcrYes;
+  const escQualifyingIndex = idx.escQualifying;
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_DAILY');
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const resolvedColIdx = headers.indexOf('tickets_resolved_on_date');
+  const overdueColIdx = headers.indexOf('overdue_resolved_on_date');
+  const fcrYesColIdx = headers.indexOf('fcr_yes_resolved_on_date');
+  const escColIdx = headers.indexOf('escalation_qualifying_resolved_on_date');
+  if (resolvedColIdx === -1 || overdueColIdx === -1) throw new Error('Run migrateAddResolvedOnDate first — column missing.');
+  if (fcrYesColIdx === -1 || escColIdx === -1) throw new Error('Run migrateAddFcrEscResolvedOnDate first — column missing.');
+  const teamCol = headers.indexOf('team_key');
+  const typeCol = headers.indexOf('issue_type');
+  const dateCol = headers.indexOf('date');
+
+  const seen = {};
+  if (lastRow > 1) {
+    const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    // Preserve other teams' existing values; overwrite this team's with the recomputed counts.
+    const resolvedCol = [];
+    const overdueCol = [];
+    const fcrYesCol = [];
+    const escCol = [];
+    data.forEach((row) => {
+      if (String(row[teamCol]) !== team.team_key) {
+        resolvedCol.push([row[resolvedColIdx]]);
+        overdueCol.push([row[overdueColIdx]]);
+        fcrYesCol.push([row[fcrYesColIdx]]);
+        escCol.push([row[escColIdx]]);
+        return;
+      }
+      const type = row[typeCol];
+      const date = formatDateCell_(row[dateCol]);
+      seen[`${type}|${date}`] = true;
+      resolvedCol.push([(resolvedIndex[type] && resolvedIndex[type][date]) || 0]);
+      overdueCol.push([(overdueIndex[type] && overdueIndex[type][date]) || 0]);
+      fcrYesCol.push([(fcrYesIndex[type] && fcrYesIndex[type][date]) || 0]);
+      escCol.push([(escQualifyingIndex[type] && escQualifyingIndex[type][date]) || 0]);
+    });
+    sheet.getRange(2, resolvedColIdx + 1, resolvedCol.length, 1).setValues(resolvedCol);
+    sheet.getRange(2, overdueColIdx + 1, overdueCol.length, 1).setValues(overdueCol);
+    sheet.getRange(2, fcrYesColIdx + 1, fcrYesCol.length, 1).setValues(fcrYesCol);
+    sheet.getRange(2, escColIdx + 1, escCol.length, 1).setValues(escCol);
+  }
+
+  // Dates that had resolutions but never had a created-based row (e.g. resolved on a day nothing
+  // was created) — create them now so the trend isn't missing those resolutions.
+  Object.keys(resolvedIndex).forEach((type) => {
+    Object.keys(resolvedIndex[type]).forEach((date) => {
+      if (seen[`${type}|${date}`]) return;
+      const bucket = computeDailyBucket_(team, []);
+      bucket.tickets_resolved_on_date = resolvedIndex[type][date];
+      bucket.overdue_resolved_on_date = (overdueIndex[type] && overdueIndex[type][date]) || 0;
+      bucket.fcr_yes_resolved_on_date = (fcrYesIndex[type] && fcrYesIndex[type][date]) || 0;
+      bucket.escalation_qualifying_resolved_on_date = (escQualifyingIndex[type] && escQualifyingIndex[type][date]) || 0;
+      upsertMetricsDailyRow_(team.team_key, type, date, bucket);
+    });
+  });
+  Logger.log(`backfillResolvedOnDate: ${team.team_key} done.`);
+}
+
+/** Business logic for one team+issueType+date bucket — see plan Section 4.4 for the exact formulas. */
+function computeDailyBucket_(team, rows) {
+  let ticketsResolved = 0;
+  let leadTimeSum = 0, leadTimeCount = 0;
+  let cycleTimeSum = 0, cycleTimeCount = 0;
+  let fcrEligible = 0, fcrNotEscalated = 0, escalated = 0;
+  let resolvedAfterDue = 0, totalForAgingDenom = 0;
+  let assignedCount = 0;
+  const holdingReasonCounts = {};
+  const rejectionCategoryCounts = {};
+  const cancellationReasonCounts = {};
+  let onHoldPickupSum = 0, onHoldPickupCount = 0;
+
+  rows.forEach((r) => {
+    const created = r.created ? new Date(r.created) : null;
+    const resolved = r.resolved_datetime ? new Date(r.resolved_datetime) : null;
+    const cycleStart = r.first_out_of_backlog_todo ? new Date(r.first_out_of_backlog_todo) : null;
+    const due = r.due_date ? new Date(r.due_date) : null;
+
+    if (resolved) {
+      ticketsResolved++;
+      if (created) { leadTimeSum += minutesBetween_(created, resolved); leadTimeCount++; }
+      if (cycleStart) { cycleTimeSum += minutesBetween_(cycleStart, resolved); cycleTimeCount++; }
+    }
+
+    if (team.has_fcr_escalation) {
+      const fcr = r.fcr_value;
+      const esc = r.escalation_value;
+      if (fcr && fcr !== 'N/A') {
+        fcrEligible++;
+        if (esc === 'N/A' && fcr === 'Yes') fcrNotEscalated++;
+        if (esc && esc !== 'N/A' && fcr === 'No') escalated++;
+      }
+    }
+
+    if (due) {
+      totalForAgingDenom++;
+      // Date comparison, not datetime — due is date-only (midnight), so a datetime compare counts
+      // same-day resolutions as late.
+      if (resolved && toIsoDate_(resolved) > toDisplayDate_(r.due_date)) resolvedAfterDue++;
+    }
+
+    const assigneeField = team.assignee_field_id === 'customfield_10189' ? r.assigned_se : r.assigned_cod;
+    if (assigneeField) assignedCount++;
+
+    if (team.has_holding_reason && r.holding_reasons_json) {
+      try {
+        JSON.parse(r.holding_reasons_json).forEach((reason) => {
+          if (reason) holdingReasonCounts[reason] = (holdingReasonCounts[reason] || 0) + 1;
+        });
+      } catch (e) {}
+    }
+    if (team.has_rejection_category && r.rejection_category) {
+      rejectionCategoryCounts[r.rejection_category] = (rejectionCategoryCounts[r.rejection_category] || 0) + 1;
+    }
+    if (team.has_cancellation_reason && r.cancellation_reason) {
+      cancellationReasonCounts[r.cancellation_reason] = (cancellationReasonCounts[r.cancellation_reason] || 0) + 1;
+    }
+    if (r.total_on_hold_minutes) {
+      onHoldPickupSum += Number(r.total_on_hold_minutes);
+      onHoldPickupCount++;
+    }
+  });
+
+  return {
+    tickets_created_count: rows.length,
+    tickets_resolved_count: ticketsResolved,
+    lead_time_sum_minutes: leadTimeSum,
+    lead_time_count: leadTimeCount,
+    cycle_time_sum_minutes: cycleTimeSum,
+    cycle_time_count: cycleTimeCount,
+    fcr_eligible_count: fcrEligible,
+    fcr_not_escalated_count: fcrNotEscalated,
+    escalated_count: escalated,
+    resolved_after_due_count: resolvedAfterDue,
+    total_for_aging_denominator: totalForAgingDenom,
+    assigned_count: assignedCount,
+    holding_reason_json: JSON.stringify(holdingReasonCounts),
+    rejection_category_json: JSON.stringify(rejectionCategoryCounts),
+    cancellation_reason_json: JSON.stringify(cancellationReasonCounts),
+    on_hold_pickup_sum_minutes: onHoldPickupSum,
+    on_hold_pickup_count: onHoldPickupCount,
+  };
+}
+
+/**
+ * Full recompute of one team+month (not incremental) — simplest way to avoid double-counting
+ * across dirty-date reruns. Created-based fields (tickets_assigned, tickets_resolved,
+ * lead/cycle time, etc.) are bucketed by created month; tickets_resolved_in_month is bucketed
+ * by RESOLVED month (from resolvedByAssigneeMonth) so the Performance page can show tickets a
+ * person resolved DURING the period, not just those they were created-assigned that month.
+ */
+function recomputeAssigneeMonthly_(team, month, resolvedByAssigneeMonth) {
+  const year = month.slice(0, 4);
+  const sheet = getOrCreateRawTab_(team.team_key, year);
+  const allRows = sheetToObjects_(sheet);
+  const rowsForMonth = allRows.filter((r) => r.created && monthLabel_(new Date(r.created)) === month);
+
+  const byAssignee = {};
+  rowsForMonth.forEach((r) => {
+    const assigneeField = team.assignee_field_id === 'customfield_10189' ? r.assigned_se : r.assigned_cod;
+    const assignee = assigneeField || 'Unassigned';
+    if (excludeFromAssigneePerf_(team, assignee, r.status)) return;
+    (byAssignee[assignee] = byAssignee[assignee] || []).push(r);
+  });
+
+  const resolvedByAssignee = (resolvedByAssigneeMonth && resolvedByAssigneeMonth.resolved) || {};
+  const overdueByAssignee = (resolvedByAssigneeMonth && resolvedByAssigneeMonth.overdue) || {};
+  const fcrYesByAssignee = (resolvedByAssigneeMonth && resolvedByAssigneeMonth.fcrYes) || {};
+  const escQualifyingByAssignee = (resolvedByAssigneeMonth && resolvedByAssigneeMonth.escQualifying) || {};
+
+  // Union with assignees who RESOLVED tickets this month even if none were created-assigned to
+  // them this month, so their resolved-in-period count still shows up.
+  const assignees = {};
+  Object.keys(byAssignee).forEach((a) => { assignees[a] = true; });
+  Object.keys(resolvedByAssignee).forEach((a) => {
+    if (resolvedByAssignee[a][month]) assignees[a] = true;
+  });
+
+  Object.keys(assignees).forEach((assignee) => {
+    const bucket = computeAssigneeMonthlyBucket_(team, byAssignee[assignee] || []);
+    bucket.tickets_resolved_in_month = (resolvedByAssignee[assignee] && resolvedByAssignee[assignee][month]) || 0;
+    bucket.overdue_resolved_in_month = (overdueByAssignee[assignee] && overdueByAssignee[assignee][month]) || 0;
+    bucket.fcr_yes_resolved_in_month = (fcrYesByAssignee[assignee] && fcrYesByAssignee[assignee][month]) || 0;
+    bucket.escalation_qualifying_resolved_in_month = (escQualifyingByAssignee[assignee] && escQualifyingByAssignee[assignee][month]) || 0;
+    upsertAssigneeMonthlyRow_(team.team_key, assignee, month, bucket);
+  });
+}
+
+/**
+ * Builds resolved-by-resolved-month counts per assignee across every raw year for the team,
+ * returning { resolved: {assignee -> month -> count}, overdue: {assignee -> month -> count} }
+ * where overdue = resolved_datetime > due_date. Uses the team's configured assignee column and
+ * reads only the assignee, resolved_datetime, and due_date columns per year.
+ */
+function buildResolvedByAssigneeMonth_(team) {
+  const assigneeHeader = team.assignee_field_id === 'customfield_10189' ? 'assigned_se' : 'assigned_cod';
+  const resolved = {};
+  const overdue = {};
+  const fcrYes = {};
+  const escQualifying = {};
+  listRawYears_(team.team_key).forEach((year) => {
+    const sheet = getOrCreateRawTab_(team.team_key, year);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const aCol = headers.indexOf(assigneeHeader);
+    const rCol = headers.indexOf('resolved_datetime');
+    const dueCol = headers.indexOf('due_date');
+    const fcrCol = headers.indexOf('fcr_value');
+    const escCol = headers.indexOf('escalation_value');
+    const statusCol = headers.indexOf('status');
+    if (rCol === -1 || aCol === -1) return;
+
+    const assignees = sheet.getRange(2, aCol + 1, lastRow - 1, 1).getValues();
+    const resolvedVals = sheet.getRange(2, rCol + 1, lastRow - 1, 1).getValues();
+    const dueVals = dueCol !== -1 ? sheet.getRange(2, dueCol + 1, lastRow - 1, 1).getValues() : null;
+    const fcrVals = fcrCol !== -1 ? sheet.getRange(2, fcrCol + 1, lastRow - 1, 1).getValues() : null;
+    const escVals = escCol !== -1 ? sheet.getRange(2, escCol + 1, lastRow - 1, 1).getValues() : null;
+    const statusVals = statusCol !== -1 ? sheet.getRange(2, statusCol + 1, lastRow - 1, 1).getValues() : null;
+    for (let i = 0; i < resolvedVals.length; i++) {
+      const raw = resolvedVals[i][0];
+      if (!raw) continue;
+      const rDate = new Date(raw);
+      const rd = toIsoDate_(rDate);
+      const month = monthLabel_(rDate);
+      const assignee = assignees[i][0] || 'Unassigned';
+      // Same Performance-only exclusion as recomputeAssigneeMonthly_ so the resolved-in-period
+      // counts and the created-based counts drop the same rows.
+      if (excludeFromAssigneePerf_(team, assignee, statusVals ? statusVals[i][0] : '')) continue;
+      (resolved[assignee] = resolved[assignee] || {});
+      resolved[assignee][month] = (resolved[assignee][month] || 0) + 1;
+      const dueRaw = dueVals ? dueVals[i][0] : null;
+      const dueIso = dueRaw ? toDisplayDate_(dueRaw) : '';
+      // Date comparison, not datetime (see buildResolvedIndex_): overdue only when the ticket is
+      // resolved on a strictly later calendar day than its due date.
+      if (dueIso && rd > dueIso) {
+        (overdue[assignee] = overdue[assignee] || {});
+        overdue[assignee][month] = (overdue[assignee][month] || 0) + 1;
+      }
+      // FCR=Yes and "real" escalations by resolved month — back the per-assignee FCR/Escalation
+      // rates on the Performance page (denominator = tickets_resolved_in_month). See buildResolvedIndex_.
+      if (fcrVals && fcrVals[i][0] === 'Yes') {
+        (fcrYes[assignee] = fcrYes[assignee] || {});
+        fcrYes[assignee][month] = (fcrYes[assignee][month] || 0) + 1;
+      }
+      if (escVals && isRealEscalation_(escVals[i][0])) {
+        (escQualifying[assignee] = escQualifying[assignee] || {});
+        escQualifying[assignee][month] = (escQualifying[assignee][month] || 0) + 1;
+      }
+    }
+  });
+  return { resolved: resolved, overdue: overdue, fcrYes: fcrYes, escQualifying: escQualifying };
+}
+
+/**
+ * One-time backfill of tickets_resolved_in_month across existing METRICS_BY_ASSIGNEE_MONTHLY
+ * (the assignee counterpart of backfillResolvedOnDate). Run once after migrateAddResolvedInMonth.
+ * Batched single-column write, then appends rows for (assignee, month) that resolved but had no
+ * created-based row. Idempotent — safe to re-run.
+ */
+function backfillResolvedInMonth() {
+  getActiveTeamsConfig_().forEach((team) => backfillResolvedInMonthForTeam_(team));
+  Logger.log('backfillResolvedInMonth done.');
+}
+
+function backfillResolvedInMonthForTeam_(team) {
+  const idx = buildResolvedByAssigneeMonth_(team);
+  const resolvedIndex = idx.resolved;
+  const overdueIndex = idx.overdue;
+  const fcrYesIndex = idx.fcrYes;
+  const escQualifyingIndex = idx.escQualifying;
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const resolvedColIdx = headers.indexOf('tickets_resolved_in_month');
+  const overdueColIdx = headers.indexOf('overdue_resolved_in_month');
+  const fcrYesColIdx = headers.indexOf('fcr_yes_resolved_in_month');
+  const escColIdx = headers.indexOf('escalation_qualifying_resolved_in_month');
+  if (resolvedColIdx === -1 || overdueColIdx === -1) throw new Error('Run migrateAddResolvedInMonth first — column missing.');
+  if (fcrYesColIdx === -1 || escColIdx === -1) throw new Error('Run migrateAddFcrEscResolvedInMonth first — column missing.');
+  const teamCol = headers.indexOf('team_key');
+  const assigneeCol = headers.indexOf('assignee_display_name');
+  const monthCol = headers.indexOf('month');
+
+  const seen = {};
+  if (lastRow > 1) {
+    const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    const resolvedCol = [];
+    const overdueCol = [];
+    const fcrYesCol = [];
+    const escCol = [];
+    data.forEach((row) => {
+      if (String(row[teamCol]) !== team.team_key) {
+        resolvedCol.push([row[resolvedColIdx]]);
+        overdueCol.push([row[overdueColIdx]]);
+        fcrYesCol.push([row[fcrYesColIdx]]);
+        escCol.push([row[escColIdx]]);
+        return;
+      }
+      const assignee = row[assigneeCol];
+      const month = formatMonthCell_(row[monthCol]);
+      seen[`${assignee}|${month}`] = true;
+      resolvedCol.push([(resolvedIndex[assignee] && resolvedIndex[assignee][month]) || 0]);
+      overdueCol.push([(overdueIndex[assignee] && overdueIndex[assignee][month]) || 0]);
+      fcrYesCol.push([(fcrYesIndex[assignee] && fcrYesIndex[assignee][month]) || 0]);
+      escCol.push([(escQualifyingIndex[assignee] && escQualifyingIndex[assignee][month]) || 0]);
+    });
+    sheet.getRange(2, resolvedColIdx + 1, resolvedCol.length, 1).setValues(resolvedCol);
+    sheet.getRange(2, overdueColIdx + 1, overdueCol.length, 1).setValues(overdueCol);
+    sheet.getRange(2, fcrYesColIdx + 1, fcrYesCol.length, 1).setValues(fcrYesCol);
+    sheet.getRange(2, escColIdx + 1, escCol.length, 1).setValues(escCol);
+  }
+
+  Object.keys(resolvedIndex).forEach((assignee) => {
+    Object.keys(resolvedIndex[assignee]).forEach((month) => {
+      if (seen[`${assignee}|${month}`]) return;
+      const bucket = computeAssigneeMonthlyBucket_(team, []);
+      bucket.tickets_resolved_in_month = resolvedIndex[assignee][month];
+      bucket.overdue_resolved_in_month = (overdueIndex[assignee] && overdueIndex[assignee][month]) || 0;
+      bucket.fcr_yes_resolved_in_month = (fcrYesIndex[assignee] && fcrYesIndex[assignee][month]) || 0;
+      bucket.escalation_qualifying_resolved_in_month = (escQualifyingIndex[assignee] && escQualifyingIndex[assignee][month]) || 0;
+      upsertAssigneeMonthlyRow_(team.team_key, assignee, month, bucket);
+    });
+  });
+  Logger.log(`backfillResolvedInMonth: ${team.team_key} done.`);
+}
+
+/**
+ * One-time cleanup for the duplicate rows METRICS_BY_ASSIGNEE_MONTHLY accumulated while
+ * getAssigneeMonthlyIndex_ keyed on the raw (Date-parsed) month cell — every aggregation/backfill
+ * run appended instead of updating, inflating per-assignee counts ~Nx. Simple dedup won't do
+ * because recompute-appended and backfill-appended duplicates populate different columns, so this
+ * CLEARS the tab and recomputes every (assignee, month) from raw in one clean pass — each
+ * recomputeAssigneeMonthly_ writes a complete row (created-based + resolved-in-month + FCR/esc).
+ * Run once from the editor AFTER the getAssigneeMonthlyIndex_ fix is deployed. Idempotent (it
+ * always clears first), so re-run if it times out. No separate backfill needed afterward.
+ */
+function rebuildAssigneeMonthly() {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+  _assigneeMonthlyIndexCache_ = null;
+
+  getActiveTeamsConfig_().forEach((team) => {
+    const resolvedByAssigneeMonth = buildResolvedByAssigneeMonth_(team);
+    const months = {};
+    // Every month a ticket was CREATED in (drives the created-based columns)...
+    listRawYears_(team.team_key).forEach((year) => {
+      const raw = getOrCreateRawTab_(team.team_key, year);
+      sheetToObjects_(raw).forEach((r) => {
+        if (r.created) months[monthLabel_(new Date(r.created))] = true;
+      });
+    });
+    // ...plus every month a ticket RESOLVED in, so resolution-only months still get rows.
+    Object.keys(resolvedByAssigneeMonth.resolved).forEach((a) => {
+      Object.keys(resolvedByAssigneeMonth.resolved[a]).forEach((m) => { months[m] = true; });
+    });
+    Object.keys(months).sort().forEach((month) =>
+      recomputeAssigneeMonthly_(team, month, resolvedByAssigneeMonth));
+    Logger.log(`rebuildAssigneeMonthly: ${team.team_key} — ${Object.keys(months).length} months.`);
+  });
+  Logger.log('rebuildAssigneeMonthly done.');
+}
+
+function computeAssigneeMonthlyBucket_(team, rows) {
+  let resolved = 0;
+  let leadTimeSum = 0, leadTimeCount = 0;
+  let cycleTimeSum = 0, cycleTimeCount = 0;
+  let fcrEligible = 0, fcrNotEscalated = 0, escalated = 0;
+  let resolvedAfterDue = 0;
+  let inProgressSum = 0, inProgressCount = 0;
+
+  rows.forEach((r) => {
+    const created = r.created ? new Date(r.created) : null;
+    const resolvedAt = r.resolved_datetime ? new Date(r.resolved_datetime) : null;
+    const cycleStart = r.first_out_of_backlog_todo ? new Date(r.first_out_of_backlog_todo) : null;
+    const due = r.due_date ? new Date(r.due_date) : null;
+
+    if (resolvedAt) {
+      resolved++;
+      if (created) { leadTimeSum += minutesBetween_(created, resolvedAt); leadTimeCount++; }
+      if (cycleStart) { cycleTimeSum += minutesBetween_(cycleStart, resolvedAt); cycleTimeCount++; }
+      // Date comparison, not datetime (see aggregateTeam_) — same-day resolutions are on time.
+      if (due && toIsoDate_(resolvedAt) > toDisplayDate_(r.due_date)) resolvedAfterDue++;
+    }
+
+    if (team.has_fcr_escalation) {
+      const fcr = r.fcr_value;
+      const esc = r.escalation_value;
+      if (fcr && fcr !== 'N/A') {
+        fcrEligible++;
+        if (esc === 'N/A' && fcr === 'Yes') fcrNotEscalated++;
+        if (esc && esc !== 'N/A' && fcr === 'No') escalated++;
+      }
+    }
+
+    if (team.has_in_progress_tracking && r.total_in_progress_minutes) {
+      inProgressSum += Number(r.total_in_progress_minutes);
+      inProgressCount++;
+    }
+  });
+
+  return {
+    tickets_assigned: rows.length,
+    tickets_resolved: resolved,
+    escalated_count: escalated,
+    fcr_eligible_count: fcrEligible,
+    fcr_not_escalated_count: fcrNotEscalated,
+    resolved_after_due_count: resolvedAfterDue,
+    avg_lead_time_minutes: leadTimeCount ? round2_(leadTimeSum / leadTimeCount) : '',
+    avg_cycle_time_minutes: cycleTimeCount ? round2_(cycleTimeSum / cycleTimeCount) : '',
+    avg_in_progress_minutes: inProgressCount ? round2_(inProgressSum / inProgressCount) : '',
+  };
+}
+
+function minutesBetween_(a, b) {
+  return (b.getTime() - a.getTime()) / 60000;
+}
+
+/** team_key|issue_type|date -> row number, built once per execution so repeated upserts don't rescan the sheet. */
+var _metricsDailyIndexCache_ = null;
+
+function getMetricsDailyIndex_() {
+  if (_metricsDailyIndexCache_) return _metricsDailyIndexCache_;
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_DAILY');
+  const lastRow = sheet.getLastRow();
+  const map = {};
+  if (lastRow > 1) {
+    sheet.getRange(2, 1, lastRow - 1, 3).getValues().forEach((row, i) => {
+      map[`${row[0]}|${row[1]}|${formatDateCell_(row[2])}`] = i + 2;
+    });
+  }
+  _metricsDailyIndexCache_ = { sheet: sheet, map: map, nextRow: lastRow + 1 };
+  return _metricsDailyIndexCache_;
+}
+
+function formatDateCell_(value) {
+  return value instanceof Date ? toIsoDate_(value) : String(value);
+}
+
+function upsertMetricsDailyRow_(teamKey, issueType, date, bucket) {
+  const index = getMetricsDailyIndex_();
+  const key = `${teamKey}|${issueType}|${date}`;
+  const record = Object.assign({ team_key: teamKey, issue_type: issueType, date: date }, bucket);
+  const existingRow = index.map[key];
+  if (existingRow) {
+    updateSheetRow_(index.sheet, existingRow, record);
+  } else {
+    appendObjectToSheet_(index.sheet, record);
+    index.map[key] = index.nextRow;
+    index.nextRow += 1;
+  }
+}
+
+var _assigneeMonthlyIndexCache_ = null;
+
+function getAssigneeMonthlyIndex_() {
+  if (_assigneeMonthlyIndexCache_) return _assigneeMonthlyIndexCache_;
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  const lastRow = sheet.getLastRow();
+  const map = {};
+  if (lastRow > 1) {
+    // Normalize the month cell: Sheets auto-parses the 'yyyy-MM' string into a Date on write, so
+    // row[2] reads back as a Date. Without formatMonthCell_ here the key never matches the
+    // 'yyyy-MM' string upsertAssigneeMonthlyRow_ builds, and every run appends a duplicate row
+    // instead of updating (mirrors getMetricsDailyIndex_'s formatDateCell_ on the date cell).
+    sheet.getRange(2, 1, lastRow - 1, 3).getValues().forEach((row, i) => {
+      map[`${row[0]}|${row[1]}|${formatMonthCell_(row[2])}`] = i + 2;
+    });
+  }
+  _assigneeMonthlyIndexCache_ = { sheet: sheet, map: map, nextRow: lastRow + 1 };
+  return _assigneeMonthlyIndexCache_;
+}
+
+function upsertAssigneeMonthlyRow_(teamKey, assignee, month, bucket) {
+  const index = getAssigneeMonthlyIndex_();
+  const key = `${teamKey}|${assignee}|${month}`;
+  const record = Object.assign({ team_key: teamKey, assignee_display_name: assignee, month: month }, bucket);
+  const existingRow = index.map[key];
+  if (existingRow) {
+    updateSheetRow_(index.sheet, existingRow, record);
+  } else {
+    appendObjectToSheet_(index.sheet, record);
+    index.map[key] = index.nextRow;
+    index.nextRow += 1;
+  }
+}
+
+function readAggCheckpoint_(teamKey) {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('AGG_CHECKPOINT');
+  const rows = sheetToObjects_(sheet);
+  return rows.find((r) => r.team_key === teamKey) || { team_key: teamKey, dirty_dates_json: '[]' };
+}
+
+function writeAggCheckpoint_(teamKey, patch) {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('AGG_CHECKPOINT');
+  const rows = sheetToObjects_(sheet);
+  const existing = rows.find((r) => r.team_key === teamKey);
+  const record = Object.assign({}, existing, patch, { team_key: teamKey });
+  if (existing) {
+    updateSheetRow_(sheet, existing._row, record);
+  } else {
+    appendObjectToSheet_(sheet, record);
+  }
+}
+
+/**
+ * Read-only API layer over METRICS_DAILY / METRICS_BY_ASSIGNEE_MONTHLY / INSIGHTS_CACHE.
+ * Rolls precomputed daily buckets up to week/month/quarter/year on request — never
+ * scans raw ticket tabs. Period label formats (kept in lockstep with the Next.js
+ * lib/date-ranges.ts): week "YYYY-Www", month "YYYY-MM", quarter "YYYY-Qn", year "YYYY".
+ */
+
+function getTicketMetrics_(params) {
+  const { startDate, endDate } = resolvePeriodToDateRange_(params.range, params.period, params.start, params.end);
+  const teams = params.team === 'ALL'
+    ? getActiveTeamsConfig_()
+    : getTeamsConfig_().filter((t) => t.team_key === params.team);
+
+  if (!teams.length) throw new Error(`Unknown team: ${params.team}`);
+
+  const rows = [];
+  teams.forEach((team) => {
+    rows.push.apply(rows, getMetricsDailyRowsInRange_(team.team_key, startDate, endDate, params.issueType));
+  });
+
+  return rollupDailyRows_(rows, params.team, params.range, params.period, params.issueType);
+}
+
+function getAssigneeMetrics_(params) {
+  const { startDate, endDate } = resolvePeriodToDateRange_(params.range, params.period, params.start, params.end);
+  const months = monthsInRange_(startDate, endDate);
+
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  const rows = sheetToObjects_(sheet).filter((r) =>
+    r.team_key === params.team && months.indexOf(formatMonthCell_(r.month)) !== -1
+  );
+
+  const byAssignee = {};
+  rows.forEach((r) => {
+    const name = r.assignee_display_name;
+    if (!byAssignee[name]) {
+      byAssignee[name] = {
+        name: name, ticketsAssigned: 0, ticketsResolved: 0, resolvedInPeriod: 0, overdueInPeriod: 0, escalated: 0,
+        fcrEligible: 0, fcrNotEscalated: 0, resolvedAfterDue: 0, fcrYesResolved: 0, escQualifyingResolved: 0,
+        leadTimeWeightedSum: 0, leadTimeWeight: 0, cycleTimeWeightedSum: 0, cycleTimeWeight: 0,
+        inProgressWeightedSum: 0, inProgressWeight: 0,
+      };
+    }
+    const b = byAssignee[name];
+    b.ticketsAssigned += Number(r.tickets_assigned) || 0;
+    b.ticketsResolved += Number(r.tickets_resolved) || 0;
+    b.resolvedInPeriod += Number(r.tickets_resolved_in_month) || 0;
+    b.overdueInPeriod += Number(r.overdue_resolved_in_month) || 0;
+    b.escalated += Number(r.escalated_count) || 0;
+    b.fcrEligible += Number(r.fcr_eligible_count) || 0;
+    b.fcrNotEscalated += Number(r.fcr_not_escalated_count) || 0;
+    b.fcrYesResolved += Number(r.fcr_yes_resolved_in_month) || 0;
+    b.escQualifyingResolved += Number(r.escalation_qualifying_resolved_in_month) || 0;
+    b.resolvedAfterDue += Number(r.resolved_after_due_count) || 0;
+    if (r.avg_lead_time_minutes) {
+      b.leadTimeWeightedSum += Number(r.avg_lead_time_minutes) * (Number(r.tickets_resolved) || 0);
+      b.leadTimeWeight += Number(r.tickets_resolved) || 0;
+    }
+    if (r.avg_cycle_time_minutes) {
+      b.cycleTimeWeightedSum += Number(r.avg_cycle_time_minutes) * (Number(r.tickets_resolved) || 0);
+      b.cycleTimeWeight += Number(r.tickets_resolved) || 0;
+    }
+    // Weighted by tickets_assigned (not tickets_resolved) - in-progress effort accrues
+    // whether or not the ticket has resolved yet, unlike lead/cycle time above.
+    if (r.avg_in_progress_minutes) {
+      b.inProgressWeightedSum += Number(r.avg_in_progress_minutes) * (Number(r.tickets_assigned) || 0);
+      b.inProgressWeight += Number(r.tickets_assigned) || 0;
+    }
+  });
+
+  // backlogAgingRate = overdueInPeriod / resolvedInPeriod — overdue (resolved after due date) ÷
+  // tickets the person resolved during the period, both by resolved date. Matches team-level.
+  const assignees = Object.keys(byAssignee).map((name) => {
+    const b = byAssignee[name];
+    return {
+      name: b.name,
+      ticketsAssigned: b.ticketsAssigned,
+      ticketsResolved: b.ticketsResolved,
+      ticketsResolvedInPeriod: b.resolvedInPeriod,
+      // Same definitions as the team scorecard: FCR=Yes ÷ resolved-in-period; "real" escalations
+      // (not N/A/CA/SE/blank) ÷ resolved-in-period.
+      escalationRate: b.resolvedInPeriod ? round4_(b.escQualifyingResolved / b.resolvedInPeriod) : null,
+      fcrRate: b.resolvedInPeriod ? round4_(b.fcrYesResolved / b.resolvedInPeriod) : null,
+      fcrYesCount: b.fcrYesResolved,
+      escalationCount: b.escQualifyingResolved,
+      backlogAgingRate: b.resolvedInPeriod ? round4_(b.overdueInPeriod / b.resolvedInPeriod) : null,
+      avgLeadTimeMinutes: b.leadTimeWeight ? round2_(b.leadTimeWeightedSum / b.leadTimeWeight) : null,
+      avgCycleTimeMinutes: b.cycleTimeWeight ? round2_(b.cycleTimeWeightedSum / b.cycleTimeWeight) : null,
+      avgInProgressMinutes: b.inProgressWeight ? round2_(b.inProgressWeightedSum / b.inProgressWeight) : null,
+      flags: [], // populated by Insights.gs's detectOutliers_ (Milestone 5)
+    };
+  });
+
+  return { team: params.team, period: params.period, assignees: assignees };
+}
+
+/** Never triggers generation — returns whatever Insights.gs (Milestone 5) last cached, or null before that. */
+function getCachedInsight_(scope) {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('INSIGHTS_CACHE');
+  const rows = sheetToObjects_(sheet).filter((r) => r.scope_key === scope);
+  if (!rows.length) return null;
+
+  rows.sort((a, b) => String(b.generated_at).localeCompare(String(a.generated_at)));
+  const latest = rows[0];
+  return {
+    scope: latest.scope_key,
+    period: latest.period_label,
+    narrative: latest.narrative_text,
+    flags: latest.flags_json ? JSON.parse(latest.flags_json) : [],
+    generatedAt: latest.generated_at,
+    status: latest.generation_status,
+  };
+}
+
+function getMetricsDailyRowsInRange_(teamKey, startDate, endDate, issueType) {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_DAILY');
+  return sheetToObjects_(sheet).filter((r) => {
+    if (r.team_key !== teamKey) return false;
+    const d = formatDateCell_(r.date);
+    if (d < startDate || d > endDate) return false;
+    if (issueType && r.issue_type !== issueType) return false;
+    return true;
+  });
+}
+
+function rollupDailyRows_(rows, team, range, period, issueType) {
+  const totals = {
+    ticketsCreated: 0, ticketsResolved: 0, resolvedInPeriod: 0, overdueResolved: 0,
+    leadTimeSum: 0, leadTimeCount: 0,
+    cycleTimeSum: 0, cycleTimeCount: 0,
+    fcrEligible: 0, fcrNotEscalated: 0, escalated: 0,
+    fcrYesResolved: 0, escQualifyingResolved: 0,
+    resolvedAfterDue: 0, totalForAging: 0,
+    assigned: 0,
+    onHoldPickupSum: 0, onHoldPickupCount: 0,
+  };
+  const holdingReasonTotals = {};
+  const rejectionCategoryTotals = {};
+  const cancellationReasonTotals = {};
+  const byDate = {};
+
+  rows.forEach((r) => {
+    totals.ticketsCreated += Number(r.tickets_created_count) || 0;
+    totals.ticketsResolved += Number(r.tickets_resolved_count) || 0;
+    // Resolved DURING the period (by resolved date) — for the "X resolved" scorecard sublabel
+    // and the Backlog Aging denominator.
+    totals.resolvedInPeriod += Number(r.tickets_resolved_on_date) || 0;
+    totals.overdueResolved += Number(r.overdue_resolved_on_date) || 0;
+    totals.leadTimeSum += Number(r.lead_time_sum_minutes) || 0;
+    totals.leadTimeCount += Number(r.lead_time_count) || 0;
+    totals.cycleTimeSum += Number(r.cycle_time_sum_minutes) || 0;
+    totals.cycleTimeCount += Number(r.cycle_time_count) || 0;
+    totals.fcrEligible += Number(r.fcr_eligible_count) || 0;
+    totals.fcrNotEscalated += Number(r.fcr_not_escalated_count) || 0;
+    totals.escalated += Number(r.escalated_count) || 0;
+    // Resolved-date-bucketed counts backing the redefined FCR/Escalation rates (denominator =
+    // resolvedInPeriod), so they reconcile with the "X resolved" shown on the Ticket Volume card.
+    totals.fcrYesResolved += Number(r.fcr_yes_resolved_on_date) || 0;
+    totals.escQualifyingResolved += Number(r.escalation_qualifying_resolved_on_date) || 0;
+    totals.resolvedAfterDue += Number(r.resolved_after_due_count) || 0;
+    totals.totalForAging += Number(r.total_for_aging_denominator) || 0;
+    totals.assigned += Number(r.assigned_count) || 0;
+    totals.onHoldPickupSum += Number(r.on_hold_pickup_sum_minutes) || 0;
+    totals.onHoldPickupCount += Number(r.on_hold_pickup_count) || 0;
+
+    mergeJsonCounts_(holdingReasonTotals, r.holding_reason_json);
+    mergeJsonCounts_(rejectionCategoryTotals, r.rejection_category_json);
+    mergeJsonCounts_(cancellationReasonTotals, r.cancellation_reason_json);
+
+    const d = formatDateCell_(r.date);
+    if (!byDate[d]) byDate[d] = { created: 0, resolved: 0, leadTimeSum: 0, leadTimeCount: 0 };
+    byDate[d].created += Number(r.tickets_created_count) || 0;
+    // Trend "resolved" is by RESOLVED date (tickets_resolved_on_date), not tickets_resolved_count
+    // — the latter is bucketed by created date, which makes created≈resolved for older periods.
+    byDate[d].resolved += Number(r.tickets_resolved_on_date) || 0;
+    byDate[d].leadTimeSum += Number(r.lead_time_sum_minutes) || 0;
+    byDate[d].leadTimeCount += Number(r.lead_time_count) || 0;
+  });
+
+  // Daily points for week/month; rolled up to monthly for quarter/year so the axis stays readable.
+  const series = buildSeries_(byDate, range === 'year' || range === 'quarter');
+
+  return {
+    team: team, range: range, period: period, issueType: issueType || null,
+    leadTimeAvgMinutes: totals.leadTimeCount ? round2_(totals.leadTimeSum / totals.leadTimeCount) : null,
+    cycleTimeAvgMinutes: totals.cycleTimeCount ? round2_(totals.cycleTimeSum / totals.cycleTimeCount) : null,
+    // FCR Rate = tickets marked FCR=Yes ÷ tickets resolved in the period (escalation no longer
+    // factors in). Escalation Rate = tickets whose Ticket Escalation is not N/A/CA/SE/blank ÷
+    // tickets resolved in the period. Both numerators + the denominator are bucketed by RESOLVED
+    // date, so the counts reconcile with the "X resolved" sublabel on the Ticket Volume card.
+    fcrRate: totals.resolvedInPeriod ? round4_(totals.fcrYesResolved / totals.resolvedInPeriod) : null,
+    escalationRate: totals.resolvedInPeriod ? round4_(totals.escQualifyingResolved / totals.resolvedInPeriod) : null,
+    // Overdue (resolved after due date) ÷ total tickets resolved in the period. Both counts are
+    // bucketed by RESOLVED date (overdue_resolved_on_date / tickets_resolved_on_date), so the
+    // rate reflects the tickets actually closed during the selected period.
+    backlogAgingRate: totals.resolvedInPeriod ? round4_(totals.overdueResolved / totals.resolvedInPeriod) : null,
+    // Raw numerators behind the three rates above — surfaced so the scorecard can show "N of M".
+    overdueCount: totals.overdueResolved,
+    fcrYesCount: totals.fcrYesResolved,
+    escalationCount: totals.escQualifyingResolved,
+    ticketVolume: totals.assigned,
+    ticketsCreated: totals.ticketsCreated,
+    ticketsResolved: totals.ticketsResolved,
+    ticketsResolvedInPeriod: totals.resolvedInPeriod,
+    holdingReasonBreakdown: countsToBreakdown_(holdingReasonTotals, 'reason'),
+    rejectionCategoryBreakdown: countsToBreakdown_(rejectionCategoryTotals, 'category'),
+    cancellationReasonBreakdown: countsToBreakdown_(cancellationReasonTotals, 'reason'),
+    onHoldAvgPickupMinutes: totals.onHoldPickupCount ? round2_(totals.onHoldPickupSum / totals.onHoldPickupCount) : null,
+    series: series,
+  };
+}
+
+/**
+ * Turns the per-date accumulator into the trend series. When `monthly` is true (quarter/year
+ * ranges) daily points are summed into YYYY-MM buckets so the chart isn't 90-365 points wide;
+ * lead-time is re-averaged from the summed minutes/count so the monthly average stays correct.
+ */
+function buildSeries_(byDate, monthly) {
+  if (!monthly) {
+    return Object.keys(byDate).sort().map((d) => ({
+      date: d,
+      created: byDate[d].created,
+      resolved: byDate[d].resolved,
+      leadTimeAvgMinutes: byDate[d].leadTimeCount ? round2_(byDate[d].leadTimeSum / byDate[d].leadTimeCount) : null,
+    }));
+  }
+  const byMonth = {};
+  Object.keys(byDate).forEach((d) => {
+    const m = d.slice(0, 7);
+    if (!byMonth[m]) byMonth[m] = { created: 0, resolved: 0, leadTimeSum: 0, leadTimeCount: 0 };
+    byMonth[m].created += byDate[d].created;
+    byMonth[m].resolved += byDate[d].resolved;
+    byMonth[m].leadTimeSum += byDate[d].leadTimeSum;
+    byMonth[m].leadTimeCount += byDate[d].leadTimeCount;
+  });
+  return Object.keys(byMonth).sort().map((m) => ({
+    date: m,
+    created: byMonth[m].created,
+    resolved: byMonth[m].resolved,
+    leadTimeAvgMinutes: byMonth[m].leadTimeCount ? round2_(byMonth[m].leadTimeSum / byMonth[m].leadTimeCount) : null,
+  }));
+}
+
+function mergeJsonCounts_(target, jsonStr) {
+  if (!jsonStr) return;
+  let obj;
+  try { obj = JSON.parse(jsonStr); } catch (e) { return; }
+  Object.keys(obj).forEach((k) => { target[k] = (target[k] || 0) + obj[k]; });
+}
+
+function countsToBreakdown_(counts, keyName) {
+  return Object.keys(counts)
+    .map((k) => { const item = {}; item[keyName] = k; item.count = counts[k]; return item; })
+    .sort((a, b) => b.count - a.count);
+}
+
+// round2_/round4_ live in Utils.gs — shared with Aggregation.gs.
+
+function resolvePeriodToDateRange_(range, period, startParam, endParam) {
+  if (startParam && endParam) return { startDate: startParam, endDate: endParam };
+
+  if (range === 'week') {
+    const match = String(period).match(/^(\d{4})-W(\d{2})$/);
+    if (!match) throw new Error(`Invalid week period: ${period}`);
+    return isoWeekToDateRange_(Number(match[1]), Number(match[2]));
+  }
+
+  if (range === 'month') {
+    const match = String(period).match(/^(\d{4})-(\d{2})$/);
+    if (!match) throw new Error(`Invalid month period: ${period}`);
+    const year = Number(match[1]), month = Number(match[2]);
+    return {
+      startDate: toIsoDate_(new Date(year, month - 1, 1)),
+      endDate: toIsoDate_(new Date(year, month, 0)),
+    };
+  }
+
+  if (range === 'quarter') {
+    const match = String(period).match(/^(\d{4})-Q([1-4])$/);
+    if (!match) throw new Error(`Invalid quarter period: ${period}`);
+    const year = Number(match[1]), q = Number(match[2]);
+    const startMonth = (q - 1) * 3;
+    return {
+      startDate: toIsoDate_(new Date(year, startMonth, 1)),
+      endDate: toIsoDate_(new Date(year, startMonth + 3, 0)),
+    };
+  }
+
+  if (range === 'year') {
+    const year = Number(period);
+    return { startDate: `${year}-01-01`, endDate: `${year}-12-31` };
+  }
+
+  throw new Error(`Unsupported range: ${range}`);
+}
+
+function isoWeekToDateRange_(year, week) {
+  const jan4 = new Date(year, 0, 4);
+  const jan4Day = (jan4.getDay() + 6) % 7; // Mon=0..Sun=6
+  const week1Monday = new Date(jan4);
+  week1Monday.setDate(jan4.getDate() - jan4Day);
+  const start = new Date(week1Monday);
+  start.setDate(week1Monday.getDate() + (week - 1) * 7);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  return { startDate: toIsoDate_(start), endDate: toIsoDate_(end) };
+}
+
+// Mirrors formatDateCell_ (Aggregation.gs) — Sheets auto-parses "yyyy-MM" strings into
+// real Date values on write, so a plain String(r.month) would never match the "yyyy-MM"
+// labels monthsInRange_ produces.
+function formatMonthCell_(value) {
+  return value instanceof Date ? monthLabel_(value) : String(value);
+}
+
+function monthsInRange_(startDate, endDate) {
+  const months = [];
+  const cursor = new Date(startDate);
+  cursor.setDate(1);
+  const end = new Date(endDate);
+  while (cursor <= end) {
+    const label = monthLabel_(cursor);
+    if (months.indexOf(label) === -1) months.push(label);
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return months;
+}
+/**
+ * Gemini free-tier narrative insights. Runs once daily (see Triggers.gs) — 3 teams +
+ * 1 rollup = 4 calls/day, trivially inside free-tier limits, so no batching tricks needed.
+ * Outlier detection is rule-based (detectOutliers_), not left to the LLM to notice —
+ * the model only writes prose around numbers this script already computed and verified.
+ */
+
+const GEMINI_MODEL = 'gemini-2.0-flash'; // confirm this is still the current free-tier model id before relying on it
+
+function generateInsightsAllTeams() {
+  const teams = getActiveTeamsConfig_();
+  const teamSummaries = [];
+
+  teams.forEach((team) => {
+    try {
+      const summary = generateInsightForScope_(team);
+      teamSummaries.push({ team: team.team_name, metrics: summary });
+    } catch (err) {
+      writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), '', [], 'FAILED', String(err));
+      notifyFailure_(`generateInsightsAllTeams failed for ${team.team_key}`, err);
+    }
+  });
+
+  if (!teamSummaries.length) return;
+
+  try {
+    const result = callGemini_(buildRollupPrompt_(teamSummaries));
+    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), result.narrative, [], 'SUCCESS', '');
+  } catch (err) {
+    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), '', [], 'FAILED', String(err));
+    notifyFailure_('generateInsightsAllTeams rollup failed', err);
+  }
+}
+
+function generateInsightForScope_(team) {
+  const current = getTicketMetrics_({ team: team.team_key, range: 'month', period: currentMonthLabel_() });
+  const previous = getTicketMetrics_({ team: team.team_key, range: 'month', period: previousMonthLabel_() });
+  const currentAssignees = getAssigneeMetrics_({ team: team.team_key, range: 'month', period: currentMonthLabel_() }).assignees;
+  const previousAssignees = getAssigneeMetrics_({ team: team.team_key, range: 'month', period: previousMonthLabel_() }).assignees;
+
+  const outliers = detectOutliers_(team, currentAssignees, previousAssignees);
+  const result = callGemini_(buildGeminiPrompt_(team, current, previous, outliers));
+
+  writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), result.narrative, outliers, 'SUCCESS', '');
+  return current;
+}
+
+/**
+ * Deterministic outlier flags — feeds both the Gemini prompt and flags_json, and is
+ * what the Performance page (Next.js) merges onto assignee rows for review badges.
+ */
+function detectOutliers_(team, currentAssignees, previousAssignees) {
+  if (!currentAssignees.length) return [];
+
+  const activeRoster = getActiveRosterNames_(team.team_key);
+  const prevByName = {};
+  previousAssignees.forEach((a) => { prevByName[a.name] = a; });
+
+  const escalationRates = currentAssignees.map((a) => a.escalationRate).filter((v) => v !== null);
+  const agingRates = currentAssignees.map((a) => a.backlogAgingRate).filter((v) => v !== null);
+  const fcrRates = currentAssignees.map((a) => a.fcrRate).filter((v) => v !== null);
+  const volumes = currentAssignees.map((a) => a.ticketsAssigned);
+
+  const escMean = mean_(escalationRates), escStdev = stdev_(escalationRates);
+  const agingMean = mean_(agingRates), agingStdev = stdev_(agingRates);
+  const fcrMean = mean_(fcrRates);
+  const volumeMedian = median_(volumes);
+
+  const flags = [];
+
+  currentAssignees.forEach((a) => {
+    if (team.has_fcr_escalation && a.escalationRate !== null) {
+      const threshold = escalationRates.length >= 4 ? escMean + escStdev : 0.25;
+      if (a.escalationRate > threshold) {
+        flags.push({
+          employee: a.name, metric: 'escalationRate', severity: 'warning', code: 'HIGH_ESCALATION',
+          detail: `Escalation rate ${pct_(a.escalationRate)} vs team avg ${pct_(escMean)}`,
+        });
+      }
+    }
+
+    if (a.backlogAgingRate !== null) {
+      const threshold = agingRates.length >= 4 ? agingMean + agingStdev : 0.3;
+      const prev = prevByName[a.name];
+      if (a.backlogAgingRate > threshold && prev && prev.backlogAgingRate !== null && prev.backlogAgingRate > threshold) {
+        flags.push({
+          employee: a.name, metric: 'backlogAgingRate', severity: 'warning', code: 'CHRONIC_BACKLOG_AGING',
+          detail: `Backlog aging ${pct_(a.backlogAgingRate)} for 2 consecutive months`,
+        });
+      }
+    }
+
+    if (activeRoster.indexOf(a.name) !== -1 && volumeMedian > 0 && a.ticketsAssigned < volumeMedian * 0.5) {
+      flags.push({
+        employee: a.name, metric: 'ticketsAssigned', severity: 'info', code: 'LOW_TICKET_VOLUME',
+        detail: `Ticket volume ${a.ticketsAssigned} is below 50% of team median (${volumeMedian})`,
+      });
+    }
+
+    if (team.has_fcr_escalation && a.fcrRate !== null && a.fcrRate < fcrMean - 0.15) {
+      flags.push({
+        employee: a.name, metric: 'fcrRate', severity: 'info', code: 'LOW_FCR',
+        detail: `FCR rate ${pct_(a.fcrRate)} below team avg ${pct_(fcrMean)}`,
+      });
+    }
+  });
+
+  return flags;
+}
+
+function getActiveRosterNames_(teamKey) {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('ROSTER');
+  return sheetToObjects_(sheet)
+    .filter((r) => r.team_key === teamKey && String(r.status).trim() === 'Active')
+    .map((r) => r.employee_name);
+}
+
+function mean_(arr) {
+  return arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0;
+}
+
+function stdev_(arr) {
+  if (arr.length < 2) return 0;
+  const m = mean_(arr);
+  return Math.sqrt(arr.reduce((s, v) => s + Math.pow(v - m, 2), 0) / arr.length);
+}
+
+function median_(arr) {
+  if (!arr.length) return 0;
+  const sorted = arr.slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function pct_(n) { return `${(n * 100).toFixed(1)}%`; }
+
+/**
+ * Structured, not free-form: only aggregated numbers go in the prompt (never raw ticket
+ * dumps), both for free-tier token budget and to structurally prevent hallucinated
+ * ticket-level detail.
+ */
+function buildGeminiPrompt_(team, current, previous, outliers) {
+  const data = {
+    team: team.team_name,
+    period: current.period,
+    thisMonth: pickMetricsForPrompt_(current),
+    lastMonth: pickMetricsForPrompt_(previous),
+    flaggedIndividuals: outliers,
+  };
+
+  return [
+    'You are writing a monthly operations summary for an engineering manager preparing an MBR/QBR deck and performance evaluations.',
+    'Use ONLY the numbers in the JSON data below — do not invent or estimate any number not present.',
+    'Write a 3-5 sentence narrative summary comparing this month to last month, in plain prose (no markdown headers).',
+    'If flaggedIndividuals is non-empty, call out each person by name with the specific metric and number that triggered the flag.',
+    'If flaggedIndividuals is empty, do not mention individuals.',
+    '',
+    'DATA:',
+    JSON.stringify(data),
+  ].join('\n');
+}
+
+function buildRollupPrompt_(teamSummaries) {
+  const data = teamSummaries.map((s) => Object.assign({ team: s.team }, pickMetricsForPrompt_(s.metrics)));
+  return [
+    'You are writing a monthly cross-team operations summary for an engineering manager overseeing SE, DBA, and DevOps, preparing an MBR/QBR deck.',
+    'Use ONLY the numbers in the JSON data below — do not invent or estimate any number not present.',
+    'Write a 3-5 sentence narrative comparing the teams and highlighting the most notable trend across the org this month.',
+    '',
+    'DATA:',
+    JSON.stringify(data),
+  ].join('\n');
+}
+
+function pickMetricsForPrompt_(m) {
+  return {
+    ticketVolume: m.ticketVolume,
+    ticketsCreated: m.ticketsCreated,
+    ticketsResolved: m.ticketsResolved,
+    leadTimeAvgMinutes: m.leadTimeAvgMinutes,
+    cycleTimeAvgMinutes: m.cycleTimeAvgMinutes,
+    fcrRate: m.fcrRate,
+    escalationRate: m.escalationRate,
+    backlogAgingRate: m.backlogAgingRate,
+  };
+}
+
+/** Same retry-with-backoff pattern as JiraClient.gs's fetchWithRetry_, applied to the Gemini REST endpoint. */
+function callGemini_(prompt) {
+  const apiKey = getScriptProperty_('GEMINI_API_KEY');
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+    muteHttpExceptions: true,
+  };
+
+  const retryableCodes = [429, 500, 502, 503, 504];
+  let lastErrorMessage;
+
+  for (let attempt = 0; attempt <= 3; attempt++) {
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+
+    if (code >= 200 && code < 300) {
+      const json = JSON.parse(response.getContentText());
+      const candidate = json.candidates && json.candidates[0];
+      const text = candidate && candidate.content && candidate.content.parts
+        ? candidate.content.parts.map((p) => p.text).join('')
+        : '';
+      return { narrative: text.trim() };
+    }
+
+    lastErrorMessage = `Gemini request failed (HTTP ${code}): ${response.getContentText().slice(0, 300)}`;
+    if (retryableCodes.indexOf(code) !== -1 && attempt < 3) {
+      Utilities.sleep(1000 * Math.pow(2, attempt));
+      continue;
+    }
+    break;
+  }
+  throw new Error(lastErrorMessage);
+}
+
+function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, errorMessage) {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('INSIGHTS_CACHE');
+  const rows = sheetToObjects_(sheet);
+  const existing = rows.find((r) => r.scope_key === scopeKey && r.period_label === periodLabel);
+  const record = {
+    scope_key: scopeKey,
+    period_label: periodLabel,
+    narrative_text: narrative || '',
+    flags_json: JSON.stringify(flags || []),
+    generated_at: nowIso_(),
+    model_used: GEMINI_MODEL,
+    prompt_tokens_est: '',
+    generation_status: status,
+    error_message: errorMessage || '',
+  };
+  if (existing) {
+    updateSheetRow_(sheet, existing._row, record);
+  } else {
+    appendObjectToSheet_(sheet, record);
+  }
+}
+
+function currentMonthLabel_() {
+  return monthLabel_(new Date());
+}
+
+function previousMonthLabel_() {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - 1);
+  return monthLabel_(d);
+}
+/**
+ * Web App entry points. Apps Script Web Apps cannot read custom HTTP request headers
+ * (doGet/doPost only expose query params + POST body) — so unlike a normal REST API,
+ * the shared secret travels as an `apiKey` query param, not an `X-Api-Key` header.
+ * The Next.js gas-client.ts appends it to every request URL server-side; it never
+ * reaches the browser.
+ *
+ * Every response is HTTP 200 with a { ok, data } / { ok: false, error } envelope —
+ * Apps Script Web Apps cannot reliably set arbitrary status codes.
+ */
+
+function doGet(e) {
+  return handleRequest_(e, 'GET');
+}
+
+function doPost(e) {
+  return handleRequest_(e, 'POST');
+}
+
+function handleRequest_(e, method) {
+  try {
+    assertConfigured_();
+    const params = (e && e.parameter) || {};
+
+    if (params.apiKey !== getScriptProperty_('API_SHARED_SECRET')) {
+      return jsonResponse_({ ok: false, error: 'Unauthorized' });
+    }
+
+    const route = params.route;
+    const body = parsePostBody_(e);
+
+    switch (route) {
+      case 'teams':
+        return jsonResponse_({ ok: true, data: getActiveTeamsConfig_() });
+
+      case 'roster':
+        return jsonResponse_({ ok: true, data: RosterApi.list(params) });
+
+      case 'leave':
+        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, LeaveApi) });
+
+      case 'rto':
+        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, RtoApi) });
+
+      case 'projects':
+        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, ProjectsApi) });
+
+      case 'metrics':
+        return jsonResponse_({ ok: true, data: getTicketMetrics_(params) });
+
+      case 'assignee-metrics':
+        return jsonResponse_({ ok: true, data: getAssigneeMetrics_(params) });
+
+      case 'insight':
+        return jsonResponse_({ ok: true, data: getCachedInsight_(params.scope) });
+
+      default:
+        return jsonResponse_({ ok: false, error: `Unknown route: ${route}` });
+    }
+  } catch (err) {
+    return jsonResponse_({ ok: false, error: String(err && err.message ? err.message : err) });
+  }
+}
+
+/** GET -> list (via .list(params)); POST -> action=create|update|delete (via matching method). */
+function dispatchCrud_(method, params, body, api) {
+  if (method === 'GET') return api.list(params);
+  if (params.action === 'create') return api.create(body);
+  if (params.action === 'update') return api.update(params.id, body);
+  if (params.action === 'delete') return api.remove(params.id);
+  throw new Error(`Unknown action for POST: ${params.action}`);
+}
+
+function parsePostBody_(e) {
+  if (!e || !e.postData || !e.postData.contents) return {};
+  try {
+    return JSON.parse(e.postData.contents);
+  } catch (err) {
+    throw new Error('Invalid JSON body');
+  }
+}
+
+function jsonResponse_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+/** CRUD for the manager-entered LEAVE tab. No self-serve — writes only ever come from the dashboard's forms. */
+var LeaveApi = {
+  list: function (params) {
+    const sheet = getManagerDataSpreadsheet_().getSheetByName('LEAVE');
+    let rows = sheetToObjects_(sheet);
+    if (params.team) rows = rows.filter((r) => r.team_key === params.team);
+    if (params.employee) rows = rows.filter((r) => r.employee_name === params.employee);
+    if (params.startDate) rows = rows.filter((r) => toIsoDate_(new Date(r.end_date)) >= params.startDate);
+    if (params.endDate) rows = rows.filter((r) => toIsoDate_(new Date(r.start_date)) <= params.endDate);
+    rows = rows
+      .map(stripRowMeta_)
+      .map((r) => {
+        r.start_date = toDisplayDate_(r.start_date);
+        r.end_date = toDisplayDate_(r.end_date);
+        return r;
+      })
+      .sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)));
+    return { records: rows, stats: computeLeaveStats_(rows) };
+  },
+
+  create: function (payload) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('LEAVE');
+      const now = nowIso_();
+      const record = Object.assign({}, payload, {
+        leave_id: uuid_(),
+        status: payload.status || 'Approved',
+        created_at: now,
+        updated_at: now,
+      });
+      appendObjectToSheet_(sheet, record);
+      return stripRowMeta_(record);
+    });
+  },
+
+  update: function (id, payload) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('LEAVE');
+      const rows = sheetToObjects_(sheet);
+      const existing = rows.find((r) => r.leave_id === id);
+      if (!existing) throw new Error(`Leave record not found: ${id}`);
+      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      updateSheetRow_(sheet, existing._row, record);
+      return stripRowMeta_(record);
+    });
+  },
+
+  remove: function (id) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('LEAVE');
+      const rows = sheetToObjects_(sheet);
+      const existing = rows.find((r) => r.leave_id === id);
+      if (!existing) throw new Error(`Leave record not found: ${id}`);
+      deleteSheetRow_(sheet, existing._row);
+      return { leave_id: id, deleted: true };
+    });
+  },
+};
+
+/**
+ * Aggregates a set of leave records (already team/date filtered) into headline totals
+ * plus by-type and by-employee breakdowns, for the Leave Tracker stats panel.
+ */
+function computeLeaveStats_(records) {
+  const byType = {};
+  const byEmployee = {};
+  const employees = {};
+  let totalDays = 0;
+  let halfDayCount = 0;
+
+  records.forEach((r) => {
+    const days = Number(r.num_days) || 0;
+    totalDays += days;
+    if (String(r.half_day_period || '').trim() !== '') halfDayCount += 1;
+
+    const type = String(r.leave_type || 'Other').trim() || 'Other';
+    if (!byType[type]) byType[type] = { type: type, count: 0, days: 0 };
+    byType[type].count += 1;
+    byType[type].days += days;
+
+    const name = String(r.employee_name || '').trim();
+    if (name) {
+      employees[name] = true;
+      if (!byEmployee[name]) byEmployee[name] = { employee: name, count: 0, days: 0 };
+      byEmployee[name].count += 1;
+      byEmployee[name].days += days;
+    }
+  });
+
+  const round = function (b) { return Object.assign(b, { days: round2_(b.days) }); };
+
+  return {
+    totalRecords: records.length,
+    totalDays: round2_(totalDays),
+    employeesOnLeave: Object.keys(employees).length,
+    halfDayCount: halfDayCount,
+    byType: Object.values(byType).map(round).sort((a, b) => b.days - a.days),
+    byEmployee: Object.values(byEmployee).map(round).sort((a, b) => b.days - a.days),
+  };
+}
+
+function stripRowMeta_(obj) {
+  const copy = Object.assign({}, obj);
+  delete copy._row;
+  return copy;
+}
+
+/**
+ * Read-only accessor for the ROSTER tab — the authoritative list of employees per team.
+ * Drives the employee dropdowns in the manager-entered forms (Leave, and reusable elsewhere)
+ * so names are picked from a controlled list rather than free-typed.
+ */
+var RosterApi = {
+  list: function (params) {
+    const sheet = getManagerDataSpreadsheet_().getSheetByName('ROSTER');
+    let rows = sheetToObjects_(sheet);
+    if (params.team) rows = rows.filter((r) => r.team_key === params.team);
+    if (String(params.includeInactive) !== 'true') {
+      rows = rows.filter((r) => String(r.status || '').trim().toLowerCase() !== 'inactive');
+    }
+    return rows
+      .map(stripRowMeta_)
+      .sort((a, b) => String(a.employee_name).localeCompare(String(b.employee_name)));
+  },
+};
+
+/** CRUD for the manager-entered RTO attendance log, plus a computed per-employee compliance summary. */
+var RtoApi = {
+  list: function (params) {
+    const sheet = getManagerDataSpreadsheet_().getSheetByName('RTO');
+    let rows = sheetToObjects_(sheet);
+    if (params.team) rows = rows.filter((r) => r.team_key === params.team);
+    if (params.employee) rows = rows.filter((r) => r.employee_name === params.employee);
+    if (params.startDate) rows = rows.filter((r) => toIsoDate_(new Date(r.date)) >= params.startDate);
+    if (params.endDate) rows = rows.filter((r) => toIsoDate_(new Date(r.date)) <= params.endDate);
+    rows = rows.map(stripRowMeta_).map((r) => {
+      r.date = toDisplayDate_(r.date);
+      return r;
+    });
+
+    if (params.startDate && params.endDate) {
+      return { records: rows, summary: computeRtoSummary_(rows) };
+    }
+    return { records: rows };
+  },
+
+  create: function (payload) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('RTO');
+      const now = nowIso_();
+      const record = Object.assign({}, payload, {
+        rto_id: uuid_(),
+        created_at: now,
+        updated_at: now,
+      });
+      appendObjectToSheet_(sheet, record);
+      return stripRowMeta_(record);
+    });
+  },
+
+  update: function (id, payload) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('RTO');
+      const rows = sheetToObjects_(sheet);
+      const existing = rows.find((r) => r.rto_id === id);
+      if (!existing) throw new Error(`RTO record not found: ${id}`);
+      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      updateSheetRow_(sheet, existing._row, record);
+      return stripRowMeta_(record);
+    });
+  },
+
+  remove: function (id) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('RTO');
+      const rows = sheetToObjects_(sheet);
+      const existing = rows.find((r) => r.rto_id === id);
+      if (!existing) throw new Error(`RTO record not found: ${id}`);
+      deleteSheetRow_(sheet, existing._row);
+      return { rto_id: id, deleted: true };
+    });
+  },
+};
+
+/** {employee -> {daysInOffice, daysRemote, daysAbsent, totalDays, compliancePct}} */
+function computeRtoSummary_(records) {
+  const byEmployee = {};
+  records.forEach((r) => {
+    if (!byEmployee[r.employee_name]) {
+      byEmployee[r.employee_name] = { employee: r.employee_name, daysInOffice: 0, daysRemote: 0, daysAbsent: 0, totalDays: 0 };
+    }
+    const bucket = byEmployee[r.employee_name];
+    bucket.totalDays += 1;
+    if (r.attendance_type === 'In-Office') bucket.daysInOffice += 1;
+    else if (r.attendance_type === 'Remote') bucket.daysRemote += 1;
+    else if (r.attendance_type === 'Absent') bucket.daysAbsent += 1;
+  });
+  return Object.values(byEmployee).map((b) => Object.assign(b, {
+    compliancePct: b.totalDays > 0 ? b.daysInOffice / b.totalDays : 0,
+  }));
+}
+/** CRUD for the manager-entered PROJECTS (Project Tracker) tab. */
+var ProjectsApi = {
+  list: function (params) {
+    const sheet = getManagerDataSpreadsheet_().getSheetByName('PROJECTS');
+    let rows = sheetToObjects_(sheet);
+    if (params.team) rows = rows.filter((r) => r.owning_team === params.team);
+    if (params.status) rows = rows.filter((r) => r.status === params.status);
+    return rows.map(stripRowMeta_);
+  },
+
+  create: function (payload) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('PROJECTS');
+      const now = nowIso_();
+      const record = Object.assign({}, payload, {
+        project_id: uuid_(),
+        status: payload.status || 'Not Started',
+        percent_complete: payload.percent_complete || 0,
+        created_at: now,
+        updated_at: now,
+      });
+      appendObjectToSheet_(sheet, record);
+      return stripRowMeta_(record);
+    });
+  },
+
+  update: function (id, payload) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('PROJECTS');
+      const rows = sheetToObjects_(sheet);
+      const existing = rows.find((r) => r.project_id === id);
+      if (!existing) throw new Error(`Project not found: ${id}`);
+      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      updateSheetRow_(sheet, existing._row, record);
+      return stripRowMeta_(record);
+    });
+  },
+
+  remove: function (id) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('PROJECTS');
+      const rows = sheetToObjects_(sheet);
+      const existing = rows.find((r) => r.project_id === id);
+      if (!existing) throw new Error(`Project not found: ${id}`);
+      deleteSheetRow_(sheet, existing._row);
+      return { project_id: id, deleted: true };
+    });
+  },
+};
+/**
+ * One-time setup: builds every tab, header row, and pre-filled config row in both
+ * spreadsheets. Idempotent — re-running skips tabs that already exist with a header row.
+ *
+ * Run manually from the Apps Script editor (select setupAll, click Run) after setting
+ * SPREADSHEET_ID_JIRA and SPREADSHEET_ID_MANAGER in Script Properties (see README.md).
+ */
+
+function setupAll() {
+  setupJiraDataSpreadsheet_();
+  setupManagerDataSpreadsheet_();
+  Logger.log('Setup complete.');
+}
+
+function setupJiraDataSpreadsheet_() {
+  const ss = SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_JIRA'));
+  const currentYear = new Date().getFullYear();
+
+  // RAW_TICKET_HEADERS lives in JiraSync.gs — shared here so the two never drift apart.
+  ['ST', 'DE', 'DEV'].forEach((team) => {
+    ensureTab_(ss, `RAW_${team}_${currentYear}`, RAW_TICKET_HEADERS);
+  });
+
+  ensureTab_(ss, 'METRICS_DAILY', [
+    'team_key', 'issue_type', 'date', 'tickets_created_count', 'tickets_resolved_count',
+    'tickets_resolved_on_date', 'overdue_resolved_on_date',
+    'fcr_yes_resolved_on_date', 'escalation_qualifying_resolved_on_date',
+    'lead_time_sum_minutes', 'lead_time_count', 'cycle_time_sum_minutes', 'cycle_time_count',
+    'fcr_eligible_count', 'fcr_not_escalated_count', 'escalated_count',
+    'resolved_after_due_count', 'total_for_aging_denominator', 'assigned_count',
+    'holding_reason_json', 'rejection_category_json', 'cancellation_reason_json',
+    'on_hold_pickup_sum_minutes', 'on_hold_pickup_count',
+  ]);
+
+  ensureTab_(ss, 'METRICS_BY_ASSIGNEE_MONTHLY', [
+    'team_key', 'assignee_display_name', 'month', 'tickets_assigned', 'tickets_resolved',
+    'tickets_resolved_in_month', 'overdue_resolved_in_month',
+    'fcr_yes_resolved_in_month', 'escalation_qualifying_resolved_in_month',
+    'escalated_count', 'fcr_eligible_count', 'fcr_not_escalated_count',
+    'resolved_after_due_count', 'avg_lead_time_minutes', 'avg_cycle_time_minutes',
+    'avg_in_progress_minutes',
+  ]);
+
+  const syncCheckpoint = ensureTab_(ss, 'SYNC_CHECKPOINT', [
+    'project_key', 'last_synced_updated_ts', 'last_sync_status', 'last_sync_run_at',
+    'last_sync_error_message', 'last_full_backfill_completed_at', 'tickets_synced_last_run',
+    'backfill_cursor',
+  ]);
+  ensureRowsByKey_(syncCheckpoint, 'project_key', ['ST', 'DE', 'DEV']);
+
+  const aggCheckpoint = ensureTab_(ss, 'AGG_CHECKPOINT', [
+    'team_key', 'last_aggregated_at', 'dirty_dates_json',
+  ]);
+  ensureRowsByKey_(aggCheckpoint, 'team_key', ['ST', 'DE', 'DEV'], { dirty_dates_json: '[]' });
+
+  ensureTab_(ss, 'ERROR_LOG', [
+    'timestamp', 'team_key', 'issue_key', 'field', 'raw_value', 'error_message',
+  ]);
+
+  removeDefaultBlankSheet_(ss);
+}
+
+function setupManagerDataSpreadsheet_() {
+  const ss = SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_MANAGER'));
+
+  const teamsConfig = ensureTab_(ss, 'TEAMS_CONFIG', [
+    'team_key', 'team_name', 'jira_project_key', 'resolved_date_field_type',
+    'resolved_date_field_id', 'assignee_field_id', 'has_fcr_escalation',
+    'has_holding_reason', 'has_rejection_category', 'has_cancellation_reason',
+    'backlog_status_names_csv', 'issue_types_csv', 'color_accent', 'active', 'sort_order',
+    'has_in_progress_tracking',
+  ]);
+  if (teamsConfig.getLastRow() < 2) {
+    teamsConfig.getRange(2, 1, 3, 16).setValues([
+      ['ST', 'Support Experts (SE)', 'ST', 'native', 'customfield_10188', 'customfield_10189',
+        true, true, true, false, 'Backlog,To Do', '', '#18A558', true, 1, true],
+      ['DE', 'DBA', 'DE', 'text', 'customfield_11153', 'customfield_10097',
+        false, false, false, true, 'Backlog,To Do', '', '#18A558', true, 2, false],
+      ['DEV', 'DevOps', 'DEV', 'text', 'customfield_11153', 'customfield_10097',
+        false, false, false, true, 'Backlog,To Do', '', '#18A558', true, 3, false],
+    ]);
+  }
+
+  ensureTab_(ss, 'ROSTER', [
+    'employee_name', 'team_key', 'role_title', 'status', 'start_date', 'jira_display_name_alias',
+  ]);
+
+  ensureTab_(ss, 'LEAVE', [
+    'leave_id', 'employee_name', 'team_key', 'leave_type', 'start_date', 'end_date',
+    'num_days', 'half_day_period', 'status', 'notes', 'created_by', 'created_at', 'updated_at',
+  ]);
+
+  ensureTab_(ss, 'RTO', [
+    'rto_id', 'employee_name', 'team_key', 'date', 'attendance_type', 'notes',
+    'created_by', 'created_at', 'updated_at',
+  ]);
+
+  ensureTab_(ss, 'PROJECTS', [
+    'project_id', 'project_name', 'owning_team', 'owner', 'status', 'start_date',
+    'target_date', 'percent_complete', 'notes', 'created_by', 'created_at', 'updated_at',
+  ]);
+
+  ensureTab_(ss, 'INSIGHTS_CACHE', [
+    'scope_key', 'period_label', 'narrative_text', 'flags_json', 'generated_at',
+    'model_used', 'prompt_tokens_est', 'generation_status', 'error_message',
+  ]);
+
+  ensureTab_(ss, 'APP_CONFIG', ['key', 'value', 'updated_at']);
+
+  removeDefaultBlankSheet_(ss);
+}
+
+/**
+ * One-time migration: renames the old single-cycle on-hold columns to the new multi-cycle
+ * equivalents in every existing RAW tab. Run once from the Apps Script editor after
+ * deploying the updated JiraSync.gs. Safe to re-run — skips tabs already on new headers.
+ *
+ *   holding_reason      → holding_reasons_json   (JSON array of all reasons across all cycles)
+ *   on_hold_entered_at  → total_on_hold_minutes   (sum of all on-hold durations)
+ *   on_hold_exited_at   → _deprecated             (no longer used; column left in place)
+ */
+function migrateRawHoldingColumns() {
+  const ss = SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_JIRA'));
+  const teams = getTeamsConfig_();
+  const years = ['2024', '2025', '2026'];
+  const RENAME = {
+    'holding_reason': 'holding_reasons_json',
+    'on_hold_entered_at': 'total_on_hold_minutes',
+    'on_hold_exited_at': '_deprecated',
+  };
+
+  teams.forEach((team) => {
+    years.forEach((year) => {
+      const tabName = `RAW_${team.team_key}_${year}`;
+      const sheet = ss.getSheetByName(tabName);
+      if (!sheet || sheet.getLastColumn() === 0) return;
+
+      const headerRange = sheet.getRange(1, 1, 1, sheet.getLastColumn());
+      const headers = headerRange.getValues()[0];
+      let changed = false;
+
+      const newHeaders = headers.map((h) => {
+        if (h in RENAME) { changed = true; return RENAME[h]; }
+        return h;
+      });
+
+      if (changed) {
+        headerRange.setValues([newHeaders]);
+        Logger.log(`Migrated: ${tabName}`);
+      } else {
+        Logger.log(`Already up to date: ${tabName}`);
+      }
+    });
+  });
+
+  Logger.log('migrateRawHoldingColumns_ done.');
+}
+
+/**
+ * One-time migration for already-provisioned spreadsheets (setupAll only adds columns to
+ * brand-new sheets): appends the new in-progress-tracking columns used by ST's active-
+ * effort-time feature. Safe to re-run - skips any column that's already present.
+ *
+ *   TEAMS_CONFIG                 + has_in_progress_tracking (TRUE for ST, FALSE elsewhere)
+ *   RAW_<team>_<year>            + total_in_progress_minutes
+ *   METRICS_BY_ASSIGNEE_MONTHLY  + avg_in_progress_minutes
+ *
+ * Existing RAW rows are left blank in the new column until their next sync - run
+ * runStInProgressRebackfill (Backfill.gs) afterward to populate ST's history.
+ */
+function migrateAddInProgressTracking() {
+  const jiraSs = SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_JIRA'));
+  const managerSs = SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_MANAGER'));
+
+  const teamsConfig = managerSs.getSheetByName('TEAMS_CONFIG');
+  if (teamsConfig) {
+    const added = appendColumnIfMissing_(teamsConfig, 'has_in_progress_tracking');
+    if (added) {
+      const headers = teamsConfig.getRange(1, 1, 1, teamsConfig.getLastColumn()).getValues()[0];
+      const teamKeyCol = headers.indexOf('team_key') + 1;
+      const newCol = headers.indexOf('has_in_progress_tracking') + 1;
+      const lastRow = teamsConfig.getLastRow();
+      if (lastRow > 1) {
+        const teamKeys = teamsConfig.getRange(2, teamKeyCol, lastRow - 1, 1).getValues().flat();
+        const values = teamKeys.map((k) => [String(k).trim() === 'ST']);
+        teamsConfig.getRange(2, newCol, values.length, 1).setValues(values);
+      }
+      Logger.log('TEAMS_CONFIG: added has_in_progress_tracking.');
+    }
+  }
+
+  ['ST', 'DE', 'DEV'].forEach((team) => {
+    ['2024', '2025', '2026'].forEach((year) => {
+      const sheet = jiraSs.getSheetByName(`RAW_${team}_${year}`);
+      if (!sheet || sheet.getLastColumn() === 0) return;
+      if (appendColumnIfMissing_(sheet, 'total_in_progress_minutes')) {
+        Logger.log(`RAW_${team}_${year}: added total_in_progress_minutes.`);
+      }
+    });
+  });
+
+  const assigneeMonthly = jiraSs.getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  if (assigneeMonthly && appendColumnIfMissing_(assigneeMonthly, 'avg_in_progress_minutes')) {
+    Logger.log('METRICS_BY_ASSIGNEE_MONTHLY: added avg_in_progress_minutes.');
+  }
+
+  Logger.log('migrateAddInProgressTracking done.');
+}
+
+/**
+ * One-time migration: adds `tickets_resolved_on_date` to an existing METRICS_DAILY tab
+ * (setupAll only adds it to brand-new sheets). This column holds tickets whose RESOLVED
+ * date equals the row's date — the basis for the resolved-by-resolved-date trend line,
+ * as opposed to `tickets_resolved_count` which counts by created date. After running this,
+ * run backfillResolvedOnDate (Aggregation.gs) once to populate it for existing history.
+ * Safe to re-run — skips if the column is already present.
+ */
+function migrateAddResolvedOnDate() {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_DAILY');
+  if (!sheet) { Logger.log('METRICS_DAILY not found.'); return; }
+  ['tickets_resolved_on_date', 'overdue_resolved_on_date'].forEach((col) => {
+    if (appendColumnIfMissing_(sheet, col)) {
+      Logger.log(`METRICS_DAILY: added ${col}.`);
+    } else {
+      Logger.log(`METRICS_DAILY: ${col} already present.`);
+    }
+  });
+}
+
+/**
+ * One-time migration: adds `tickets_resolved_in_month` to an existing METRICS_BY_ASSIGNEE_MONTHLY
+ * tab — the assignee counterpart of tickets_resolved_on_date, counting tickets a person resolved
+ * DURING the month (by resolved date). After running this, run backfillResolvedInMonth
+ * (Aggregation.gs) once. Safe to re-run.
+ */
+function migrateAddResolvedInMonth() {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  if (!sheet) { Logger.log('METRICS_BY_ASSIGNEE_MONTHLY not found.'); return; }
+  ['tickets_resolved_in_month', 'overdue_resolved_in_month'].forEach((col) => {
+    if (appendColumnIfMissing_(sheet, col)) {
+      Logger.log(`METRICS_BY_ASSIGNEE_MONTHLY: added ${col}.`);
+    } else {
+      Logger.log(`METRICS_BY_ASSIGNEE_MONTHLY: ${col} already present.`);
+    }
+  });
+}
+
+/**
+ * One-time migration: adds the resolved-date-bucketed FCR=Yes and "real escalation" counts to an
+ * existing METRICS_DAILY tab. These back the redefined FCR Rate (FCR=Yes ÷ resolved in period) and
+ * Escalation Rate (escalation not in {N/A,CA,SE,blank} ÷ resolved in period). After running this,
+ * run backfillResolvedOnDate (Aggregation.gs) to populate them for existing history. Safe to re-run.
+ */
+function migrateAddFcrEscResolvedOnDate() {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_DAILY');
+  if (!sheet) { Logger.log('METRICS_DAILY not found.'); return; }
+  ['fcr_yes_resolved_on_date', 'escalation_qualifying_resolved_on_date'].forEach((col) => {
+    if (appendColumnIfMissing_(sheet, col)) {
+      Logger.log(`METRICS_DAILY: added ${col}.`);
+    } else {
+      Logger.log(`METRICS_DAILY: ${col} already present.`);
+    }
+  });
+}
+
+/**
+ * One-time migration: adds the per-assignee resolved-month FCR=Yes and "real escalation" counts to
+ * METRICS_BY_ASSIGNEE_MONTHLY — the assignee counterpart of migrateAddFcrEscResolvedOnDate, backing
+ * the Performance page per-assignee FCR/Escalation rates. After running this, run
+ * backfillResolvedInMonth (Aggregation.gs). Safe to re-run.
+ */
+function migrateAddFcrEscResolvedInMonth() {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  if (!sheet) { Logger.log('METRICS_BY_ASSIGNEE_MONTHLY not found.'); return; }
+  ['fcr_yes_resolved_in_month', 'escalation_qualifying_resolved_in_month'].forEach((col) => {
+    if (appendColumnIfMissing_(sheet, col)) {
+      Logger.log(`METRICS_BY_ASSIGNEE_MONTHLY: added ${col}.`);
+    } else {
+      Logger.log(`METRICS_BY_ASSIGNEE_MONTHLY: ${col} already present.`);
+    }
+  });
+}
+
+/**
+ * One-time migration: adds `half_day_period` to an existing LEAVE tab (setupAll only adds it
+ * to brand-new sheets). This column records which half a half-day leave falls on
+ * ('First Half' / 'Second Half'); it's blank for full-day leaves. Safe to re-run.
+ */
+function migrateAddLeaveHalfDay() {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('LEAVE');
+  if (!sheet) { Logger.log('LEAVE not found.'); return; }
+  if (appendColumnIfMissing_(sheet, 'half_day_period')) {
+    Logger.log('LEAVE: added half_day_period.');
+  } else {
+    Logger.log('LEAVE: half_day_period already present.');
+  }
+}
+
+/** Appends `headerName` as a new last column if the sheet doesn't already have it. Returns true if added. */
+function appendColumnIfMissing_(sheet, headerName) {
+  const lastCol = sheet.getLastColumn();
+  const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  if (headers.indexOf(headerName) !== -1) return false;
+
+  const col = lastCol + 1;
+  sheet.getRange(1, col).setValue(headerName).setFontWeight('bold');
+  return true;
+}
+
+/** Creates the tab with a bold, frozen header row if it doesn't already exist. Returns the Sheet. */
+function ensureTab_(spreadsheet, tabName, headers) {
+  let sheet = spreadsheet.getSheetByName(tabName);
+  if (sheet) return sheet;
+
+  sheet = spreadsheet.insertSheet(tabName);
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+  sheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  sheet.autoResizeColumns(1, headers.length);
+  return sheet;
+}
+
+/** Appends one row per key in `keys` (matched against `keyColumn`) if not already present. */
+function ensureRowsByKey_(sheet, keyColumn, keys, extraDefaults) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const keyIdx = headers.indexOf(keyColumn);
+  const existing = sheet.getLastRow() > 1
+    ? sheet.getRange(2, keyIdx + 1, sheet.getLastRow() - 1, 1).getValues().flat()
+    : [];
+
+  keys.filter((k) => existing.indexOf(k) === -1).forEach((k) => {
+    const row = headers.map((h) => {
+      if (h === keyColumn) return k;
+      if (extraDefaults && h in extraDefaults) return extraDefaults[h];
+      return '';
+    });
+    sheet.appendRow(row);
+  });
+}
+
+/** New spreadsheets start with a blank "Sheet1" — remove it once real tabs exist. */
+function removeDefaultBlankSheet_(spreadsheet) {
+  const sheet = spreadsheet.getSheetByName('Sheet1');
+  if (sheet && spreadsheet.getSheets().length > 1) {
+    spreadsheet.deleteSheet(sheet);
+  }
+}
+
+/**
+ * Installs the recurring time-driven triggers. Idempotent — clears any existing
+ * triggers for these functions first, so re-running never creates duplicates.
+ * Run manually from the Apps Script editor once, after Milestones 1-5 are all deployed
+ * and at least one backfill (Backfill.gs) has completed for every active team.
+ */
+
+function installTriggers() {
+  ['syncAllTeams', 'aggregateAllTeams', 'generateInsightsAllTeams'].forEach(deleteTriggersFor_);
+
+  ScriptApp.newTrigger('syncAllTeams').timeBased().everyHours(2).create();
+
+  // A short gap before installing the aggregation trigger so it tends to fire a couple
+  // minutes after sync, not concurrently — not required for correctness (aggregation is
+  // idempotent and only processes whatever dirty dates exist), just nicer latency.
+  Utilities.sleep(2 * 60 * 1000);
+  ScriptApp.newTrigger('aggregateAllTeams').timeBased().everyHours(2).create();
+
+  ScriptApp.newTrigger('generateInsightsAllTeams').timeBased().everyDays(1).atHour(6).nearMinute(0).create();
+
+  Logger.log('Triggers installed: syncAllTeams (2h), aggregateAllTeams (2h, staggered), generateInsightsAllTeams (daily ~6am Asia/Manila).');
+}
+
+function deleteTriggersFor_(functionName) {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === functionName)
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}

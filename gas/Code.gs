@@ -33,6 +33,9 @@ function handleRequest_(e, method) {
       case 'teams':
         return jsonResponse_({ ok: true, data: getActiveTeamsConfig_() });
 
+      case 'roster':
+        return jsonResponse_({ ok: true, data: RosterApi.list(params) });
+
       case 'leave':
         return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, LeaveApi) });
 

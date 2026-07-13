@@ -6,10 +6,10 @@ import { RangeType, defaultPeriodForRange, formatPeriodLabel, shiftPeriod } from
 import { cn } from "@/lib/utils";
 
 const RANGE_OPTIONS: { value: RangeType; label: string }[] = [
-  { value: "week", label: "Week" },
-  { value: "month", label: "Month" },
-  { value: "quarter", label: "Quarter" },
   { value: "year", label: "Year" },
+  { value: "quarter", label: "Quarter" },
+  { value: "month", label: "Month" },
+  { value: "week", label: "Week" },
 ];
 
 export function FilterBar({ issueTypes = [] as string[] }: { issueTypes?: string[] }) {

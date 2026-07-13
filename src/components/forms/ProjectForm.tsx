@@ -6,6 +6,7 @@ import { z } from "zod";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { TeamConfig } from "@/lib/teams";
+import { teamLabel } from "@/lib/utils";
 
 const schema = z.object({
   project_name: z.string().min(1, "Required"),
@@ -51,7 +52,7 @@ export function ProjectForm({ teams }: { teams: TeamConfig[] }) {
         <label className="form-label">Owning Team</label>
         <select {...register("owning_team")} className="form-input">
           <option value="">Select…</option>
-          {teams.map((t) => <option key={t.team_key} value={t.team_key}>{t.team_name}</option>)}
+          {teams.map((t) => <option key={t.team_key} value={t.team_key}>{teamLabel(t.team_name)}</option>)}
         </select>
         {errors.owning_team && <p className="form-error">{errors.owning_team.message}</p>}
       </div>

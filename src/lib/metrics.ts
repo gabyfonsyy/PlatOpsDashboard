@@ -10,9 +10,13 @@ export type TicketMetrics = {
   fcrRate: number | null;
   escalationRate: number | null;
   backlogAgingRate: number | null;
+  overdueCount: number;
+  fcrYesCount: number;
+  escalationCount: number;
   ticketVolume: number;
   ticketsCreated: number;
   ticketsResolved: number;
+  ticketsResolvedInPeriod: number;
   holdingReasonBreakdown: { reason: string; count: number }[];
   rejectionCategoryBreakdown: { category: string; count: number }[];
   cancellationReasonBreakdown: { reason: string; count: number }[];
@@ -24,8 +28,11 @@ export type AssigneeMetric = {
   name: string;
   ticketsAssigned: number;
   ticketsResolved: number;
+  ticketsResolvedInPeriod: number;
   escalationRate: number | null;
   fcrRate: number | null;
+  fcrYesCount: number;
+  escalationCount: number;
   backlogAgingRate: number | null;
   avgLeadTimeMinutes: number | null;
   avgCycleTimeMinutes: number | null;
@@ -46,8 +53,9 @@ export type CachedInsight = {
 const EMPTY_METRICS: TicketMetrics = {
   team: "", range: "month", period: "", issueType: null,
   leadTimeAvgMinutes: null, cycleTimeAvgMinutes: null, fcrRate: null,
-  escalationRate: null, backlogAgingRate: null, ticketVolume: 0,
-  ticketsCreated: 0, ticketsResolved: 0, holdingReasonBreakdown: [],
+  escalationRate: null, backlogAgingRate: null, overdueCount: 0, fcrYesCount: 0, escalationCount: 0,
+  ticketVolume: 0,
+  ticketsCreated: 0, ticketsResolved: 0, ticketsResolvedInPeriod: 0, holdingReasonBreakdown: [],
   rejectionCategoryBreakdown: [], cancellationReasonBreakdown: [],
   onHoldAvgPickupMinutes: null, series: [],
 };

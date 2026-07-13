@@ -7,7 +7,10 @@ var RtoApi = {
     if (params.employee) rows = rows.filter((r) => r.employee_name === params.employee);
     if (params.startDate) rows = rows.filter((r) => toIsoDate_(new Date(r.date)) >= params.startDate);
     if (params.endDate) rows = rows.filter((r) => toIsoDate_(new Date(r.date)) <= params.endDate);
-    rows = rows.map(stripRowMeta_);
+    rows = rows.map(stripRowMeta_).map((r) => {
+      r.date = toDisplayDate_(r.date);
+      return r;
+    });
 
     if (params.startDate && params.endDate) {
       return { records: rows, summary: computeRtoSummary_(rows) };

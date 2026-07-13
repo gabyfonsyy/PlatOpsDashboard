@@ -28,7 +28,7 @@ export function AssigneeTable({ assignees }: { assignees: AssigneeMetric[] }) {
             <tr key={a.name}>
               <td className="px-4 py-3 font-medium text-neutral-900 whitespace-nowrap">{a.name}</td>
               <td className="px-4 py-3">{a.ticketsAssigned}</td>
-              <td className="px-4 py-3">{a.ticketsResolved}</td>
+              <td className="px-4 py-3">{a.ticketsResolvedInPeriod}</td>
               <td className="px-4 py-3">{formatPercent(a.fcrRate)}</td>
               <td className="px-4 py-3">{formatPercent(a.escalationRate)}</td>
               <td className="px-4 py-3">{formatPercent(a.backlogAgingRate)}</td>

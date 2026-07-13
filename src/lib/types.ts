@@ -6,11 +6,31 @@ export type LeaveRecord = {
   start_date: string;
   end_date: string;
   num_days: number;
+  /** "" for full-day leave, or "First Half" / "Second Half" for a half-day. */
+  half_day_period: string;
   status: string;
   notes: string;
   created_by: string;
   created_at: string;
   updated_at: string;
+};
+
+export type LeaveStats = {
+  totalRecords: number;
+  totalDays: number;
+  employeesOnLeave: number;
+  halfDayCount: number;
+  byType: { type: string; count: number; days: number }[];
+  byEmployee: { employee: string; count: number; days: number }[];
+};
+
+export type RosterMember = {
+  employee_name: string;
+  team_key: string;
+  role_title: string;
+  status: string;
+  start_date: string;
+  jira_display_name_alias: string;
 };
 
 export type RtoRecord = {

@@ -20,24 +20,48 @@ function aggregateAllTeams() {
 
 function aggregateTeam_(team) {
   const agg = readAggCheckpoint_(team.team_key);
-  const dirtyDates = agg.dirty_dates_json ? JSON.parse(agg.dirty_dates_json) : [];
-  if (!dirtyDates.length) return;
+  let remainingDates = agg.dirty_dates_json ? JSON.parse(agg.dirty_dates_json) : [];
+  if (!remainingDates.length) return;
 
   // Group by year so each RAW_<team>_<year> tab is read at most once per run.
   const datesByYear = {};
-  dirtyDates.forEach((d) => {
+  remainingDates.forEach((d) => {
     const year = d.slice(0, 4);
     (datesByYear[year] = datesByYear[year] || []).push(d);
   });
 
+  // Complete resolved-by-resolved-date index (issueType -> isoDate -> count) across ALL of the
+  // team's raw years. Needed because a dirty date's resolved count can include older, unchanged
+  // tickets that happened to resolve that day, so an index built from the dirty years alone would
+  // undercount. buildResolvedIndex_ reads only the issue_type + resolved_datetime columns to keep
+  // this cheap; if a team ever grows large enough that this dominates the run, promote it to a
+  // maintained RESOLVED_DAILY table instead.
+  const resolvedIdx = buildResolvedIndex_(team.team_key);
+  const resolvedIndex = resolvedIdx.resolved;
+  const overdueIndex = resolvedIdx.overdue;
+  const fcrYesIndex = resolvedIdx.fcrYes;
+  const escQualifyingIndex = resolvedIdx.escQualifying;
+
   const affectedMonths = {};
 
-  Object.keys(datesByYear).forEach((year) => {
+  // Process one year at a time and save the checkpoint after each year. A 6-minute
+  // timeout therefore saves real progress — the next run resumes from the next year
+  // rather than restarting the entire dirty list from scratch.
+  for (const year of Object.keys(datesByYear).sort()) {
     const sheet = getOrCreateRawTab_(team.team_key, year);
     const allRows = sheetToObjects_(sheet);
 
+    // Bucket rows by created-date once so each dirty date is a map lookup instead
+    // of a full-array filter — O(rows) total for the year instead of O(dates * rows).
+    const rowsByDate = {};
+    allRows.forEach((r) => {
+      if (!r.created) return;
+      const isoDate = toIsoDate_(new Date(r.created));
+      (rowsByDate[isoDate] = rowsByDate[isoDate] || []).push(r);
+    });
+
     datesByYear[year].forEach((isoDate) => {
-      const rowsForDate = allRows.filter((r) => r.created && toIsoDate_(new Date(r.created)) === isoDate);
+      const rowsForDate = rowsByDate[isoDate] || [];
 
       const byIssueType = {};
       rowsForDate.forEach((r) => {
@@ -45,18 +69,214 @@ function aggregateTeam_(team) {
         (byIssueType[type] = byIssueType[type] || []).push(r);
       });
 
-      Object.keys(byIssueType).forEach((issueType) => {
-        const bucket = computeDailyBucket_(team, byIssueType[issueType]);
+      // Union of issue types created on this date OR resolved on this date — so a date with
+      // resolutions but no creations still produces a row carrying its resolved-on-date count.
+      const types = {};
+      Object.keys(byIssueType).forEach((t) => { types[t] = true; });
+      Object.keys(resolvedIndex).forEach((t) => { if (resolvedIndex[t][isoDate]) types[t] = true; });
+
+      Object.keys(types).forEach((issueType) => {
+        const bucket = computeDailyBucket_(team, byIssueType[issueType] || []);
+        bucket.tickets_resolved_on_date =
+          (resolvedIndex[issueType] && resolvedIndex[issueType][isoDate]) || 0;
+        bucket.overdue_resolved_on_date =
+          (overdueIndex[issueType] && overdueIndex[issueType][isoDate]) || 0;
+        bucket.fcr_yes_resolved_on_date =
+          (fcrYesIndex[issueType] && fcrYesIndex[issueType][isoDate]) || 0;
+        bucket.escalation_qualifying_resolved_on_date =
+          (escQualifyingIndex[issueType] && escQualifyingIndex[issueType][isoDate]) || 0;
         upsertMetricsDailyRow_(team.team_key, issueType, isoDate, bucket);
       });
 
       affectedMonths[isoDate.slice(0, 7)] = true;
     });
-  });
 
-  Object.keys(affectedMonths).forEach((month) => recomputeAssigneeMonthly_(team, month));
+    remainingDates = remainingDates.filter((d) => d.slice(0, 4) !== year);
+    writeAggCheckpoint_(team.team_key, { dirty_dates_json: JSON.stringify(remainingDates) });
+  }
 
+  const resolvedByAssigneeMonth = buildResolvedByAssigneeMonth_(team);
+  Object.keys(affectedMonths).forEach((month) => recomputeAssigneeMonthly_(team, month, resolvedByAssigneeMonth));
   writeAggCheckpoint_(team.team_key, { last_aggregated_at: nowIso_(), dirty_dates_json: '[]' });
+}
+
+/** Sorted list of years for which a RAW_<team>_<year> tab exists. */
+function listRawYears_(teamKey) {
+  const prefix = `RAW_${teamKey}_`;
+  return getJiraDataSpreadsheet_().getSheets()
+    .map((s) => s.getName())
+    .filter((n) => n.indexOf(prefix) === 0 && /^\d{4}$/.test(n.slice(prefix.length)))
+    .map((n) => n.slice(prefix.length))
+    .sort();
+}
+
+/**
+ * "Real" escalation for the Escalation Rate: the Ticket Escalation field holds something other
+ * than N/A, CA, SE, or blank (case-insensitive, trimmed). CA/SE are non-escalation dispositions,
+ * so they don't count as escalated.
+ */
+function isRealEscalation_(esc) {
+  if (!esc) return false;
+  const v = String(esc).trim().toUpperCase();
+  return v !== '' && v !== 'N/A' && v !== 'CA' && v !== 'SE';
+}
+
+/**
+ * Rows to drop from per-assignee PERFORMANCE metrics only (team scorecards are unaffected): the
+ * Automation for Jira bot always, and Unassigned tickets that only fell into the Unassigned bucket
+ * because they reached a terminal status nobody works — Archived/Rejected on ST-shaped teams
+ * (has_fcr_escalation), Cancelled on DE/DEV. Genuinely-unassigned active tickets are kept.
+ */
+function excludeFromAssigneePerf_(team, assignee, status) {
+  if (assignee === 'Automation for Jira') return true;
+  if (assignee === 'Unassigned') {
+    const s = String(status || '').trim().toLowerCase();
+    const terminal = team.has_fcr_escalation ? ['archived', 'rejected'] : ['cancelled', 'canceled'];
+    return terminal.indexOf(s) !== -1;
+  }
+  return false;
+}
+
+/**
+ * Builds resolved-by-resolved-date counts across every raw year for the team, returning
+ * { resolved: {issueType -> isoDate -> count}, overdue: {issueType -> isoDate -> count} } where
+ * "overdue" = tickets whose resolved_datetime > due_date (both parsed). resolved_datetime is
+ * already normalized to ISO at sync time (parseResolvedDateField_ handles DE/DEV's text field),
+ * so new Date() is safe here. Reads only issue_type, resolved_datetime, and due_date columns.
+ */
+function buildResolvedIndex_(teamKey) {
+  const resolved = {};
+  const overdue = {};
+  const fcrYes = {};
+  const escQualifying = {};
+  listRawYears_(teamKey).forEach((year) => {
+    const sheet = getOrCreateRawTab_(teamKey, year);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const typeCol = headers.indexOf('issue_type');
+    const resolvedCol = headers.indexOf('resolved_datetime');
+    const dueCol = headers.indexOf('due_date');
+    const fcrCol = headers.indexOf('fcr_value');
+    const escCol = headers.indexOf('escalation_value');
+    if (resolvedCol === -1) return;
+
+    const types = sheet.getRange(2, typeCol + 1, lastRow - 1, 1).getValues();
+    const resolvedVals = sheet.getRange(2, resolvedCol + 1, lastRow - 1, 1).getValues();
+    const dueVals = dueCol !== -1 ? sheet.getRange(2, dueCol + 1, lastRow - 1, 1).getValues() : null;
+    const fcrVals = fcrCol !== -1 ? sheet.getRange(2, fcrCol + 1, lastRow - 1, 1).getValues() : null;
+    const escVals = escCol !== -1 ? sheet.getRange(2, escCol + 1, lastRow - 1, 1).getValues() : null;
+    for (let i = 0; i < resolvedVals.length; i++) {
+      const raw = resolvedVals[i][0];
+      if (!raw) continue;
+      const rDate = new Date(raw);
+      const rd = toIsoDate_(rDate);
+      const type = types[i][0] || 'Unspecified';
+      (resolved[type] = resolved[type] || {});
+      resolved[type][rd] = (resolved[type][rd] || 0) + 1;
+      const dueRaw = dueVals ? dueVals[i][0] : null;
+      const dueIso = dueRaw ? toDisplayDate_(dueRaw) : '';
+      // Overdue is a DATE comparison, not datetime. due_date is date-only, so `new Date(dueRaw)`
+      // is midnight of that day; comparing it against the resolved timestamp flags every same-day
+      // resolution as late. rd is already the resolved calendar date (Manila) — overdue only when
+      // the ticket is resolved on a strictly LATER calendar day than its due date.
+      if (dueIso && rd > dueIso) {
+        (overdue[type] = overdue[type] || {});
+        overdue[type][rd] = (overdue[type][rd] || 0) + 1;
+      }
+      // FCR=Yes and "real" escalations, bucketed by RESOLVED date — these back FCR Rate and
+      // Escalation Rate, both taken over tickets resolved in the period (denominator =
+      // tickets_resolved_on_date). fcr_value/escalation_value exist only on FCR/escalation teams;
+      // when the columns are absent these indexes stay empty.
+      if (fcrVals && fcrVals[i][0] === 'Yes') {
+        (fcrYes[type] = fcrYes[type] || {});
+        fcrYes[type][rd] = (fcrYes[type][rd] || 0) + 1;
+      }
+      if (escVals && isRealEscalation_(escVals[i][0])) {
+        (escQualifying[type] = escQualifying[type] || {});
+        escQualifying[type][rd] = (escQualifying[type][rd] || 0) + 1;
+      }
+    }
+  });
+  return { resolved: resolved, overdue: overdue, fcrYes: fcrYes, escQualifying: escQualifying };
+}
+
+/**
+ * One-time backfill of tickets_resolved_on_date across existing METRICS_DAILY history (the
+ * incremental aggregateTeam_ only fills it for dates touched since the feature shipped). Run
+ * once, from the editor, AFTER migrateAddResolvedOnDate. Writes the whole column in a single
+ * batched setValues per run (per-row updates would time out), then appends rows for any
+ * (issue_type, date) that had resolutions but no created-based row yet.
+ */
+function backfillResolvedOnDate() {
+  getActiveTeamsConfig_().forEach((team) => backfillResolvedOnDateForTeam_(team));
+  Logger.log('backfillResolvedOnDate done.');
+}
+
+function backfillResolvedOnDateForTeam_(team) {
+  const idx = buildResolvedIndex_(team.team_key);
+  const resolvedIndex = idx.resolved;
+  const overdueIndex = idx.overdue;
+  const fcrYesIndex = idx.fcrYes;
+  const escQualifyingIndex = idx.escQualifying;
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_DAILY');
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const resolvedColIdx = headers.indexOf('tickets_resolved_on_date');
+  const overdueColIdx = headers.indexOf('overdue_resolved_on_date');
+  const fcrYesColIdx = headers.indexOf('fcr_yes_resolved_on_date');
+  const escColIdx = headers.indexOf('escalation_qualifying_resolved_on_date');
+  if (resolvedColIdx === -1 || overdueColIdx === -1) throw new Error('Run migrateAddResolvedOnDate first — column missing.');
+  if (fcrYesColIdx === -1 || escColIdx === -1) throw new Error('Run migrateAddFcrEscResolvedOnDate first — column missing.');
+  const teamCol = headers.indexOf('team_key');
+  const typeCol = headers.indexOf('issue_type');
+  const dateCol = headers.indexOf('date');
+
+  const seen = {};
+  if (lastRow > 1) {
+    const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    // Preserve other teams' existing values; overwrite this team's with the recomputed counts.
+    const resolvedCol = [];
+    const overdueCol = [];
+    const fcrYesCol = [];
+    const escCol = [];
+    data.forEach((row) => {
+      if (String(row[teamCol]) !== team.team_key) {
+        resolvedCol.push([row[resolvedColIdx]]);
+        overdueCol.push([row[overdueColIdx]]);
+        fcrYesCol.push([row[fcrYesColIdx]]);
+        escCol.push([row[escColIdx]]);
+        return;
+      }
+      const type = row[typeCol];
+      const date = formatDateCell_(row[dateCol]);
+      seen[`${type}|${date}`] = true;
+      resolvedCol.push([(resolvedIndex[type] && resolvedIndex[type][date]) || 0]);
+      overdueCol.push([(overdueIndex[type] && overdueIndex[type][date]) || 0]);
+      fcrYesCol.push([(fcrYesIndex[type] && fcrYesIndex[type][date]) || 0]);
+      escCol.push([(escQualifyingIndex[type] && escQualifyingIndex[type][date]) || 0]);
+    });
+    sheet.getRange(2, resolvedColIdx + 1, resolvedCol.length, 1).setValues(resolvedCol);
+    sheet.getRange(2, overdueColIdx + 1, overdueCol.length, 1).setValues(overdueCol);
+    sheet.getRange(2, fcrYesColIdx + 1, fcrYesCol.length, 1).setValues(fcrYesCol);
+    sheet.getRange(2, escColIdx + 1, escCol.length, 1).setValues(escCol);
+  }
+
+  // Dates that had resolutions but never had a created-based row (e.g. resolved on a day nothing
+  // was created) — create them now so the trend isn't missing those resolutions.
+  Object.keys(resolvedIndex).forEach((type) => {
+    Object.keys(resolvedIndex[type]).forEach((date) => {
+      if (seen[`${type}|${date}`]) return;
+      const bucket = computeDailyBucket_(team, []);
+      bucket.tickets_resolved_on_date = resolvedIndex[type][date];
+      bucket.overdue_resolved_on_date = (overdueIndex[type] && overdueIndex[type][date]) || 0;
+      bucket.fcr_yes_resolved_on_date = (fcrYesIndex[type] && fcrYesIndex[type][date]) || 0;
+      bucket.escalation_qualifying_resolved_on_date = (escQualifyingIndex[type] && escQualifyingIndex[type][date]) || 0;
+      upsertMetricsDailyRow_(team.team_key, type, date, bucket);
+    });
+  });
+  Logger.log(`backfillResolvedOnDate: ${team.team_key} done.`);
 }
 
 /** Business logic for one team+issueType+date bucket — see plan Section 4.4 for the exact formulas. */
@@ -77,8 +297,6 @@ function computeDailyBucket_(team, rows) {
     const resolved = r.resolved_datetime ? new Date(r.resolved_datetime) : null;
     const cycleStart = r.first_out_of_backlog_todo ? new Date(r.first_out_of_backlog_todo) : null;
     const due = r.due_date ? new Date(r.due_date) : null;
-    const onHoldEntered = r.on_hold_entered_at ? new Date(r.on_hold_entered_at) : null;
-    const onHoldExited = r.on_hold_exited_at ? new Date(r.on_hold_exited_at) : null;
 
     if (resolved) {
       ticketsResolved++;
@@ -98,14 +316,20 @@ function computeDailyBucket_(team, rows) {
 
     if (due) {
       totalForAgingDenom++;
-      if (resolved && resolved > due) resolvedAfterDue++;
+      // Date comparison, not datetime — due is date-only (midnight), so a datetime compare counts
+      // same-day resolutions as late.
+      if (resolved && toIsoDate_(resolved) > toDisplayDate_(r.due_date)) resolvedAfterDue++;
     }
 
     const assigneeField = team.assignee_field_id === 'customfield_10189' ? r.assigned_se : r.assigned_cod;
     if (assigneeField) assignedCount++;
 
-    if (team.has_holding_reason && r.holding_reason) {
-      holdingReasonCounts[r.holding_reason] = (holdingReasonCounts[r.holding_reason] || 0) + 1;
+    if (team.has_holding_reason && r.holding_reasons_json) {
+      try {
+        JSON.parse(r.holding_reasons_json).forEach((reason) => {
+          if (reason) holdingReasonCounts[reason] = (holdingReasonCounts[reason] || 0) + 1;
+        });
+      } catch (e) {}
     }
     if (team.has_rejection_category && r.rejection_category) {
       rejectionCategoryCounts[r.rejection_category] = (rejectionCategoryCounts[r.rejection_category] || 0) + 1;
@@ -113,8 +337,8 @@ function computeDailyBucket_(team, rows) {
     if (team.has_cancellation_reason && r.cancellation_reason) {
       cancellationReasonCounts[r.cancellation_reason] = (cancellationReasonCounts[r.cancellation_reason] || 0) + 1;
     }
-    if (onHoldEntered && onHoldExited) {
-      onHoldPickupSum += minutesBetween_(onHoldEntered, onHoldExited);
+    if (r.total_on_hold_minutes) {
+      onHoldPickupSum += Number(r.total_on_hold_minutes);
       onHoldPickupCount++;
     }
   });
@@ -140,8 +364,14 @@ function computeDailyBucket_(team, rows) {
   };
 }
 
-/** Full recompute of one team+month (not incremental) — simplest way to avoid double-counting across dirty-date reruns. */
-function recomputeAssigneeMonthly_(team, month) {
+/**
+ * Full recompute of one team+month (not incremental) — simplest way to avoid double-counting
+ * across dirty-date reruns. Created-based fields (tickets_assigned, tickets_resolved,
+ * lead/cycle time, etc.) are bucketed by created month; tickets_resolved_in_month is bucketed
+ * by RESOLVED month (from resolvedByAssigneeMonth) so the Performance page can show tickets a
+ * person resolved DURING the period, not just those they were created-assigned that month.
+ */
+function recomputeAssigneeMonthly_(team, month, resolvedByAssigneeMonth) {
   const year = month.slice(0, 4);
   const sheet = getOrCreateRawTab_(team.team_key, year);
   const allRows = sheetToObjects_(sheet);
@@ -150,14 +380,209 @@ function recomputeAssigneeMonthly_(team, month) {
   const byAssignee = {};
   rowsForMonth.forEach((r) => {
     const assigneeField = team.assignee_field_id === 'customfield_10189' ? r.assigned_se : r.assigned_cod;
-    const assignee = assigneeField || r.assignee_display_name || 'Unassigned';
+    const assignee = assigneeField || 'Unassigned';
+    if (excludeFromAssigneePerf_(team, assignee, r.status)) return;
     (byAssignee[assignee] = byAssignee[assignee] || []).push(r);
   });
 
-  Object.keys(byAssignee).forEach((assignee) => {
-    const bucket = computeAssigneeMonthlyBucket_(team, byAssignee[assignee]);
+  const resolvedByAssignee = (resolvedByAssigneeMonth && resolvedByAssigneeMonth.resolved) || {};
+  const overdueByAssignee = (resolvedByAssigneeMonth && resolvedByAssigneeMonth.overdue) || {};
+  const fcrYesByAssignee = (resolvedByAssigneeMonth && resolvedByAssigneeMonth.fcrYes) || {};
+  const escQualifyingByAssignee = (resolvedByAssigneeMonth && resolvedByAssigneeMonth.escQualifying) || {};
+
+  // Union with assignees who RESOLVED tickets this month even if none were created-assigned to
+  // them this month, so their resolved-in-period count still shows up.
+  const assignees = {};
+  Object.keys(byAssignee).forEach((a) => { assignees[a] = true; });
+  Object.keys(resolvedByAssignee).forEach((a) => {
+    if (resolvedByAssignee[a][month]) assignees[a] = true;
+  });
+
+  Object.keys(assignees).forEach((assignee) => {
+    const bucket = computeAssigneeMonthlyBucket_(team, byAssignee[assignee] || []);
+    bucket.tickets_resolved_in_month = (resolvedByAssignee[assignee] && resolvedByAssignee[assignee][month]) || 0;
+    bucket.overdue_resolved_in_month = (overdueByAssignee[assignee] && overdueByAssignee[assignee][month]) || 0;
+    bucket.fcr_yes_resolved_in_month = (fcrYesByAssignee[assignee] && fcrYesByAssignee[assignee][month]) || 0;
+    bucket.escalation_qualifying_resolved_in_month = (escQualifyingByAssignee[assignee] && escQualifyingByAssignee[assignee][month]) || 0;
     upsertAssigneeMonthlyRow_(team.team_key, assignee, month, bucket);
   });
+}
+
+/**
+ * Builds resolved-by-resolved-month counts per assignee across every raw year for the team,
+ * returning { resolved: {assignee -> month -> count}, overdue: {assignee -> month -> count} }
+ * where overdue = resolved_datetime > due_date. Uses the team's configured assignee column and
+ * reads only the assignee, resolved_datetime, and due_date columns per year.
+ */
+function buildResolvedByAssigneeMonth_(team) {
+  const assigneeHeader = team.assignee_field_id === 'customfield_10189' ? 'assigned_se' : 'assigned_cod';
+  const resolved = {};
+  const overdue = {};
+  const fcrYes = {};
+  const escQualifying = {};
+  listRawYears_(team.team_key).forEach((year) => {
+    const sheet = getOrCreateRawTab_(team.team_key, year);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+    const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const aCol = headers.indexOf(assigneeHeader);
+    const rCol = headers.indexOf('resolved_datetime');
+    const dueCol = headers.indexOf('due_date');
+    const fcrCol = headers.indexOf('fcr_value');
+    const escCol = headers.indexOf('escalation_value');
+    const statusCol = headers.indexOf('status');
+    if (rCol === -1 || aCol === -1) return;
+
+    const assignees = sheet.getRange(2, aCol + 1, lastRow - 1, 1).getValues();
+    const resolvedVals = sheet.getRange(2, rCol + 1, lastRow - 1, 1).getValues();
+    const dueVals = dueCol !== -1 ? sheet.getRange(2, dueCol + 1, lastRow - 1, 1).getValues() : null;
+    const fcrVals = fcrCol !== -1 ? sheet.getRange(2, fcrCol + 1, lastRow - 1, 1).getValues() : null;
+    const escVals = escCol !== -1 ? sheet.getRange(2, escCol + 1, lastRow - 1, 1).getValues() : null;
+    const statusVals = statusCol !== -1 ? sheet.getRange(2, statusCol + 1, lastRow - 1, 1).getValues() : null;
+    for (let i = 0; i < resolvedVals.length; i++) {
+      const raw = resolvedVals[i][0];
+      if (!raw) continue;
+      const rDate = new Date(raw);
+      const rd = toIsoDate_(rDate);
+      const month = monthLabel_(rDate);
+      const assignee = assignees[i][0] || 'Unassigned';
+      // Same Performance-only exclusion as recomputeAssigneeMonthly_ so the resolved-in-period
+      // counts and the created-based counts drop the same rows.
+      if (excludeFromAssigneePerf_(team, assignee, statusVals ? statusVals[i][0] : '')) continue;
+      (resolved[assignee] = resolved[assignee] || {});
+      resolved[assignee][month] = (resolved[assignee][month] || 0) + 1;
+      const dueRaw = dueVals ? dueVals[i][0] : null;
+      const dueIso = dueRaw ? toDisplayDate_(dueRaw) : '';
+      // Date comparison, not datetime (see buildResolvedIndex_): overdue only when the ticket is
+      // resolved on a strictly later calendar day than its due date.
+      if (dueIso && rd > dueIso) {
+        (overdue[assignee] = overdue[assignee] || {});
+        overdue[assignee][month] = (overdue[assignee][month] || 0) + 1;
+      }
+      // FCR=Yes and "real" escalations by resolved month — back the per-assignee FCR/Escalation
+      // rates on the Performance page (denominator = tickets_resolved_in_month). See buildResolvedIndex_.
+      if (fcrVals && fcrVals[i][0] === 'Yes') {
+        (fcrYes[assignee] = fcrYes[assignee] || {});
+        fcrYes[assignee][month] = (fcrYes[assignee][month] || 0) + 1;
+      }
+      if (escVals && isRealEscalation_(escVals[i][0])) {
+        (escQualifying[assignee] = escQualifying[assignee] || {});
+        escQualifying[assignee][month] = (escQualifying[assignee][month] || 0) + 1;
+      }
+    }
+  });
+  return { resolved: resolved, overdue: overdue, fcrYes: fcrYes, escQualifying: escQualifying };
+}
+
+/**
+ * One-time backfill of tickets_resolved_in_month across existing METRICS_BY_ASSIGNEE_MONTHLY
+ * (the assignee counterpart of backfillResolvedOnDate). Run once after migrateAddResolvedInMonth.
+ * Batched single-column write, then appends rows for (assignee, month) that resolved but had no
+ * created-based row. Idempotent — safe to re-run.
+ */
+function backfillResolvedInMonth() {
+  getActiveTeamsConfig_().forEach((team) => backfillResolvedInMonthForTeam_(team));
+  Logger.log('backfillResolvedInMonth done.');
+}
+
+function backfillResolvedInMonthForTeam_(team) {
+  const idx = buildResolvedByAssigneeMonth_(team);
+  const resolvedIndex = idx.resolved;
+  const overdueIndex = idx.overdue;
+  const fcrYesIndex = idx.fcrYes;
+  const escQualifyingIndex = idx.escQualifying;
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const resolvedColIdx = headers.indexOf('tickets_resolved_in_month');
+  const overdueColIdx = headers.indexOf('overdue_resolved_in_month');
+  const fcrYesColIdx = headers.indexOf('fcr_yes_resolved_in_month');
+  const escColIdx = headers.indexOf('escalation_qualifying_resolved_in_month');
+  if (resolvedColIdx === -1 || overdueColIdx === -1) throw new Error('Run migrateAddResolvedInMonth first — column missing.');
+  if (fcrYesColIdx === -1 || escColIdx === -1) throw new Error('Run migrateAddFcrEscResolvedInMonth first — column missing.');
+  const teamCol = headers.indexOf('team_key');
+  const assigneeCol = headers.indexOf('assignee_display_name');
+  const monthCol = headers.indexOf('month');
+
+  const seen = {};
+  if (lastRow > 1) {
+    const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    const resolvedCol = [];
+    const overdueCol = [];
+    const fcrYesCol = [];
+    const escCol = [];
+    data.forEach((row) => {
+      if (String(row[teamCol]) !== team.team_key) {
+        resolvedCol.push([row[resolvedColIdx]]);
+        overdueCol.push([row[overdueColIdx]]);
+        fcrYesCol.push([row[fcrYesColIdx]]);
+        escCol.push([row[escColIdx]]);
+        return;
+      }
+      const assignee = row[assigneeCol];
+      const month = formatMonthCell_(row[monthCol]);
+      seen[`${assignee}|${month}`] = true;
+      resolvedCol.push([(resolvedIndex[assignee] && resolvedIndex[assignee][month]) || 0]);
+      overdueCol.push([(overdueIndex[assignee] && overdueIndex[assignee][month]) || 0]);
+      fcrYesCol.push([(fcrYesIndex[assignee] && fcrYesIndex[assignee][month]) || 0]);
+      escCol.push([(escQualifyingIndex[assignee] && escQualifyingIndex[assignee][month]) || 0]);
+    });
+    sheet.getRange(2, resolvedColIdx + 1, resolvedCol.length, 1).setValues(resolvedCol);
+    sheet.getRange(2, overdueColIdx + 1, overdueCol.length, 1).setValues(overdueCol);
+    sheet.getRange(2, fcrYesColIdx + 1, fcrYesCol.length, 1).setValues(fcrYesCol);
+    sheet.getRange(2, escColIdx + 1, escCol.length, 1).setValues(escCol);
+  }
+
+  Object.keys(resolvedIndex).forEach((assignee) => {
+    Object.keys(resolvedIndex[assignee]).forEach((month) => {
+      if (seen[`${assignee}|${month}`]) return;
+      const bucket = computeAssigneeMonthlyBucket_(team, []);
+      bucket.tickets_resolved_in_month = resolvedIndex[assignee][month];
+      bucket.overdue_resolved_in_month = (overdueIndex[assignee] && overdueIndex[assignee][month]) || 0;
+      bucket.fcr_yes_resolved_in_month = (fcrYesIndex[assignee] && fcrYesIndex[assignee][month]) || 0;
+      bucket.escalation_qualifying_resolved_in_month = (escQualifyingIndex[assignee] && escQualifyingIndex[assignee][month]) || 0;
+      upsertAssigneeMonthlyRow_(team.team_key, assignee, month, bucket);
+    });
+  });
+  Logger.log(`backfillResolvedInMonth: ${team.team_key} done.`);
+}
+
+/**
+ * One-time cleanup for the duplicate rows METRICS_BY_ASSIGNEE_MONTHLY accumulated while
+ * getAssigneeMonthlyIndex_ keyed on the raw (Date-parsed) month cell — every aggregation/backfill
+ * run appended instead of updating, inflating per-assignee counts ~Nx. Simple dedup won't do
+ * because recompute-appended and backfill-appended duplicates populate different columns, so this
+ * CLEARS the tab and recomputes every (assignee, month) from raw in one clean pass — each
+ * recomputeAssigneeMonthly_ writes a complete row (created-based + resolved-in-month + FCR/esc).
+ * Run once from the editor AFTER the getAssigneeMonthlyIndex_ fix is deployed. Idempotent (it
+ * always clears first), so re-run if it times out. No separate backfill needed afterward.
+ */
+function rebuildAssigneeMonthly() {
+  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+  _assigneeMonthlyIndexCache_ = null;
+
+  getActiveTeamsConfig_().forEach((team) => {
+    const resolvedByAssigneeMonth = buildResolvedByAssigneeMonth_(team);
+    const months = {};
+    // Every month a ticket was CREATED in (drives the created-based columns)...
+    listRawYears_(team.team_key).forEach((year) => {
+      const raw = getOrCreateRawTab_(team.team_key, year);
+      sheetToObjects_(raw).forEach((r) => {
+        if (r.created) months[monthLabel_(new Date(r.created))] = true;
+      });
+    });
+    // ...plus every month a ticket RESOLVED in, so resolution-only months still get rows.
+    Object.keys(resolvedByAssigneeMonth.resolved).forEach((a) => {
+      Object.keys(resolvedByAssigneeMonth.resolved[a]).forEach((m) => { months[m] = true; });
+    });
+    Object.keys(months).sort().forEach((month) =>
+      recomputeAssigneeMonthly_(team, month, resolvedByAssigneeMonth));
+    Logger.log(`rebuildAssigneeMonthly: ${team.team_key} — ${Object.keys(months).length} months.`);
+  });
+  Logger.log('rebuildAssigneeMonthly done.');
 }
 
 function computeAssigneeMonthlyBucket_(team, rows) {
@@ -166,6 +591,7 @@ function computeAssigneeMonthlyBucket_(team, rows) {
   let cycleTimeSum = 0, cycleTimeCount = 0;
   let fcrEligible = 0, fcrNotEscalated = 0, escalated = 0;
   let resolvedAfterDue = 0;
+  let inProgressSum = 0, inProgressCount = 0;
 
   rows.forEach((r) => {
     const created = r.created ? new Date(r.created) : null;
@@ -177,7 +603,8 @@ function computeAssigneeMonthlyBucket_(team, rows) {
       resolved++;
       if (created) { leadTimeSum += minutesBetween_(created, resolvedAt); leadTimeCount++; }
       if (cycleStart) { cycleTimeSum += minutesBetween_(cycleStart, resolvedAt); cycleTimeCount++; }
-      if (due && resolvedAt > due) resolvedAfterDue++;
+      // Date comparison, not datetime (see aggregateTeam_) — same-day resolutions are on time.
+      if (due && toIsoDate_(resolvedAt) > toDisplayDate_(r.due_date)) resolvedAfterDue++;
     }
 
     if (team.has_fcr_escalation) {
@@ -188,6 +615,11 @@ function computeAssigneeMonthlyBucket_(team, rows) {
         if (esc === 'N/A' && fcr === 'Yes') fcrNotEscalated++;
         if (esc && esc !== 'N/A' && fcr === 'No') escalated++;
       }
+    }
+
+    if (team.has_in_progress_tracking && r.total_in_progress_minutes) {
+      inProgressSum += Number(r.total_in_progress_minutes);
+      inProgressCount++;
     }
   });
 
@@ -200,6 +632,7 @@ function computeAssigneeMonthlyBucket_(team, rows) {
     resolved_after_due_count: resolvedAfterDue,
     avg_lead_time_minutes: leadTimeCount ? round2_(leadTimeSum / leadTimeCount) : '',
     avg_cycle_time_minutes: cycleTimeCount ? round2_(cycleTimeSum / cycleTimeCount) : '',
+    avg_in_progress_minutes: inProgressCount ? round2_(inProgressSum / inProgressCount) : '',
   };
 }
 
@@ -250,8 +683,12 @@ function getAssigneeMonthlyIndex_() {
   const lastRow = sheet.getLastRow();
   const map = {};
   if (lastRow > 1) {
+    // Normalize the month cell: Sheets auto-parses the 'yyyy-MM' string into a Date on write, so
+    // row[2] reads back as a Date. Without formatMonthCell_ here the key never matches the
+    // 'yyyy-MM' string upsertAssigneeMonthlyRow_ builds, and every run appends a duplicate row
+    // instead of updating (mirrors getMetricsDailyIndex_'s formatDateCell_ on the date cell).
     sheet.getRange(2, 1, lastRow - 1, 3).getValues().forEach((row, i) => {
-      map[`${row[0]}|${row[1]}|${row[2]}`] = i + 2;
+      map[`${row[0]}|${row[1]}|${formatMonthCell_(row[2])}`] = i + 2;
     });
   }
   _assigneeMonthlyIndexCache_ = { sheet: sheet, map: map, nextRow: lastRow + 1 };
