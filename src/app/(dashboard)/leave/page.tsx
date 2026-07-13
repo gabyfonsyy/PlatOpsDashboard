@@ -26,14 +26,14 @@ export default async function LeavePage({
   searchParams: Record<string, string | string[] | undefined>;
 }) {
   const team = typeof searchParams.team === "string" ? searchParams.team : undefined;
-  // Month view (default: current Manila month). Drives the Gantt, stats, and records table.
-  const month =
-    typeof searchParams.month === "string" && /^\d{4}-\d{2}$/.test(searchParams.month)
-      ? searchParams.month
-      : formatManilaDate(new Date().toISOString()).slice(0, 7);
-  const [y, m] = month.split("-").map(Number);
-  const startDate = `${month}-01`;
-  const endDate = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+  // From/To date range (default: current month-to-date — 1st of the month through today, Manila).
+  const isDate = (s: string | string[] | undefined): s is string =>
+    typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const today = formatManilaDate(new Date().toISOString());
+  const startDate = isDate(searchParams.from) ? searchParams.from : `${today.slice(0, 7)}-01`;
+  const endDate = isDate(searchParams.to) ? searchParams.to : today;
+  // The Gantt is a single-month calendar; anchor it to the "From" month.
+  const month = startDate.slice(0, 7);
 
   const [teams, roster, result] = await Promise.all([
     getTeams().catch(() => [] as Awaited<ReturnType<typeof getTeams>>),
@@ -57,8 +57,12 @@ export default async function LeavePage({
 
       <form method="get" className="card p-4 flex flex-wrap items-end gap-3">
         <div>
-          <label className="form-label">Month</label>
-          <input type="month" name="month" defaultValue={month} className="form-input" />
+          <label className="form-label">From</label>
+          <input type="date" name="from" defaultValue={startDate} max={endDate} className="form-input" />
+        </div>
+        <div>
+          <label className="form-label">To</label>
+          <input type="date" name="to" defaultValue={endDate} min={startDate} className="form-input" />
         </div>
         <div>
           <label className="form-label">Team</label>
@@ -70,9 +74,9 @@ export default async function LeavePage({
           </select>
         </div>
         <button type="submit" className="btn-secondary">Apply filter</button>
-        {team && (
-          <a href={`/leave?month=${month}`} className="text-xs text-neutral-500 self-center hover:text-neutral-700">
-            Clear team
+        {(team || startDate !== `${today.slice(0, 7)}-01` || endDate !== today) && (
+          <a href="/leave" className="text-xs text-neutral-500 self-center hover:text-neutral-700">
+            Reset
           </a>
         )}
       </form>
