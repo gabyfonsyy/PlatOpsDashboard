@@ -36,6 +36,17 @@ function getManagerDataSpreadsheet_() {
   return SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_MANAGER'));
 }
 
+/**
+ * The separate Initiatives workbook (logged PROJECTS + Jira-pulled INITIATIVE_TICKETS).
+ * Deliberately NOT in REQUIRED_SCRIPT_PROPERTIES: that list is enforced by assertConfigured_
+ * on every request, so listing it there would break all existing routes until the property
+ * is set. Instead this throws a clear "Missing required Script Property" only when an
+ * initiatives route is actually used.
+ */
+function getInitiativesSpreadsheet_() {
+  return SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_INITIATIVES'));
+}
+
 /** Reads TEAMS_CONFIG and coerces boolean/number columns — the single source every module reads from. */
 function getTeamsConfig_() {
   const sheet = getManagerDataSpreadsheet_().getSheetByName('TEAMS_CONFIG');
@@ -52,6 +63,7 @@ function getTeamsConfig_() {
     has_rejection_category: parseBool_(r.has_rejection_category),
     has_cancellation_reason: parseBool_(r.has_cancellation_reason),
     has_in_progress_tracking: parseBool_(r.has_in_progress_tracking),
+    has_peer_review_tracking: parseBool_(r.has_peer_review_tracking),
     backlog_status_names_csv: String(r.backlog_status_names_csv || ''),
     issue_types_csv: String(r.issue_types_csv || ''),
     color_accent: String(r.color_accent || '#18A558'),

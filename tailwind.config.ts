@@ -9,45 +9,58 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Rubik", "sans-serif"],
+        sans: ["Space Grotesk", "sans-serif"],
+        serif: ["Fraunces", "serif"],
       },
       keyframes: {
         "dropdown-in": {
           "0%": { opacity: "0", transform: "translateY(-6px) scale(0.97)" },
           "100%": { opacity: "1", transform: "translateY(0) scale(1)" },
         },
+        "glow-pulse": {
+          "0%, 100%": { opacity: "0.55" },
+          "50%": { opacity: "1" },
+        },
       },
       animation: {
         "dropdown-in": "dropdown-in 0.16s cubic-bezier(0.16, 1, 0.3, 1)",
+        "glow-pulse": "glow-pulse 3.5s ease-in-out infinite",
+      },
+      boxShadow: {
+        glow: "0 0 0 1px rgba(168, 124, 214, 0.18), 0 8px 24px -6px rgba(124, 79, 168, 0.35)",
+        "glow-lg": "0 0 0 1px rgba(168, 124, 214, 0.22), 0 20px 48px -12px rgba(107, 66, 148, 0.45)",
       },
       colors: {
-        // Sprout brand palette — same tokens as Operations Hub
+        // Sprout accent palette — retired the green brand tokens for a lavender/mauve
+        // "sci-fi bloom" scheme (retains the `sprout` key so every existing sprout-* class
+        // repaints automatically instead of needing a project-wide rename).
         sprout: {
-          50: "#edfaf2",
-          100: "#d4f3e0",
-          200: "#ace5c3",
-          300: "#76d19f",
-          400: "#3eb87a",
-          500: "#18a558", // primary brand green
-          600: "#108443",
-          700: "#0e6b37",
-          800: "#0d552d",
-          900: "#0b4525",
-          950: "#052e17",
+          50: "#faf6fc",
+          100: "#f2e7f7",
+          200: "#e3cdee",
+          300: "#cda8d9",
+          400: "#b383c3",
+          500: "#9863a8", // primary accent — dusty mauve
+          600: "#7d4c8c",
+          700: "#643c70",
+          800: "#4d2e57",
+          900: "#382142",
+          950: "#22142a",
         },
-        // Neutral palette for UI
+        // Neutral palette — gray with a soft purple undertone ("mist") instead of flat gray,
+        // so backgrounds/borders/text read as part of the same purple world as the accent.
         neutral: {
-          50: "#f9fafb",
-          100: "#f3f4f6",
-          200: "#e5e7eb",
-          300: "#d1d5db",
-          400: "#9ca3af",
-          500: "#6b7280",
-          600: "#4b5563",
-          700: "#374151",
-          800: "#1f2937",
-          900: "#111827",
-          950: "#030712",
+          50: "#faf9fc",
+          100: "#f3f1f8",
+          200: "#e6e1f0",
+          300: "#d1c8e0",
+          400: "#a89bc0",
+          500: "#82749d",
+          600: "#655a80",
+          700: "#4e4566",
+          800: "#39324d",
+          900: "#251f38",
+          950: "#160f24",
         },
       },
     },

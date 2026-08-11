@@ -1,68 +1,121 @@
 import { getTeams } from "@/lib/teams";
 import { fetchGas } from "@/lib/gas-client";
-import type { ProjectRecord } from "@/lib/types";
+import { getInitiativeTickets } from "@/lib/initiatives";
+import { getTicketAssignments } from "@/lib/ticket-projects";
+import { getProjectProgress } from "@/lib/progress";
+import { getProjectTasks } from "@/lib/tasks";
+import type { ProjectRecord, TaskRecord } from "@/lib/types";
 import { ProjectForm } from "@/components/forms/ProjectForm";
-import { DeleteButton } from "@/components/ui/DeleteButton";
-import { Badge } from "@/components/ui/Badge";
-
-const STATUS_TONE: Record<ProjectRecord["status"], "neutral" | "warning" | "success" | "danger"> = {
-  "Not Started": "neutral",
-  "In Progress": "warning",
-  "Blocked": "danger",
-  "Done": "success",
-};
+import { ProjectsView } from "@/components/forms/ProjectsView";
+import { ProgressForm } from "@/components/forms/ProgressForm";
+import { ProgressRecordsTable } from "@/components/forms/ProgressRecordsTable";
+import type { ProgressTicketOption } from "@/components/forms/progress-fields";
+import { BatchCalculator } from "@/components/forms/BatchCalculator";
+import { InitiativeTicketsTable } from "@/components/dashboard/InitiativeTicketsTable";
 
 export default async function ProjectsPage({
   searchParams,
 }: {
   searchParams: Record<string, string | string[] | undefined>;
 }) {
-  const teams = await getTeams().catch(() => []);
   const team = typeof searchParams.team === "string" ? searchParams.team : undefined;
-  const records = await fetchGas<ProjectRecord[]>("projects", { team }, { cache: "no-store" }).catch(() => []);
+
+  const [teams, records, tickets, assignments, progress, tasks] = await Promise.all([
+    getTeams().catch(() => []),
+    fetchGas<ProjectRecord[]>("projects", { team }, { cache: "no-store" }).catch(() => []),
+    getInitiativeTickets().catch(() => []),
+    getTicketAssignments().catch(() => []),
+    getProjectProgress().catch(() => []),
+    getProjectTasks().catch(() => []),
+  ]);
+
+  // Resolved linked-ticket count per project: manual assignment wins, else first label match.
+  // `ticketProject` also feeds the progress form's ticket dropdown so it can scope by project.
+  const manualByKey = new Map(assignments.filter((a) => a.project_id).map((a) => [a.issue_key, a.project_id]));
+  const labelledProjects = records.filter((r) => String(r.jira_label || "").trim());
+  const linkedCount: Record<string, number> = {};
+  const ticketProject = new Map<string, string>();
+  for (const t of tickets) {
+    const labels = String(t.labels || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const manual = manualByKey.get(t.issue_key);
+    const pid = manual ?? labelledProjects.find((p) => labels.includes(p.jira_label.trim().toLowerCase()))?.project_id;
+    if (pid) {
+      linkedCount[pid] = (linkedCount[pid] ?? 0) + 1;
+      ticketProject.set(t.issue_key, pid);
+    }
+  }
+
+  // Actual items processed per project, summed from the PROJECT_PROGRESS log.
+  const processedByProject: Record<string, number> = {};
+  for (const p of progress) {
+    processedByProject[p.project_id] = (processedByProject[p.project_id] ?? 0) + (Number(p.items_processed) || 0);
+  }
+
+  // Task checklist per project, from the PROJECT_TASKS log.
+  const tasksByProject: Record<string, TaskRecord[]> = {};
+  for (const t of tasks) {
+    (tasksByProject[t.project_id] ??= []).push(t);
+  }
+
+  const projectOptions = records.map((r) => ({
+    project_id: r.project_id,
+    project_name: r.project_name,
+    owning_team: r.owning_team,
+  }));
+  const progressTicketOptions: ProgressTicketOption[] = tickets.map((t) => ({
+    issue_key: t.issue_key,
+    summary: t.summary,
+    project_id: ticketProject.get(t.issue_key),
+  }));
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       <div>
-        <h1>Project Tracker</h1>
-        <p className="text-sm text-neutral-500 mt-1">Manager-entered status tracking across all teams.</p>
+        <h1>Projects &amp; Initiatives</h1>
+        <p className="text-sm text-neutral-500 mt-1">
+          Log cross-team projects, project batch throughput, and track their Jira cod-initiative tickets.
+        </p>
       </div>
 
       <ProjectForm teams={teams} />
 
-      <div className="card overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-neutral-50 border-b border-neutral-200">
-            <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
-              <th className="px-4 py-3">Project</th>
-              <th className="px-4 py-3">Team</th>
-              <th className="px-4 py-3">Owner</th>
-              <th className="px-4 py-3">Status</th>
-              <th className="px-4 py-3">% Complete</th>
-              <th className="px-4 py-3">Target Date</th>
-              <th className="px-4 py-3" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-neutral-100">
-            {records.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-neutral-400">No projects tracked yet.</td>
-              </tr>
-            )}
-            {records.map((r) => (
-              <tr key={r.project_id}>
-                <td className="px-4 py-3 font-medium text-neutral-900">{r.project_name}</td>
-                <td className="px-4 py-3">{r.owning_team}</td>
-                <td className="px-4 py-3">{r.owner}</td>
-                <td className="px-4 py-3"><Badge tone={STATUS_TONE[r.status] ?? "neutral"}>{r.status}</Badge></td>
-                <td className="px-4 py-3">{r.percent_complete}%</td>
-                <td className="px-4 py-3">{r.target_date}</td>
-                <td className="px-4 py-3"><DeleteButton endpoint="/api/gas/projects" id={r.project_id} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <ProjectsView
+        projects={records}
+        teams={teams}
+        linkedCount={linkedCount}
+        processedByProject={processedByProject}
+        tasksByProject={tasksByProject}
+        tickets={progressTicketOptions}
+        jiraBaseUrl={process.env.JIRA_BASE_URL}
+      />
+
+      <section className="flex flex-col gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+          <ProgressForm projects={projectOptions} tickets={progressTicketOptions} />
+          <BatchCalculator />
+        </div>
+
+        <ProgressRecordsTable
+          records={progress}
+          projects={projectOptions}
+          teams={teams}
+          tickets={progressTicketOptions}
+          jiraBaseUrl={process.env.JIRA_BASE_URL}
+        />
+      </section>
+
+      <InitiativeTicketsTable
+        tickets={tickets}
+        teams={teams}
+        projects={records.map((r) => ({
+          project_id: r.project_id,
+          project_name: r.project_name,
+          jira_label: r.jira_label,
+          owning_team: r.owning_team,
+        }))}
+        assignments={assignments}
+        jiraBaseUrl={process.env.JIRA_BASE_URL}
+      />
     </div>
   );
 }

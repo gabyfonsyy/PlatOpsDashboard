@@ -40,10 +40,27 @@ function handleRequest_(e, method) {
         return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, LeaveApi) });
 
       case 'rto':
+        if (params.action === 'bulkUpsert') return jsonResponse_({ ok: true, data: RtoApi.bulkUpsert(body) });
         return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, RtoApi) });
 
       case 'projects':
         return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, ProjectsApi) });
+
+      case 'project-progress':
+        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, ProgressApi) });
+
+      case 'project-tasks':
+        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, TasksApi) });
+
+      case 'initiatives':
+        if (method === 'GET') return jsonResponse_({ ok: true, data: InitiativesApi.list(params) });
+        if (params.action === 'sync') return jsonResponse_({ ok: true, data: InitiativesApi.sync() });
+        return jsonResponse_({ ok: false, error: `Unknown action for initiatives: ${params.action}` });
+
+      case 'ticket-projects':
+        if (method === 'GET') return jsonResponse_({ ok: true, data: TicketProjectApi.list() });
+        if (params.action === 'assign') return jsonResponse_({ ok: true, data: TicketProjectApi.assign(body) });
+        return jsonResponse_({ ok: false, error: `Unknown action for ticket-projects: ${params.action}` });
 
       case 'metrics':
         return jsonResponse_({ ok: true, data: getTicketMetrics_(params) });
@@ -53,6 +70,24 @@ function handleRequest_(e, method) {
 
       case 'insight':
         return jsonResponse_({ ok: true, data: getCachedInsight_(params.scope) });
+
+      case 'refresh-cache':
+        return jsonResponse_({ ok: true, data: invalidateAllCaches_() });
+
+      case 'backlog-aging-report':
+        return jsonResponse_({ ok: true, data: getBacklogAgingReport_(params) });
+
+      case 'lead-cycle-time-report':
+        return jsonResponse_({ ok: true, data: getLeadCycleTimeDrilldownReport_(params) });
+
+      case 'late-pickup-report':
+        return jsonResponse_({ ok: true, data: getLatePickupReport_(params) });
+
+      case 'peer-review-wait-report':
+        return jsonResponse_({ ok: true, data: getPeerReviewWaitReport_(params) });
+
+      case 'tool-assisted-cycle-time':
+        return jsonResponse_({ ok: true, data: getToolAssistedCycleTimeReport_(params) });
 
       default:
         return jsonResponse_({ ok: false, error: `Unknown route: ${route}` });

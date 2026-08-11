@@ -10,7 +10,8 @@ const RAW_TICKET_HEADERS = [
   'fcr_value', 'escalation_value', 'assigned_se', 'assigned_cod', 'due_date',
   'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
   'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
-  'reporter_display_name', 'last_synced_at',
+  'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
+  'cycle_time_start', 'cycle_time_end', 'labels',
 ];
 
 function syncAllTeams() {
@@ -73,6 +74,17 @@ function processAndUpsertIssue_(team, issue) {
   if (issueNeedsChangelog_(team, fields, resolved.value)) {
     const changelog = jiraGetChangelog_(issue.key);
     row.first_out_of_backlog_todo = extractCycleTimeStart_(changelog, team.backlog_status_names_csv);
+    // DE/DEV: resolved_datetime comes ONLY from the changelog (moved to Ready for Checking or
+    // Cancelled) — never from resolved_date_field_id's raw text value, which isn't reliably
+    // updated for every outcome (confirmed: some tickets carry a stale/earlier value, which showed
+    // up as impossible negative lead/cycle times). issueNeedsChangelog_ always returns true for
+    // these teams (has_fcr_escalation is false), so this unconditionally replaces whatever
+    // parseResolvedDateField_ set — no changelog match means genuinely not resolved yet (or the
+    // transition isn't recorded), not "fall back to a maybe-wrong date". Blank is safer than wrong.
+    if (team.resolved_date_field_type === 'text') {
+      const changelogResolvedAt = extractDeDevResolvedAt_(changelog);
+      row.resolved_datetime = changelogResolvedAt ? new Date(changelogResolvedAt).toISOString() : '';
+    }
     if (team.has_holding_reason) {
       const cycles = extractHoldingCyclesWithReasons_(changelog);
       row.holding_reasons_json = JSON.stringify(cycles.map((c) => c.reason).filter(Boolean));
@@ -85,6 +97,13 @@ function processAndUpsertIssue_(team, issue) {
       row.total_in_progress_minutes = round2_(inProgressCycles.reduce((sum, c) => {
         return c.exitedAt ? sum + (new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000 : sum;
       }, 0));
+    }
+    if (team.has_peer_review_tracking) {
+      row.peer_review_cycles_json = JSON.stringify(extractPeerReviewCyclesWithReviewer_(changelog));
+      const endStatus = cycleTimeEndStatusForIssueType_(row.issue_type);
+      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, endStatus);
+      row.cycle_time_start = reviewCycleTime.startAt || '';
+      row.cycle_time_end = reviewCycleTime.endAt || '';
     }
   }
 
@@ -132,7 +151,11 @@ function mapIssueToRawRow_(team, issue, resolved) {
     total_in_progress_minutes: 0,
     assignee_display_name: fields.assignee ? fields.assignee.displayName : '',
     reporter_display_name: fields.reporter ? fields.reporter.displayName : '',
+    labels: Array.isArray(fields.labels) ? fields.labels.join(', ') : '',
     last_synced_at: nowIso_(),
+    peer_review_cycles_json: '[]',
+    cycle_time_start: '',
+    cycle_time_end: '',
   };
 }
 
@@ -221,6 +244,28 @@ function extractCycleTimeStart_(changelog, backlogStatusNamesCsv) {
 }
 
 /**
+ * DE/DEV "resolved" definition: the most recent changelog entry where status moved to Ready for
+ * Checking or Cancelled — both count as done, mirroring how ST's cycleTimeEndStatusForIssueType_
+ * treats For Peer Review/For Checking as equally valid completion points. Overwrites every match
+ * while walking chronologically, so a ticket that bounces back through one of these statuses again
+ * recomputes from the LATEST entry, same as extractReviewCycleTimeRange_.
+ */
+const DE_DEV_RESOLVED_STATUSES = ['ready for checking', 'cancelled'];
+
+function extractDeDevResolvedAt_(changelog) {
+  let resolvedAt = null;
+  for (let i = 0; i < changelog.length; i++) {
+    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    if (!statusItem) continue;
+    const toStatus = (statusItem.toString || '').toLowerCase();
+    if (DE_DEV_RESOLVED_STATUSES.indexOf(toStatus) !== -1) {
+      resolvedAt = changelog[i].created;
+    }
+  }
+  return resolvedAt;
+}
+
+/**
  * Walks the changelog chronologically and returns every On Hold cycle as
  * { enteredAt, exitedAt, reason }, where `reason` is the value of customfield_11463
  * at the moment the ticket entered On Hold. Jira batches field changes that happen
@@ -265,6 +310,103 @@ function extractHoldingCyclesWithReasons_(changelog) {
 }
 
 /**
+ * Walks the changelog chronologically and returns every "For Peer Review" cycle as
+ * { enteredAt, exitedAt, exitedToStatus, reviewer }. `reviewer` is the last value the
+ * ticket's native Assignee field was changed to as of the moment the cycle closes — a
+ * running value updated on every assignee changelog item (mirrors currentReason in
+ * extractHoldingCyclesWithReasons_), not reset per cycle, so a cycle with no in-window
+ * reassignment still reports whoever was already assigned. The assignee item is applied
+ * BEFORE the status item is checked within the same changelog entry (loop order matters):
+ * Jira batches simultaneous field changes into one changelog entry, so a reassignment that
+ * happens in the same entry as the "For Peer Review" exit must already be reflected in
+ * currentAssignee by the time that exit closes the cycle, not one entry later.
+ * Every exit is recorded (not just to On Hold/For Checking) via exitedToStatus — callers
+ * filter to the exits they care about rather than losing data for other exit paths.
+ */
+function extractPeerReviewCyclesWithReviewer_(changelog) {
+  let currentAssignee = null;
+  const cycles = [];
+  let cycleStart = null;
+
+  for (let i = 0; i < changelog.length; i++) {
+    const items = changelog[i].items || [];
+
+    items.forEach((item) => {
+      if (item.field === 'assignee' || item.fieldId === 'assignee') {
+        currentAssignee = item.toString || null;
+      }
+    });
+
+    const statusItem = items.find((item) => item.field === 'status');
+    if (!statusItem) continue;
+
+    const toStatus = (statusItem.toString || '').toLowerCase();
+    const fromStatus = (statusItem.fromString || '').toLowerCase();
+
+    if (toStatus === 'for peer review') {
+      cycleStart = changelog[i].created;
+    } else if (fromStatus === 'for peer review' && cycleStart) {
+      cycles.push({
+        enteredAt: cycleStart, exitedAt: changelog[i].created,
+        exitedToStatus: statusItem.toString || '', reviewer: currentAssignee || '',
+      });
+      cycleStart = null;
+    }
+  }
+
+  if (cycleStart) {
+    cycles.push({ enteredAt: cycleStart, exitedAt: null, exitedToStatus: null, reviewer: currentAssignee || '' });
+  }
+
+  return cycles;
+}
+
+/**
+ * Which status marks the end of SE active work, per issue type. Most ST issue types get
+ * peer-reviewed (SE hands off at "For Peer Review"), but Data Generation and Investigation
+ * skip dev review entirely and go straight to the requester at "For Checking" — for those,
+ * extractReviewCycleTimeRange_ would otherwise never find a "For Peer Review" transition and
+ * silently exclude them from cycle time forever. Falls back to 'for peer review' (the common
+ * case) for any issue type not listed here.
+ */
+const CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE = {
+  'data generation': 'for checking',
+  'investigation': 'for checking',
+};
+
+function cycleTimeEndStatusForIssueType_(issueType) {
+  return CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE[(issueType || '').toLowerCase()] || 'for peer review';
+}
+
+/**
+ * SE/ST cycle-time definition (replaces backlog-exit -> resolution for teams with
+ * has_peer_review_tracking): the span from when the ticket first moved OUT of Backlog/To Do
+ * (`backlogExitFallback`, i.e. `first_out_of_backlog_todo` — a fixed point per ticket) to the
+ * most recent `endStatus` entry (see cycleTimeEndStatusForIssueType_ — "For Peer Review" for most
+ * issue types, "For Checking" for Data Generation/Investigation). `cycleTimeEnd` is overwritten
+ * every time a later matching transition is seen while walking the changelog chronologically, so
+ * a ticket that bounces On Hold -> In Progress -> endStatus again automatically recomputes using
+ * the LATEST endStatus entry — no separate "bounce" case needed. The start does NOT track
+ * "In Progress" re-entries — it's always the ticket's original backlog-exit moment, regardless of
+ * how many times it later cycles back through review.
+ */
+function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatus) {
+  let cycleTimeEnd = null;
+
+  for (let i = 0; i < changelog.length; i++) {
+    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    if (!statusItem) continue;
+
+    const toStatus = (statusItem.toString || '').toLowerCase();
+    if (toStatus === endStatus) {
+      cycleTimeEnd = changelog[i].created;
+    }
+  }
+
+  return { startAt: backlogExitFallback || null, endAt: cycleTimeEnd };
+}
+
+/**
  * Walks the changelog chronologically and returns every In Progress cycle as
  * { enteredAt, exitedAt } — mirrors extractHoldingCyclesWithReasons_'s multi-cycle
  * handling but for "In Progress" and without reason-tracking (not applicable here).
@@ -303,6 +445,12 @@ function getOrCreateRawTab_(teamKey, year) {
   let sheet = ss.getSheetByName(tabName);
   if (!sheet) {
     sheet = ss.insertSheet(tabName);
+  }
+  // Self-heals a tab that exists but has no header row — e.g. a prior execution got interrupted
+  // (quota/timeout) between insertSheet and writing headers, or the Sheets service returned a
+  // stale getLastColumn() under load. Without this, objectToSheetRow_/updateSheetRow_ (Utils.gs)
+  // crash with "The number of columns in the range must be at least 1" on every write into it.
+  if (sheet.getLastColumn() === 0) {
     sheet.getRange(1, 1, 1, RAW_TICKET_HEADERS.length).setValues([RAW_TICKET_HEADERS]);
     sheet.getRange(1, 1, 1, RAW_TICKET_HEADERS.length).setFontWeight('bold');
     sheet.setFrozenRows(1);
@@ -341,6 +489,11 @@ function upsertRawTicketRow_(teamKey, row) {
     index.map[row.issue_key] = index.nextRow;
     index.nextRow += 1;
   }
+
+  // Phase 3 of the Sheets -> Supabase migration: keep Supabase current alongside Sheets.
+  // dualWriteTicketToSupabase_ (SupabaseClient.gs) swallows its own errors — Sheets stays
+  // authoritative during this phase, so a Supabase hiccup must never break sync/backfill.
+  dualWriteTicketToSupabase_(teamKey, row);
 }
 
 /** Accumulated in memory during a sync run, written once per team via flushDirtyDates_ (avoids a sheet write per issue). */

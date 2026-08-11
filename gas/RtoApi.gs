@@ -54,6 +54,49 @@ var RtoApi = {
       return { rto_id: id, deleted: true };
     });
   },
+
+  /**
+   * Logs a whole team's attendance for one date in a single call — the "take attendance" grid
+   * on the RTO page submits every roster member's pick here at once instead of one manager
+   * click-through per person. Upserts by (employee_name, date): re-submitting the same day
+   * (e.g. fixing a mistake) updates the existing rows instead of appending duplicates.
+   * payload: { date, entries: [{ employee_name, team_key, attendance_type, notes? }], created_by }
+   */
+  bulkUpsert: function (payload) {
+    return withLock_(function () {
+      const sheet = getManagerDataSpreadsheet_().getSheetByName('RTO');
+      const rows = sheetToObjects_(sheet);
+      const now = nowIso_();
+      const date = payload.date;
+
+      const results = (payload.entries || []).map((entry) => {
+        const existing = rows.find((r) =>
+          r.employee_name === entry.employee_name && toIsoDate_(new Date(r.date)) === date);
+        const record = Object.assign(
+          {
+            employee_name: entry.employee_name,
+            team_key: entry.team_key,
+            date: date,
+            attendance_type: entry.attendance_type,
+            notes: entry.notes || '',
+            created_by: payload.created_by || '',
+          },
+          existing ? { rto_id: existing.rto_id, created_at: existing.created_at } : { rto_id: uuid_(), created_at: now },
+          { updated_at: now }
+        );
+        if (existing) {
+          updateSheetRow_(sheet, existing._row, record);
+        } else {
+          appendObjectToSheet_(sheet, record);
+        }
+        const o = stripRowMeta_(record);
+        o.date = toDisplayDate_(o.date);
+        return o;
+      });
+
+      return { date: date, count: results.length, records: results };
+    });
+  },
 };
 
 /** {employee -> {daysInOffice, daysRemote, daysAbsent, totalDays, compliancePct}} */

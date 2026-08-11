@@ -18,6 +18,7 @@ export function RtoRecordsTable({
   roster: RosterMember[];
 }) {
   const [editing, setEditing] = useState<RtoRecord | null>(null);
+  const sortedRecords = [...records].sort((a, b) => a.date.localeCompare(b.date));
 
   return (
     <div className="card overflow-x-auto">
@@ -33,12 +34,12 @@ export function RtoRecordsTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-neutral-100">
-          {records.length === 0 && (
+          {sortedRecords.length === 0 && (
             <tr>
               <td colSpan={6} className="px-4 py-8 text-center text-neutral-400">No RTO records yet.</td>
             </tr>
           )}
-          {records.map((r) => (
+          {sortedRecords.map((r) => (
             <tr key={r.rto_id}>
               <td className="px-4 py-3 font-medium text-neutral-900">{r.employee_name}</td>
               <td className="px-4 py-3">{r.team_key}</td>

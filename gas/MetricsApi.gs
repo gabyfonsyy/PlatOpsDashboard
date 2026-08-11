@@ -26,7 +26,7 @@ function getAssigneeMetrics_(params) {
   const months = monthsInRange_(startDate, endDate);
 
   const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
-  const rows = sheetToObjects_(sheet).filter((r) =>
+  const rows = sheetToObjectsCached_(sheet).filter((r) =>
     r.team_key === params.team && months.indexOf(formatMonthCell_(r.month)) !== -1
   );
 
@@ -114,7 +114,7 @@ function getCachedInsight_(scope) {
 
 function getMetricsDailyRowsInRange_(teamKey, startDate, endDate, issueType) {
   const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_DAILY');
-  return sheetToObjects_(sheet).filter((r) => {
+  return sheetToObjectsCached_(sheet).filter((r) => {
     if (r.team_key !== teamKey) return false;
     const d = formatDateCell_(r.date);
     if (d < startDate || d > endDate) return false;
@@ -133,6 +133,7 @@ function rollupDailyRows_(rows, team, range, period, issueType) {
     resolvedAfterDue: 0, totalForAging: 0,
     assigned: 0,
     onHoldPickupSum: 0, onHoldPickupCount: 0,
+    peerReviewWaitSum: 0, peerReviewWaitCount: 0,
   };
   const holdingReasonTotals = {};
   const rejectionCategoryTotals = {};
@@ -162,6 +163,8 @@ function rollupDailyRows_(rows, team, range, period, issueType) {
     totals.assigned += Number(r.assigned_count) || 0;
     totals.onHoldPickupSum += Number(r.on_hold_pickup_sum_minutes) || 0;
     totals.onHoldPickupCount += Number(r.on_hold_pickup_count) || 0;
+    totals.peerReviewWaitSum += Number(r.peer_review_wait_sum_minutes) || 0;
+    totals.peerReviewWaitCount += Number(r.peer_review_wait_count) || 0;
 
     mergeJsonCounts_(holdingReasonTotals, r.holding_reason_json);
     mergeJsonCounts_(rejectionCategoryTotals, r.rejection_category_json);
@@ -206,6 +209,7 @@ function rollupDailyRows_(rows, team, range, period, issueType) {
     rejectionCategoryBreakdown: countsToBreakdown_(rejectionCategoryTotals, 'category'),
     cancellationReasonBreakdown: countsToBreakdown_(cancellationReasonTotals, 'reason'),
     onHoldAvgPickupMinutes: totals.onHoldPickupCount ? round2_(totals.onHoldPickupSum / totals.onHoldPickupCount) : null,
+    peerReviewWaitAvgMinutes: totals.peerReviewWaitCount ? round2_(totals.peerReviewWaitSum / totals.peerReviewWaitCount) : null,
     series: series,
   };
 }

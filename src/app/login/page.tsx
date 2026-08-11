@@ -28,18 +28,22 @@ export default function LoginPage() {
 
   if (status === "loading" || status === "authenticated") {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-neutral-50">
+      <div className="min-h-screen flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-sprout-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-sprout-50 to-white px-4">
-      <div className="card w-full max-w-sm p-8 flex flex-col items-center gap-6">
+    <div className="relative min-h-screen flex flex-col items-center justify-center px-4 overflow-hidden">
+      {/* Ambient nebula glow accents */}
+      <div className="pointer-events-none absolute -top-32 -left-24 w-96 h-96 rounded-full bg-sprout-300/30 blur-3xl animate-glow-pulse" />
+      <div className="pointer-events-none absolute -bottom-32 -right-24 w-[28rem] h-[28rem] rounded-full bg-fuchsia-200/30 blur-3xl animate-glow-pulse" />
+
+      <div className="card relative w-full max-w-sm p-8 flex flex-col items-center gap-6">
         {/* Logo */}
         <div className="flex flex-col items-center gap-2">
-          <div className="w-14 h-14 rounded-2xl bg-sprout-500 flex items-center justify-center shadow-md">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-sprout-400 to-sprout-600 flex items-center justify-center shadow-glow">
             <svg viewBox="0 0 24 24" fill="none" className="w-8 h-8 text-white" stroke="currentColor" strokeWidth={2}>
               <path d="M3 17l6-6 4 4 8-8" strokeLinecap="round" strokeLinejoin="round" />
               <path d="M14 7h7v7" strokeLinecap="round" strokeLinejoin="round" />
@@ -47,7 +51,7 @@ export default function LoginPage() {
           </div>
           <div className="text-center">
             <p className="text-xs font-medium text-sprout-600 uppercase tracking-widest mb-1">Sprout</p>
-            <h1 className="text-xl font-semibold text-neutral-900">Platform Operations Dashboard</h1>
+            <h1 className="text-xl">Platform Operations Dashboard</h1>
           </div>
         </div>
 

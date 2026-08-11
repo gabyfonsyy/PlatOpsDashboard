@@ -3,7 +3,7 @@ import { getTeams } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
 import { resolveFilters } from "@/lib/date-ranges";
-import { formatMinutesDecimalValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
+import { formatDaysValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { InsightPanel } from "@/components/dashboard/InsightPanel";
@@ -59,15 +59,15 @@ export default async function RollupPage({
         />
         <MetricCard
           label="Lead Time"
-          value={formatMinutesDecimalValue(rollupMetrics.leadTimeAvgMinutes)}
+          value={formatDaysValue(rollupMetrics.leadTimeAvgMinutes)}
           sublabel={formatDurationBreakdown(rollupMetrics.leadTimeAvgMinutes)}
-          tooltip="Average time from ticket creation to resolution, across all tickets resolved in the period."
+          tooltip="Average time from ticket creation to resolution, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes."
         />
         <MetricCard
           label="Cycle Time"
-          value={formatMinutesDecimalValue(rollupMetrics.cycleTimeAvgMinutes)}
+          value={formatDaysValue(rollupMetrics.cycleTimeAvgMinutes)}
           sublabel={formatDurationBreakdown(rollupMetrics.cycleTimeAvgMinutes)}
-          tooltip="Average time from when work started (ticket left Backlog/To Do) to resolution, across tickets resolved in the period."
+          tooltip="Average time from when work started (ticket left Backlog/To Do) to resolution, across tickets resolved in the period. Shown in days."
         />
         <MetricCard
           label="Backlog Aging"
@@ -81,7 +81,7 @@ export default async function RollupPage({
         {teams.map((t, i) => {
           const m = perTeamMetrics[i];
           return (
-            <Link key={t.team_key} href={`/${t.team_key.toLowerCase()}`} className="card p-5 hover:border-sprout-300 transition-colors">
+            <Link key={t.team_key} href={`/${t.team_key.toLowerCase()}`} className="card card-interactive p-5">
               <p className="text-sm font-medium text-neutral-900">{teamLabel(t.team_name)}</p>
               <p className="text-xs text-neutral-400 mt-0.5">{t.jira_project_key}</p>
               <div className="mt-3 grid grid-cols-2 gap-2 text-sm">

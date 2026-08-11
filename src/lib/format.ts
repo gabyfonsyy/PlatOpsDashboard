@@ -6,14 +6,9 @@ export function formatMinutes(minutes: number | null | undefined): string {
   return `${(hours / 24).toFixed(1)}d`;
 }
 
-/** Trims to at most `dp` decimals without trailing zeros: 2.35 -> "2.35", 2.5 -> "2.5", 3 -> "3". */
-function trimDecimals(value: number, dp = 2): string {
-  return String(Number(value.toFixed(dp)));
-}
-
 /**
- * Primary duration value in the largest sensible unit, max 2 decimals, with the unit spelled out
- * and pluralized. e.g. 3384 min -> "2.35 days", 504 min -> "8.4 hours", 45 min -> "45 minutes".
+ * Primary duration value in the largest sensible unit, always 2 decimals, with the unit spelled
+ * out and pluralized. e.g. 3384 min -> "2.35 days", 2874 min -> "2.00 days", 45 min -> "45.00 minutes".
  */
 export function formatMinutesDecimal(minutes: number | null | undefined): string {
   if (minutes === null || minutes === undefined) return "—";
@@ -22,14 +17,16 @@ export function formatMinutesDecimal(minutes: number | null | undefined): string
   if (minutes < 60) { value = minutes; unit = "minute"; }
   else if (minutes < 1440) { value = minutes / 60; unit = "hour"; }
   else { value = minutes / 1440; unit = "day"; }
-  const v = Number(value.toFixed(2));
-  return `${v} ${unit}${v === 1 ? "" : "s"}`;
+  const v = value.toFixed(2);
+  return `${v} ${unit}${Number(v) === 1 ? "" : "s"}`;
 }
 
 /**
- * Just the numeric magnitude in the largest sensible unit, no unit word (e.g. 3384 min -> "2.35",
- * 504 min -> "8.4", 45 min -> "45"). Pairs with formatDurationBreakdown as the sublabel, which
- * carries the unit — so the big score stays an uncluttered number.
+ * Just the numeric magnitude in the largest sensible unit, always 2 decimals, no unit word (e.g.
+ * 3384 min -> "2.35", 2874 min -> "2.00", 45 min -> "45.00"). Pairs with formatDurationBreakdown
+ * as the sublabel, which carries the unit — so the big score stays an uncluttered number.
+ * Returns the fixed string directly rather than round-tripping through Number() — that would
+ * collapse "2.00" back down to "2", silently dropping the decimals whenever they round to zero.
  */
 export function formatMinutesDecimalValue(minutes: number | null | undefined): string {
   if (minutes === null || minutes === undefined) return "—";
@@ -37,7 +34,19 @@ export function formatMinutesDecimalValue(minutes: number | null | undefined): s
   if (minutes < 60) value = minutes;
   else if (minutes < 1440) value = minutes / 60;
   else value = minutes / 1440;
-  return String(Number(value.toFixed(2)));
+  return value.toFixed(2);
+}
+
+/**
+ * Duration expressed in DAYS regardless of magnitude, always 3 decimals (e.g. 180 min ->
+ * "0.125", 3384 min -> "2.350"). Unlike formatMinutesDecimalValue, the unit never switches,
+ * so a 3-hour average and a 3-day average sit on the same scale and stay comparable when the
+ * period filter moves. Pairs with formatDurationBreakdown as the sublabel, which carries the
+ * human-readable "3h". Returns the fixed string directly so trailing zeros survive.
+ */
+export function formatDaysValue(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined) return "—";
+  return (minutes / 1440).toFixed(2);
 }
 
 /**
@@ -58,9 +67,9 @@ export function formatDurationBreakdown(minutes: number | null | undefined): str
   return parts.join(" ");
 }
 
-export function formatPercent(value: number | null | undefined): string {
+export function formatPercent(value: number | null | undefined, decimals = 1): string {
   if (value === null || value === undefined) return "—";
-  return `${(value * 100).toFixed(1)}%`;
+  return `${(value * 100).toFixed(decimals)}%`;
 }
 
 export function formatNumber(value: number | null | undefined): string {

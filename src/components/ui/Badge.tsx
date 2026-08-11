@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 const TONES = {
   neutral: "bg-neutral-100 text-neutral-600",
   warning: "bg-amber-100 text-amber-700",
-  success: "bg-sprout-100 text-sprout-700",
+  success: "bg-emerald-100 text-emerald-700",
   danger: "bg-red-100 text-red-700",
 };
 

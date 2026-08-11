@@ -11,6 +11,7 @@ export type TeamConfig = {
   has_holding_reason: boolean;
   has_rejection_category: boolean;
   has_cancellation_reason: boolean;
+  has_peer_review_tracking: boolean;
   backlog_status_names_csv: string;
   issue_types_csv: string;
   color_accent: string;

@@ -16,7 +16,7 @@ import { formatManilaDate, formatNumber } from "@/lib/format";
 
 // Validated categorical palette (light surface), fixed CVD-safe order. See dataviz references/palette.md.
 const PALETTE = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4"];
-const OTHER = "#9ca3af";
+const OTHER = "#a89bc0";
 
 /** yyyy-mm-dd (Manila) -> day-of-month number. */
 function dayOf(iso: string): number {

@@ -4,7 +4,7 @@ import { getTeamByKey } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
 import { resolveFilters } from "@/lib/date-ranges";
-import { formatMinutesDecimalValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
+import { formatMinutesDecimalValue, formatDaysValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { MetricsSeriesChart } from "@/components/dashboard/MetricsSeriesChart";
@@ -31,6 +31,9 @@ export default async function TeamDashboardPage({
     ? team.issue_types_csv.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
 
+  // Carried onto the Backlog Aging drill-down so it opens on the same period the card was read on.
+  const filterQuery = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}) }).toString();
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
@@ -53,25 +56,52 @@ export default async function TeamDashboardPage({
           label="Ticket Volume"
           value={formatNumber(metrics.ticketsCreated)}
           sublabel={`${formatNumber(metrics.ticketsResolvedInPeriod)} resolved`}
-          tooltip="Total tickets created during the selected period. The sublabel shows how many tickets were resolved during the period (by resolved date)."
+          tooltip={
+            team.has_peer_review_tracking
+              ? "Total tickets created during the selected period. The sublabel shows how many tickets were resolved during the period (by resolved date)."
+              : "Total tickets created during the selected period. The sublabel shows how many tickets were resolved during the period — moved to Ready for Checking or Cancelled (by resolved date)."
+          }
         />
         <MetricCard
           label="Lead Time"
-          value={formatMinutesDecimalValue(metrics.leadTimeAvgMinutes)}
+          value={formatDaysValue(metrics.leadTimeAvgMinutes)}
           sublabel={formatDurationBreakdown(metrics.leadTimeAvgMinutes)}
-          tooltip="Average time from ticket creation to resolution, across all tickets resolved in the period."
+          tooltip={
+            team.has_peer_review_tracking
+              ? "Average time from ticket creation to resolution, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes."
+              : "Average time from ticket creation until it moved to Ready for Checking or Cancelled, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes. Click through for the deep-dive (top assignee/product/label, longest tickets)."
+          }
+          href={!team.has_peer_review_tracking ? `/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=lead` : undefined}
         />
         <MetricCard
           label="Cycle Time"
-          value={formatMinutesDecimalValue(metrics.cycleTimeAvgMinutes)}
+          value={formatDaysValue(metrics.cycleTimeAvgMinutes)}
           sublabel={formatDurationBreakdown(metrics.cycleTimeAvgMinutes)}
-          tooltip="Average time from when work started (ticket left Backlog/To Do) to resolution, across tickets resolved in the period."
+          tooltip={
+            team.has_peer_review_tracking
+              ? "Average time from when the ticket moved out of Backlog/To Do to the most recent time it reached review — For Peer Review for most issue types, or For Checking for Data Generation/Investigation (which skip dev review) — counted as soon as a ticket reaches that stage, independent of resolution. If a ticket bounces back through review again, only the latest review entry moves, not the start. Shown in days."
+              : "Average time from when the ticket moved out of Backlog/To Do until it moved to Ready for Checking or Cancelled, across tickets resolved in the period. Shown in days. Click through for the deep-dive (top assignee/product/label, longest tickets)."
+          }
+          href={!team.has_peer_review_tracking ? `/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=cycle` : undefined}
         />
+        {team.has_peer_review_tracking && (
+          <MetricCard
+            label="Ticket Wait Time"
+            value={formatMinutesDecimalValue(metrics.peerReviewWaitAvgMinutes)}
+            sublabel={formatDurationBreakdown(metrics.peerReviewWaitAvgMinutes)}
+            tooltip="Average time a ticket spends in For Peer Review before moving on to On Hold or For Checking, across review cycles that finished during the period."
+          />
+        )}
         <MetricCard
           label="Backlog Aging"
-          value={formatPercent(metrics.backlogAgingRate)}
+          value={formatPercent(metrics.backlogAgingRate, 2)}
           sublabel={`${formatNumber(metrics.overdueCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved overdue`}
-          tooltip="Overdue tickets ÷ total tickets resolved in the period. Overdue = resolved after the due date (resolved date > due date)."
+          tooltip={
+            team.has_peer_review_tracking
+              ? "Overdue tickets ÷ total tickets resolved in the period. Overdue = resolved after the due date (resolved date > due date). Click through for the ticket-by-ticket list."
+              : "Overdue tickets ÷ total tickets resolved (moved to Ready for Checking or Cancelled) in the period. Overdue = resolved after the due date (resolved date > due date). Click through for the ticket-by-ticket list."
+          }
+          href={`/${team.team_key.toLowerCase()}/backlog-aging?${filterQuery}`}
         />
         {team.has_fcr_escalation && (
           <>

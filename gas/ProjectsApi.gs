@@ -1,7 +1,7 @@
 /** CRUD for the manager-entered PROJECTS (Project Tracker) tab. */
 var ProjectsApi = {
   list: function (params) {
-    const sheet = getManagerDataSpreadsheet_().getSheetByName('PROJECTS');
+    const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECTS');
     let rows = sheetToObjects_(sheet);
     if (params.team) rows = rows.filter((r) => r.owning_team === params.team);
     if (params.status) rows = rows.filter((r) => r.status === params.status);
@@ -10,9 +10,17 @@ var ProjectsApi = {
 
   create: function (payload) {
     return withLock_(function () {
-      const sheet = getManagerDataSpreadsheet_().getSheetByName('PROJECTS');
+      const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECTS');
       const now = nowIso_();
-      const record = Object.assign({}, payload, {
+      const record = Object.assign({
+        teams_involved: '',
+        jira_label: '',
+        total_items: '',
+        batch_size: '',
+        batches_per_week: '',
+        weekly_plan_json: '[]',
+        tracking_mode: 'manual',
+      }, payload, {
         project_id: uuid_(),
         status: payload.status || 'Not Started',
         percent_complete: payload.percent_complete || 0,
@@ -26,7 +34,7 @@ var ProjectsApi = {
 
   update: function (id, payload) {
     return withLock_(function () {
-      const sheet = getManagerDataSpreadsheet_().getSheetByName('PROJECTS');
+      const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECTS');
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.project_id === id);
       if (!existing) throw new Error(`Project not found: ${id}`);
@@ -38,7 +46,7 @@ var ProjectsApi = {
 
   remove: function (id) {
     return withLock_(function () {
-      const sheet = getManagerDataSpreadsheet_().getSheetByName('PROJECTS');
+      const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECTS');
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.project_id === id);
       if (!existing) throw new Error(`Project not found: ${id}`);

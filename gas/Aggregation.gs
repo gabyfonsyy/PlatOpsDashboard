@@ -16,6 +16,11 @@ function aggregateAllTeams() {
       notifyFailure_(`aggregateAllTeams failed for ${team.team_key}`, err);
     }
   });
+  // MetricsApi.gs's sheetToObjectsCached_ fronts both sheets with a 10-min TTL cache — drop it
+  // now so dashboard reads see this run's changes immediately instead of waiting out the TTL.
+  const jiraData = getJiraDataSpreadsheet_();
+  invalidateSheetCache_(jiraData.getSheetByName('METRICS_DAILY'));
+  invalidateSheetCache_(jiraData.getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY'));
 }
 
 function aggregateTeam_(team) {
@@ -279,6 +284,88 @@ function backfillResolvedOnDateForTeam_(team) {
   Logger.log(`backfillResolvedOnDate: ${team.team_key} done.`);
 }
 
+/**
+ * One-time backfill of peer_review_wait_sum_minutes/peer_review_wait_count across existing
+ * METRICS_DAILY history (the incremental aggregateTeam_ only fills it for dates touched since the
+ * feature shipped). Run once, from the editor, AFTER migrateAddPeerReviewWaitMetric.
+ *
+ * Chunked and self-continuing — an earlier version marked EVERY historical date dirty in one shot
+ * and called aggregateTeam_ once, which reliably timed out: each (issue_type, date) bucket upsert
+ * is its own couple of Sheets API round-trips (updateSheetRow_/appendObjectToSheet_ re-read the
+ * header row every call), and two years of ST tickets add up to thousands of buckets — far more
+ * than fits in the 6-minute execution limit, and aggregateTeam_ only checkpoints progress at YEAR
+ * boundaries, so a mid-year timeout lost all of that year's work on every retry.
+ *
+ * This version processes one calendar month per execution instead (a few hundred buckets at most,
+ * comfortably under the limit), then reschedules itself ~1s later via a one-off trigger until
+ * every month with ST history has been redone. Progress lives in a Script Property (not
+ * SYNC_CHECKPOINT/AGG_CHECKPOINT), so it never interferes with the regular sync/aggregation
+ * triggers — though the per-month aggregateTeam_ call below does briefly overwrite AGG_CHECKPOINT's
+ * dirty_dates_json for ST, so avoid running this at the same moment as a scheduled sync/aggregate
+ * cycle for ST.
+ */
+const PEER_REVIEW_WAIT_BACKFILL_CURSOR_KEY = 'PEER_REVIEW_WAIT_BACKFILL_REMAINING_MONTHS';
+
+function backfillPeerReviewWait() {
+  const team = getTeamsConfig_().find((t) => t.team_key === 'ST');
+  if (!team) { Logger.log('ST team not found in TEAMS_CONFIG.'); return; }
+
+  const props = PropertiesService.getScriptProperties();
+  let remaining = JSON.parse(props.getProperty(PEER_REVIEW_WAIT_BACKFILL_CURSOR_KEY) || 'null');
+
+  if (!remaining) {
+    const months = {};
+    getAllRawYearsForTeam_('ST').forEach((year) => {
+      const sheet = getJiraDataSpreadsheet_().getSheetByName(`RAW_ST_${year}`);
+      if (!sheet) return;
+      sheetToObjects_(sheet).forEach((r) => {
+        if (r.created) months[toIsoDate_(new Date(r.created)).slice(0, 7)] = true;
+      });
+    });
+    remaining = Object.keys(months).sort();
+    Logger.log(`backfillPeerReviewWait: starting fresh — ${remaining.length} month(s) to process.`);
+  }
+
+  deletePeerReviewWaitBackfillTrigger_();
+
+  if (!remaining.length) {
+    props.deleteProperty(PEER_REVIEW_WAIT_BACKFILL_CURSOR_KEY);
+    invalidateSheetCache_(getJiraDataSpreadsheet_().getSheetByName('METRICS_DAILY'));
+    sendAlertEmail_(
+      'Peer review wait backfill complete',
+      'All ST months have been re-aggregated with peer_review_wait_sum_minutes/count.'
+    );
+    Logger.log('backfillPeerReviewWait: done.');
+    return;
+  }
+
+  const month = remaining[0]; // 'yyyy-MM'
+  writeAggCheckpoint_('ST', { dirty_dates_json: JSON.stringify(datesInMonth_(month)) });
+  aggregateTeam_(team);
+
+  remaining = remaining.slice(1);
+  props.setProperty(PEER_REVIEW_WAIT_BACKFILL_CURSOR_KEY, JSON.stringify(remaining));
+  Logger.log(`backfillPeerReviewWait: finished ${month}, ${remaining.length} month(s) left.`);
+  ScriptApp.newTrigger('backfillPeerReviewWait').timeBased().after(1000).create();
+}
+
+function deletePeerReviewWaitBackfillTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'backfillPeerReviewWait')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/** Every 'yyyy-MM-dd' calendar date in the given 'yyyy-MM' month. */
+function datesInMonth_(yyyyMM) {
+  const [y, m] = yyyyMM.split('-').map(Number);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const dates = [];
+  for (let d = 1; d <= daysInMonth; d++) {
+    dates.push(`${yyyyMM}-${String(d).padStart(2, '0')}`);
+  }
+  return dates;
+}
+
 /** Business logic for one team+issueType+date bucket — see plan Section 4.4 for the exact formulas. */
 function computeDailyBucket_(team, rows) {
   let ticketsResolved = 0;
@@ -291,16 +378,30 @@ function computeDailyBucket_(team, rows) {
   const rejectionCategoryCounts = {};
   const cancellationReasonCounts = {};
   let onHoldPickupSum = 0, onHoldPickupCount = 0;
+  let peerReviewWaitSum = 0, peerReviewWaitCount = 0;
 
   rows.forEach((r) => {
     const created = r.created ? new Date(r.created) : null;
     const resolved = r.resolved_datetime ? new Date(r.resolved_datetime) : null;
-    const cycleStart = r.first_out_of_backlog_todo ? new Date(r.first_out_of_backlog_todo) : null;
     const due = r.due_date ? new Date(r.due_date) : null;
 
     if (resolved) {
       ticketsResolved++;
       if (created) { leadTimeSum += minutesBetween_(created, resolved); leadTimeCount++; }
+    }
+
+    // Cycle time: has_peer_review_tracking teams (ST/SE) use the new In-Progress-entry ->
+    // most-recent-For-Peer-Review-entry span (cycle_time_start/end, from
+    // extractReviewCycleTimeRange_ in JiraSync.gs), counted as soon as that span exists —
+    // independent of resolution, since it measures the SE's active work time, not the
+    // ticket's full lifecycle. Other teams keep the original backlog-exit -> resolution span.
+    if (team.has_peer_review_tracking) {
+      if (r.cycle_time_start && r.cycle_time_end) {
+        cycleTimeSum += minutesBetween_(new Date(r.cycle_time_start), new Date(r.cycle_time_end));
+        cycleTimeCount++;
+      }
+    } else if (resolved) {
+      const cycleStart = r.first_out_of_backlog_todo ? new Date(r.first_out_of_backlog_todo) : null;
       if (cycleStart) { cycleTimeSum += minutesBetween_(cycleStart, resolved); cycleTimeCount++; }
     }
 
@@ -341,6 +442,24 @@ function computeDailyBucket_(team, rows) {
       onHoldPickupSum += Number(r.total_on_hold_minutes);
       onHoldPickupCount++;
     }
+
+    // Ticket Wait Time (SE): average time spent in "For Peer Review" per completed review cycle.
+    // Same business rule as getPeerReviewWaitReport_ (PeerReviewApi.gs) — only cycles that exited
+    // to On Hold or For Checking count as a real completed wait; other exits (e.g. cancelled) are
+    // excluded so the two views of this data never disagree. Bucketed by the ticket's CREATED date
+    // (like on-hold pickup above), not by when each cycle actually occurred — a ticket created in
+    // an earlier period whose review cycle finishes now still counts against its creation date.
+    if (team.has_peer_review_tracking && r.peer_review_cycles_json) {
+      try {
+        JSON.parse(r.peer_review_cycles_json).forEach((c) => {
+          if (!c.enteredAt || !c.exitedAt) return;
+          const exitedToStatus = (c.exitedToStatus || '').toLowerCase();
+          if (exitedToStatus !== 'on hold' && exitedToStatus !== 'for checking') return;
+          peerReviewWaitSum += minutesBetween_(new Date(c.enteredAt), new Date(c.exitedAt));
+          peerReviewWaitCount++;
+        });
+      } catch (e) {}
+    }
   });
 
   return {
@@ -361,6 +480,8 @@ function computeDailyBucket_(team, rows) {
     cancellation_reason_json: JSON.stringify(cancellationReasonCounts),
     on_hold_pickup_sum_minutes: onHoldPickupSum,
     on_hold_pickup_count: onHoldPickupCount,
+    peer_review_wait_sum_minutes: peerReviewWaitSum,
+    peer_review_wait_count: peerReviewWaitCount,
   };
 }
 
@@ -553,36 +674,81 @@ function backfillResolvedInMonthForTeam_(team) {
  * getAssigneeMonthlyIndex_ keyed on the raw (Date-parsed) month cell — every aggregation/backfill
  * run appended instead of updating, inflating per-assignee counts ~Nx. Simple dedup won't do
  * because recompute-appended and backfill-appended duplicates populate different columns, so this
- * CLEARS the tab and recomputes every (assignee, month) from raw in one clean pass — each
+ * clears the tab once and recomputes every (team, assignee, month) from raw — each
  * recomputeAssigneeMonthly_ writes a complete row (created-based + resolved-in-month + FCR/esc).
- * Run once from the editor AFTER the getAssigneeMonthlyIndex_ fix is deployed. Idempotent (it
- * always clears first), so re-run if it times out. No separate backfill needed afterward.
+ *
+ * Chunked and self-continuing — the original version cleared the WHOLE sheet then looped every
+ * team's every month in one execution, which reliably exceeded the 6-minute limit for ST's ticket
+ * volume alone (same failure mode backfillPeerReviewWait had, see its comment). Worse, because it
+ * cleared unconditionally on every call, the original "just re-run it if it times out" advice
+ * actively made things worse — each re-run wiped whatever partial progress existed and restarted
+ * from team #1, so it could never converge past wherever the first team happened to land. This
+ * version clears ONCE on a fresh start, then processes one (team, month) pair per execution,
+ * tracking remaining work in a Script Property and rescheduling itself ~1s later via a one-off
+ * trigger until every team+month is done.
  */
-function rebuildAssigneeMonthly() {
-  const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
-  _assigneeMonthlyIndexCache_ = null;
+const REBUILD_ASSIGNEE_MONTHLY_CURSOR_KEY = 'REBUILD_ASSIGNEE_MONTHLY_REMAINING';
 
-  getActiveTeamsConfig_().forEach((team) => {
-    const resolvedByAssigneeMonth = buildResolvedByAssigneeMonth_(team);
-    const months = {};
-    // Every month a ticket was CREATED in (drives the created-based columns)...
-    listRawYears_(team.team_key).forEach((year) => {
-      const raw = getOrCreateRawTab_(team.team_key, year);
-      sheetToObjects_(raw).forEach((r) => {
-        if (r.created) months[monthLabel_(new Date(r.created))] = true;
+function rebuildAssigneeMonthly() {
+  const props = PropertiesService.getScriptProperties();
+  let remaining = JSON.parse(props.getProperty(REBUILD_ASSIGNEE_MONTHLY_CURSOR_KEY) || 'null');
+
+  if (!remaining) {
+    const sheet = getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY');
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+    _assigneeMonthlyIndexCache_ = null;
+
+    remaining = [];
+    getActiveTeamsConfig_().forEach((team) => {
+      const resolvedByAssigneeMonth = buildResolvedByAssigneeMonth_(team);
+      const months = {};
+      // Every month a ticket was CREATED in (drives the created-based columns)...
+      listRawYears_(team.team_key).forEach((year) => {
+        const raw = getOrCreateRawTab_(team.team_key, year);
+        sheetToObjects_(raw).forEach((r) => {
+          if (r.created) months[monthLabel_(new Date(r.created))] = true;
+        });
       });
+      // ...plus every month a ticket RESOLVED in, so resolution-only months still get rows.
+      Object.keys(resolvedByAssigneeMonth.resolved).forEach((a) => {
+        Object.keys(resolvedByAssigneeMonth.resolved[a]).forEach((m) => { months[m] = true; });
+      });
+      Object.keys(months).sort().forEach((month) => remaining.push({ teamKey: team.team_key, month: month }));
     });
-    // ...plus every month a ticket RESOLVED in, so resolution-only months still get rows.
-    Object.keys(resolvedByAssigneeMonth.resolved).forEach((a) => {
-      Object.keys(resolvedByAssigneeMonth.resolved[a]).forEach((m) => { months[m] = true; });
-    });
-    Object.keys(months).sort().forEach((month) =>
-      recomputeAssigneeMonthly_(team, month, resolvedByAssigneeMonth));
-    Logger.log(`rebuildAssigneeMonthly: ${team.team_key} — ${Object.keys(months).length} months.`);
-  });
-  Logger.log('rebuildAssigneeMonthly done.');
+    Logger.log(`rebuildAssigneeMonthly: starting fresh — ${remaining.length} team-month(s) to process.`);
+  }
+
+  deleteRebuildAssigneeMonthlyTrigger_();
+
+  if (!remaining.length) {
+    props.deleteProperty(REBUILD_ASSIGNEE_MONTHLY_CURSOR_KEY);
+    invalidateSheetCache_(getJiraDataSpreadsheet_().getSheetByName('METRICS_BY_ASSIGNEE_MONTHLY'));
+    sendAlertEmail_(
+      'Assignee-monthly rebuild complete',
+      'METRICS_BY_ASSIGNEE_MONTHLY has been fully recomputed for every active team.'
+    );
+    Logger.log('rebuildAssigneeMonthly: done.');
+    return;
+  }
+
+  const next = remaining[0];
+  const team = getActiveTeamsConfig_().find((t) => t.team_key === next.teamKey);
+  if (team) {
+    const resolvedByAssigneeMonth = buildResolvedByAssigneeMonth_(team);
+    recomputeAssigneeMonthly_(team, next.month, resolvedByAssigneeMonth);
+  }
+
+  remaining = remaining.slice(1);
+  props.setProperty(REBUILD_ASSIGNEE_MONTHLY_CURSOR_KEY, JSON.stringify(remaining));
+  Logger.log(`rebuildAssigneeMonthly: finished ${next.teamKey} ${next.month}, ${remaining.length} left.`);
+  ScriptApp.newTrigger('rebuildAssigneeMonthly').timeBased().after(1000).create();
+}
+
+function deleteRebuildAssigneeMonthlyTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'rebuildAssigneeMonthly')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
 }
 
 function computeAssigneeMonthlyBucket_(team, rows) {
@@ -596,15 +762,27 @@ function computeAssigneeMonthlyBucket_(team, rows) {
   rows.forEach((r) => {
     const created = r.created ? new Date(r.created) : null;
     const resolvedAt = r.resolved_datetime ? new Date(r.resolved_datetime) : null;
-    const cycleStart = r.first_out_of_backlog_todo ? new Date(r.first_out_of_backlog_todo) : null;
     const due = r.due_date ? new Date(r.due_date) : null;
 
     if (resolvedAt) {
       resolved++;
       if (created) { leadTimeSum += minutesBetween_(created, resolvedAt); leadTimeCount++; }
-      if (cycleStart) { cycleTimeSum += minutesBetween_(cycleStart, resolvedAt); cycleTimeCount++; }
       // Date comparison, not datetime (see aggregateTeam_) — same-day resolutions are on time.
       if (due && toIsoDate_(resolvedAt) > toDisplayDate_(r.due_date)) resolvedAfterDue++;
+    }
+
+    // Cycle time: see computeDailyBucket_ for the full rationale — has_peer_review_tracking
+    // teams (ST/SE) use cycle_time_start/end (In-Progress-entry -> most recent For-Peer-Review
+    // entry), counted independent of resolution; other teams keep the original
+    // backlog-exit -> resolution span, still gated on resolution.
+    if (team.has_peer_review_tracking) {
+      if (r.cycle_time_start && r.cycle_time_end) {
+        cycleTimeSum += minutesBetween_(new Date(r.cycle_time_start), new Date(r.cycle_time_end));
+        cycleTimeCount++;
+      }
+    } else if (resolvedAt) {
+      const cycleStart = r.first_out_of_backlog_todo ? new Date(r.first_out_of_backlog_todo) : null;
+      if (cycleStart) { cycleTimeSum += minutesBetween_(cycleStart, resolvedAt); cycleTimeCount++; }
     }
 
     if (team.has_fcr_escalation) {
@@ -673,6 +851,10 @@ function upsertMetricsDailyRow_(teamKey, issueType, date, bucket) {
     index.map[key] = index.nextRow;
     index.nextRow += 1;
   }
+
+  // Phase 3 of the Sheets -> Supabase migration — see dualWriteTicketToSupabase_ in
+  // JiraSync.gs for the same rationale (never let a Supabase hiccup break aggregation).
+  dualWriteMetricsDailyToSupabase_(record);
 }
 
 var _assigneeMonthlyIndexCache_ = null;
@@ -707,6 +889,10 @@ function upsertAssigneeMonthlyRow_(teamKey, assignee, month, bucket) {
     index.map[key] = index.nextRow;
     index.nextRow += 1;
   }
+
+  // Phase 3 of the Sheets -> Supabase migration — see dualWriteTicketToSupabase_ in
+  // JiraSync.gs for the same rationale (never let a Supabase hiccup break aggregation).
+  dualWriteAssigneeMonthlyToSupabase_(record);
 }
 
 function readAggCheckpoint_(teamKey) {

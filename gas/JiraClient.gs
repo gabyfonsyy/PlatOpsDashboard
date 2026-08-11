@@ -45,6 +45,17 @@ function jiraFetchWithRetry_(url, options) {
 }
 
 /**
+ * True if `err` is jiraFetchWithRetry_ reporting that Jira rejected a stored nextPageToken
+ * as invalid/expired (HTTP 400, "next page token" in the body). Unlike 429/5xx this is never
+ * transient — retrying with the same token just fails again forever, so callers must clear
+ * their stored cursor instead of scheduling another retry.
+ */
+function isExpiredPageTokenError_(err) {
+  const message = String(err && err.message ? err.message : err);
+  return /HTTP 400\b/.test(message) && /next page token/i.test(message);
+}
+
+/**
  * One page of JQL search results via /rest/api/3/search/jql — the endpoint Atlassian
  * replaced /rest/api/3/search with (the old one returns HTTP 410 Gone as of their 2025
  * migration, see CHANGE-2046). Pagination is now token-based, not offset-based:
@@ -87,7 +98,7 @@ function jiraGetChangelog_(issueKey) {
 
 /** The field IDs every team config needs pulled from Jira, deduped, plus always-needed standard fields. */
 function buildJiraFieldList_(teamConfig) {
-  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate'];
+  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels'];
   const custom = [
     teamConfig.resolved_date_field_id,
     teamConfig.assignee_field_id,

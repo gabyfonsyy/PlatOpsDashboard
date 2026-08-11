@@ -7,11 +7,13 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { RefreshDataButton } from "@/components/layout/RefreshDataButton";
 
 const NAV_ITEMS = [
   { href: "/leave", label: "Leave" },
   { href: "/rto", label: "RTO" },
   { href: "/projects", label: "Projects" },
+  { href: "/monitoring", label: "Ticket Monitoring" },
 ];
 
 export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
@@ -44,29 +46,38 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   return (
     <>
       {/* Header: brand + account only */}
-      <header className="bg-white border-b border-neutral-200">
+      <header className="sticky top-0 z-20 bg-white/70 backdrop-blur-xl border-b border-neutral-200/60">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-6">
           <div className="flex items-center gap-2 shrink-0">
-            <div className="w-8 h-8 rounded-lg bg-sprout-500 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-sprout-400 to-sprout-600 shadow-glow flex items-center justify-center">
               <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 text-white" stroke="currentColor" strokeWidth={2}>
                 <path d="M3 17l6-6 4 4 8-8" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M14 7h7v7" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </div>
-            <span className="font-semibold text-neutral-900 text-sm hidden sm:inline">Platform Ops</span>
+            <span className="font-serif font-medium text-neutral-900 text-sm hidden sm:inline">Platform Ops</span>
           </div>
 
-          {session?.user && (
-            <button onClick={() => signOut({ callbackUrl: "/login" })} className="flex items-center gap-2 shrink-0">
-              {session.user.image ? (
-                <Image src={session.user.image} alt="" width={28} height={28} className="rounded-full" />
-              ) : (
-                <div className="w-7 h-7 rounded-full bg-sprout-100 flex items-center justify-center text-sprout-700 text-xs font-semibold">
-                  {session.user.name?.[0] ?? "?"}
-                </div>
-              )}
-            </button>
-          )}
+          <div className="flex items-center gap-4 shrink-0">
+            <RefreshDataButton />
+            {session?.user && (
+              <button onClick={() => signOut({ callbackUrl: "/login" })} className="flex items-center gap-2 group">
+                {session.user.image ? (
+                  <Image
+                    src={session.user.image}
+                    alt=""
+                    width={28}
+                    height={28}
+                    className="rounded-full ring-2 ring-transparent group-hover:ring-sprout-300 transition-all duration-200"
+                  />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-sprout-100 flex items-center justify-center text-sprout-700 text-xs font-semibold ring-2 ring-transparent group-hover:ring-sprout-300 transition-all duration-200">
+                    {session.user.name?.[0] ?? "?"}
+                  </div>
+                )}
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -103,11 +114,14 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
             )}
           </div>
 
-          {NAV_ITEMS.map((item) => (
-            <Link key={item.href} href={item.href} className={cn("pill", pathname === item.href && "pill-active")}>
-              {item.label}
-            </Link>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            return (
+              <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>
+                {item.label}
+              </Link>
+            );
+          })}
         </nav>
       </div>
     </>

@@ -31,7 +31,7 @@ For readability, arrange them (drag in the editor's left file list) as:
 7. `MetricsApi.gs` — read-only rollup API the frontend actually queries
 8. `Insights.gs` — Gemini narrative generation + deterministic outlier detection
 9. `Code.gs` — the `doGet`/`doPost` router, ties everything together
-10. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`
+10. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`, `ProgressApi.gs`, `TasksApi.gs`
 11. `Setup.gs` — one-time bootstrap, not called by the router
 12. `Triggers.gs` — installs every recurring trigger, run last of all
 
@@ -151,11 +151,19 @@ trigger once `Triggers.gs` is installed — see Milestone 6). Then smoke-test:
 ```bash
 curl "<URL>?route=metrics&apiKey=<KEY>&team=ST&range=month&period=2026-07"
 curl "<URL>?route=assignee-metrics&apiKey=<KEY>&team=ST&range=month&period=2026-07"
+curl "<URL>?route=backlog-aging-report&apiKey=<KEY>&team=DBA&range=month&period=2026-07"
 ```
 
 Hand-verify the returned `fcrRate`/`escalationRate`/`backlogAgingRate`/lead-cycle-time
 averages against a handful of tickets you know the history of before trusting the
 numbers for a real MBR/QBR.
+
+`backlog-aging-report` (BacklogAgingApi.gs) is the per-ticket drill-down behind the
+Backlog Aging scorecard — it re-derives the overdue set from the RAW tabs using the same
+date comparison `buildResolvedIndex_` applies, so its `overdueCount`/`resolvedInPeriod`
+should equal the "N of M resolved overdue" the `metrics` route reports for the same
+team + period. If the two disagree, `aggregateAllTeams` hasn't caught up with the latest
+sync — the report reads raw rows live, the scorecard reads `METRICS_DAILY`.
 
 ## Gemini insights (Milestone 5)
 

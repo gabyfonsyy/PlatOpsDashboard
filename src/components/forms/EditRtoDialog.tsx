@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import type { TeamConfig } from "@/lib/teams";
 import type { RtoRecord, RosterMember } from "@/lib/types";
@@ -59,13 +60,13 @@ export function EditRtoDialog({
     router.refresh();
   }
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-900/40 p-4"
       onClick={onClose}
     >
       <div
-        className="card w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6"
+        className="card bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
@@ -85,6 +86,7 @@ export function EditRtoDialog({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

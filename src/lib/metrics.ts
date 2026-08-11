@@ -21,6 +21,7 @@ export type TicketMetrics = {
   rejectionCategoryBreakdown: { category: string; count: number }[];
   cancellationReasonBreakdown: { reason: string; count: number }[];
   onHoldAvgPickupMinutes: number | null;
+  peerReviewWaitAvgMinutes: number | null;
   series: { date: string; created: number; resolved: number; leadTimeAvgMinutes: number | null }[];
 };
 
@@ -57,7 +58,7 @@ const EMPTY_METRICS: TicketMetrics = {
   ticketVolume: 0,
   ticketsCreated: 0, ticketsResolved: 0, ticketsResolvedInPeriod: 0, holdingReasonBreakdown: [],
   rejectionCategoryBreakdown: [], cancellationReasonBreakdown: [],
-  onHoldAvgPickupMinutes: null, series: [],
+  onHoldAvgPickupMinutes: null, peerReviewWaitAvgMinutes: null, series: [],
 };
 
 /** Falls back to empty metrics rather than throwing — GAS may not be deployed yet, or the period may have no data. */
