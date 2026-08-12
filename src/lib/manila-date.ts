@@ -31,3 +31,45 @@ export function isoDateDiffDays(fromIso: string, toIso: string): number {
 export function minutesBetween(a: string, b: string): number {
   return (new Date(b).getTime() - new Date(a).getTime()) / 60000;
 }
+
+const MANILA_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * Business-day / Manila-time helpers for SLA date math (lib/late-pickup.ts), ported from
+ * gas/Utils.gs's manilaHour_/manilaDateOnly_/isWeekend_/nextBusinessDay_/endOfManilaDay_.
+ *
+ * The GAS versions lean on the Apps Script project's runtime timezone being set to Asia/Manila
+ * (appsscript.json) — `new Date(y, m, d)` there IS Manila midnight, no conversion needed. A
+ * Vercel serverless function has no such guarantee (its runtime is typically UTC), so every
+ * helper here works in real UTC instants throughout, using a manual +8h shift to read/construct
+ * Manila calendar fields — this way `.toISOString()`/`>`/`<` comparisons against Postgres
+ * timestamptz values are correct no matter what timezone the function happens to execute in.
+ */
+
+export function manilaHour(date: Date): number {
+  return new Date(date.getTime() + MANILA_OFFSET_MS).getUTCHours();
+}
+
+export function isWeekendManila(date: Date): boolean {
+  const day = new Date(date.getTime() + MANILA_OFFSET_MS).getUTCDay(); // 0=Sun..6=Sat
+  return day === 0 || day === 6;
+}
+
+/** The UTC instant of Manila midnight on `date`'s Manila calendar day. */
+export function manilaDateOnlyUtc(date: Date): Date {
+  const shifted = new Date(date.getTime() + MANILA_OFFSET_MS);
+  const utcMidnightSameFields = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate());
+  return new Date(utcMidnightSameFields - MANILA_OFFSET_MS);
+}
+
+/** `manilaMidnight` must already be a manilaDateOnlyUtc value. Next Mon-Fri Manila midnight strictly after it. */
+export function nextBusinessDayUtc(manilaMidnight: Date): Date {
+  let next = new Date(manilaMidnight.getTime() + 86400000);
+  while (isWeekendManila(next)) next = new Date(next.getTime() + 86400000);
+  return next;
+}
+
+/** `manilaMidnight` must already be a manilaDateOnlyUtc value. The UTC instant of 23:59:59.999 Manila that day. */
+export function endOfManilaDayUtc(manilaMidnight: Date): Date {
+  return new Date(manilaMidnight.getTime() + 86400000 - 1);
+}
