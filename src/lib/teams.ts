@@ -29,3 +29,15 @@ export async function getTeamByKey(teamKey: string): Promise<TeamConfig | undefi
   const teams = await getTeams();
   return teams.find((t) => t.team_key.toLowerCase() === teamKey.toLowerCase());
 }
+
+/**
+ * The team's configured owner column — same switch gas/Aggregation.gs uses for per-assignee
+ * rollups, and every Phase 4 report drill-down (Backlog Aging, Lead/Cycle Time, ...) needs it.
+ */
+export function backlogAgingAssignee(team: TeamConfig, row: { assigned_se: string | null; assigned_cod: string | null }): string {
+  return (team.assignee_field_id === "customfield_10189" ? row.assigned_se : row.assigned_cod) || "";
+}
+
+export function backlogAgingAssigneeLabel(team: TeamConfig): string {
+  return team.assignee_field_id === "customfield_10189" ? "Assigned SE" : "Assigned COD";
+}
