@@ -62,32 +62,19 @@ function handleRequest_(e, method) {
         if (params.action === 'assign') return jsonResponse_({ ok: true, data: TicketProjectApi.assign(body) });
         return jsonResponse_({ ok: false, error: `Unknown action for ticket-projects: ${params.action}` });
 
-      case 'metrics':
-        return jsonResponse_({ ok: true, data: getTicketMetrics_(params) });
-
-      case 'assignee-metrics':
-        return jsonResponse_({ ok: true, data: getAssigneeMetrics_(params) });
-
       case 'insight':
         return jsonResponse_({ ok: true, data: getCachedInsight_(params.scope) });
 
       case 'refresh-cache':
         return jsonResponse_({ ok: true, data: invalidateAllCaches_() });
 
-      case 'backlog-aging-report':
-        return jsonResponse_({ ok: true, data: getBacklogAgingReport_(params) });
-
-      case 'lead-cycle-time-report':
-        return jsonResponse_({ ok: true, data: getLeadCycleTimeDrilldownReport_(params) });
-
-      case 'late-pickup-report':
-        return jsonResponse_({ ok: true, data: getLatePickupReport_(params) });
-
-      case 'peer-review-wait-report':
-        return jsonResponse_({ ok: true, data: getPeerReviewWaitReport_(params) });
-
-      case 'tool-assisted-cycle-time':
-        return jsonResponse_({ ok: true, data: getToolAssistedCycleTimeReport_(params) });
+      // Phase 5 of the Sheets -> Supabase migration: 'metrics', 'assignee-metrics',
+      // 'backlog-aging-report', 'lead-cycle-time-report', 'late-pickup-report',
+      // 'peer-review-wait-report', and 'tool-assisted-cycle-time' were removed here — Phase 4
+      // moved every one of those reads to query Supabase directly (src/lib/*.ts), so nothing in
+      // the Next.js app calls them anymore. Their implementations still exist (MetricsApi.gs,
+      // BacklogAgingApi.gs, LeadCycleTimeApi.gs, LatePickupApi.gs, PeerReviewApi.gs,
+      // ToolAssistedApi.gs) — left in place, unreachable, rather than deleted outright.
 
       default:
         return jsonResponse_({ ok: false, error: `Unknown route: ${route}` });
