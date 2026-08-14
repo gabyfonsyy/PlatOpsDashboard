@@ -20,6 +20,7 @@ export function AssigneeTable({ assignees }: { assignees: AssigneeMetric[] }) {
             <th className="px-4 py-3">Backlog Aging</th>
             <th className="px-4 py-3">Avg Lead Time</th>
             <th className="px-4 py-3">Avg Cycle Time</th>
+            <th className="px-4 py-3">Review Wait Time</th>
             <th className="px-4 py-3">Flags</th>
           </tr>
         </thead>
@@ -34,6 +35,7 @@ export function AssigneeTable({ assignees }: { assignees: AssigneeMetric[] }) {
               <td className="px-4 py-3">{formatPercent(a.backlogAgingRate)}</td>
               <td className="px-4 py-3">{formatMinutes(a.avgLeadTimeMinutes)}</td>
               <td className="px-4 py-3">{formatMinutes(a.avgCycleTimeMinutes)}</td>
+              <td className="px-4 py-3">{formatMinutes(a.avgReviewWaitMinutes)}</td>
               <td className="px-4 py-3 whitespace-nowrap">
                 {a.flags.length ? a.flags.map((f) => <Badge key={f} tone="warning">{f}</Badge>) : <span className="text-neutral-300">—</span>}
               </td>
