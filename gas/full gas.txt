@@ -1135,11 +1135,12 @@ function deleteStHoldingTrigger_() {
  * Targeted re-backfill for ST "For Peer Review" cycles (peer_review_cycles_json) AND the
  * cycle_time_start/cycle_time_end columns (extractReviewCycleTimeRange_ in JiraSync.gs) —
  * both are computed from the same changelog walk inside processAndUpsertIssue_'s
- * has_peer_review_tracking block, so one rebackfill covers both. Fetches ST tickets that
- * have ever been in "For Peer Review" OR "For Checking" status — the latter because Data
- * Generation/Investigation tickets skip dev review and go straight to For Checking, so their
- * cycle time ends there instead (see cycleTimeEndStatusForIssueType_ in JiraSync.gs); without
- * including them here they'd never get cycle_time_start/end populated. Re-extracts everything
+ * has_peer_review_tracking block, so one rebackfill covers both. Fetches ST tickets that have
+ * ever been in any status that can end cycle time (see cycleTimeEndStatusesForIssueType_ in
+ * JiraSync.gs): For Peer Review or For Checking for the normal review path, For Product Team
+ * for the Investigations path, and Archived/Rejected for every issue type regardless of path
+ * (a ticket archived/rejected outright never reaches a review status at all, so it needs its
+ * own JQL clause too, or it'd never get cycle_time_start/end populated). Re-extracts everything
  * via changelog and upserts into the existing RAW rows. Needed because ordinary incremental
  * sync only reprocesses tickets Jira has touched since the last checkpoint — historical
  * tickets that already passed through one of these statuses but haven't been touched since
@@ -1151,7 +1152,9 @@ function deleteStHoldingTrigger_() {
  * Uses its own Script Properties cursor (ST_PEER_REVIEW_REBACKFILL_CURSOR) so it never
  * touches SYNC_CHECKPOINT or interferes with the regular sync triggers. Mirrors
  * runStHoldingRebackfill exactly. Run once manually (and again any time the cycle-time or
- * peer-review extraction logic changes, to re-derive historical rows under the new logic).
+ * peer-review extraction logic changes, to re-derive historical rows under the new logic) —
+ * safe to just re-run: it deletes its own cursor on completion rather than a permanent
+ * done-flag, so nothing needs resetting first.
  */
 const ST_PEER_REVIEW_BACKFILL_SINCE = '2025-01-01';
 const ST_PEER_REVIEW_CURSOR_KEY = 'ST_PEER_REVIEW_REBACKFILL_CURSOR';
@@ -1163,7 +1166,7 @@ function runStPeerReviewRebackfill() {
   const props = PropertiesService.getScriptProperties();
   const pageToken = props.getProperty(ST_PEER_REVIEW_CURSOR_KEY) || undefined;
 
-  const jql = `project = ${team.jira_project_key} AND created >= "${ST_PEER_REVIEW_BACKFILL_SINCE}" AND (status WAS "For Peer Review" OR status WAS "For Checking") ORDER BY created ASC`;
+  const jql = `project = ${team.jira_project_key} AND created >= "${ST_PEER_REVIEW_BACKFILL_SINCE}" AND (status WAS "For Peer Review" OR status WAS "For Checking" OR status WAS "For Product Team" OR status WAS "Archived" OR status WAS "Rejected") ORDER BY created ASC`;
   const fields = buildJiraFieldList_(team);
 
   let page;
@@ -1211,7 +1214,7 @@ function runStPeerReviewRebackfill() {
   deleteStPeerReviewTrigger_();
   sendAlertEmail_(
     'ST peer-review re-backfill complete',
-    `All ST tickets since ${ST_PEER_REVIEW_BACKFILL_SINCE} that were ever in For Peer Review or For Checking have been re-processed with peer-review cycle data and the per-issue-type cycle-time definition (For Peer Review for reviewed types, For Checking for Data Generation/Investigation). Historical METRICS_DAILY/METRICS_BY_ASSIGNEE_MONTHLY cycle-time averages will update automatically once aggregateAllTeams next processes the affected dates.`
+    `All ST tickets since ${ST_PEER_REVIEW_BACKFILL_SINCE} that were ever in For Peer Review, For Checking, For Product Team, Archived, or Rejected have been re-processed with peer-review cycle data and the updated per-issue-type cycle-time definition (For Peer Review for backend-change types; For Checking or For Product Team for Investigations; Archived/Rejected end cycle time for any issue type). Historical METRICS_DAILY/METRICS_BY_ASSIGNEE_MONTHLY cycle-time averages will update automatically once aggregateAllTeams next processes the affected dates.`
   );
 }
 
@@ -2639,8 +2642,8 @@ function processAndUpsertIssue_(team, issue) {
     }
     if (team.has_peer_review_tracking) {
       row.peer_review_cycles_json = JSON.stringify(extractPeerReviewCyclesWithReviewer_(changelog));
-      const endStatus = cycleTimeEndStatusForIssueType_(row.issue_type);
-      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, endStatus);
+      const endStatuses = cycleTimeEndStatusesForIssueType_(row.issue_type);
+      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, endStatuses);
       row.cycle_time_start = reviewCycleTime.startAt || '';
       row.cycle_time_end = reviewCycleTime.endAt || '';
     }
@@ -2901,35 +2904,57 @@ function extractPeerReviewCyclesWithReviewer_(changelog) {
 }
 
 /**
- * Which status marks the end of SE active work, per issue type. Most ST issue types get
- * peer-reviewed (SE hands off at "For Peer Review"), but Data Generation and Investigation
- * skip dev review entirely and go straight to the requester at "For Checking" — for those,
- * extractReviewCycleTimeRange_ would otherwise never find a "For Peer Review" transition and
- * silently exclude them from cycle time forever. Falls back to 'for peer review' (the common
- * case) for any issue type not listed here.
+ * Which issue types skip peer/dev review entirely and hand off straight to the requester
+ * ("Investigations") vs which go through the normal SE peer-review path ("backend changes" —
+ * also the fallback for any issue type not explicitly listed in either group).
  */
-const CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE = {
-  'data generation': 'for checking',
-  'investigation': 'for checking',
-};
+const CYCLE_TIME_INVESTIGATION_ISSUE_TYPES = ['data generation', 'external support request', 'investigation', 'team viewer'];
 
+// Archived/Rejected end cycle time for EVERY issue type regardless of group — a ticket that's
+// archived or rejected outright never reaches a review status at all, so without this it would
+// have no cycle_time_end and get silently excluded from the average forever.
+const CYCLE_TIME_UNIVERSAL_END_STATUSES = ['archived', 'rejected'];
+
+/**
+ * The representative review-handoff status for this issue type's GROUP — used where only group
+ * membership matters (e.g. ToolAssistedApi.gs excluding Investigations from its comparison),
+ * not the full set of statuses that can end cycle time — see cycleTimeEndStatusesForIssueType_
+ * for that.
+ */
 function cycleTimeEndStatusForIssueType_(issueType) {
-  return CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE[(issueType || '').toLowerCase()] || 'for peer review';
+  const type = (issueType || '').toLowerCase();
+  return CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.indexOf(type) !== -1 ? 'for checking' : 'for peer review';
+}
+
+/**
+ * Every status that ends this issue type's cycle time (see extractReviewCycleTimeRange_) —
+ * "backend changes" issue types (Company Policy, Backend Changes, Task, Account Creation, Data
+ * Deletion, Technical Story — also the fallback for anything unlisted) hand off at For Peer
+ * Review; "Investigations" issue types hand off at For Checking or For Product Team instead.
+ * Archived/Rejected apply on top, regardless of group.
+ */
+function cycleTimeEndStatusesForIssueType_(issueType) {
+  const type = (issueType || '').toLowerCase();
+  const reviewHandoffStatuses = CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.indexOf(type) !== -1
+    ? ['for checking', 'for product team']
+    : ['for peer review'];
+  return reviewHandoffStatuses.concat(CYCLE_TIME_UNIVERSAL_END_STATUSES);
 }
 
 /**
  * SE/ST cycle-time definition (replaces backlog-exit -> resolution for teams with
  * has_peer_review_tracking): the span from when the ticket first moved OUT of Backlog/To Do
  * (`backlogExitFallback`, i.e. `first_out_of_backlog_todo` — a fixed point per ticket) to the
- * most recent `endStatus` entry (see cycleTimeEndStatusForIssueType_ — "For Peer Review" for most
- * issue types, "For Checking" for Data Generation/Investigation). `cycleTimeEnd` is overwritten
- * every time a later matching transition is seen while walking the changelog chronologically, so
- * a ticket that bounces On Hold -> In Progress -> endStatus again automatically recomputes using
- * the LATEST endStatus entry — no separate "bounce" case needed. The start does NOT track
- * "In Progress" re-entries — it's always the ticket's original backlog-exit moment, regardless of
- * how many times it later cycles back through review.
+ * most recent transition into ANY of `endStatuses` (see cycleTimeEndStatusesForIssueType_).
+ * `cycleTimeEnd` is overwritten every time a later matching transition is seen while walking the
+ * changelog chronologically, so a ticket that bounces On Hold -> In Progress -> endStatus again
+ * automatically recomputes using the LATEST matching entry — no separate "bounce" case needed,
+ * and a ticket that reaches its review status and is LATER archived/rejected correctly picks up
+ * the later (archived/rejected) timestamp instead. The start does NOT track "In Progress"
+ * re-entries — it's always the ticket's original backlog-exit moment, regardless of how many
+ * times it later cycles back through review.
  */
-function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatus) {
+function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatuses) {
   let cycleTimeEnd = null;
 
   for (let i = 0; i < changelog.length; i++) {
@@ -2937,7 +2962,7 @@ function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatus)
     if (!statusItem) continue;
 
     const toStatus = (statusItem.toString || '').toLowerCase();
-    if (toStatus === endStatus) {
+    if (endStatuses.indexOf(toStatus) !== -1) {
       cycleTimeEnd = changelog[i].created;
     }
   }
@@ -5658,8 +5683,9 @@ var TicketProjectApi = {
  * — both already-synced fields, no new changelog extraction needed for this report.
  *
  * Restricted to issue types whose review path actually ends at For Peer Review
- * (cycleTimeEndStatusForIssueType_ in JiraSync.gs) — Investigation/Data Generation end at For
- * Checking instead, so `cycle_time_end` wouldn't mean the same thing for those.
+ * (cycleTimeEndStatusForIssueType_ in JiraSync.gs) — Investigations (Data Generation, External
+ * Support Request, Investigation, Team Viewer) end at For Checking/For Product Team instead, so
+ * `cycle_time_end` wouldn't mean the same thing for those.
  *
  * Splits tickets CREATED in the period into "tool-assisted" (Jira label match, case-insensitive,
  * defaults to 'tool-assisted') vs every other in-scope ticket, so the two averages are directly

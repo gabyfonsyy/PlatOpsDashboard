@@ -100,8 +100,8 @@ function processAndUpsertIssue_(team, issue) {
     }
     if (team.has_peer_review_tracking) {
       row.peer_review_cycles_json = JSON.stringify(extractPeerReviewCyclesWithReviewer_(changelog));
-      const endStatus = cycleTimeEndStatusForIssueType_(row.issue_type);
-      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, endStatus);
+      const endStatuses = cycleTimeEndStatusesForIssueType_(row.issue_type);
+      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, endStatuses);
       row.cycle_time_start = reviewCycleTime.startAt || '';
       row.cycle_time_end = reviewCycleTime.endAt || '';
     }
@@ -362,35 +362,57 @@ function extractPeerReviewCyclesWithReviewer_(changelog) {
 }
 
 /**
- * Which status marks the end of SE active work, per issue type. Most ST issue types get
- * peer-reviewed (SE hands off at "For Peer Review"), but Data Generation and Investigation
- * skip dev review entirely and go straight to the requester at "For Checking" — for those,
- * extractReviewCycleTimeRange_ would otherwise never find a "For Peer Review" transition and
- * silently exclude them from cycle time forever. Falls back to 'for peer review' (the common
- * case) for any issue type not listed here.
+ * Which issue types skip peer/dev review entirely and hand off straight to the requester
+ * ("Investigations") vs which go through the normal SE peer-review path ("backend changes" —
+ * also the fallback for any issue type not explicitly listed in either group).
  */
-const CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE = {
-  'data generation': 'for checking',
-  'investigation': 'for checking',
-};
+const CYCLE_TIME_INVESTIGATION_ISSUE_TYPES = ['data generation', 'external support request', 'investigation', 'team viewer'];
 
+// Archived/Rejected end cycle time for EVERY issue type regardless of group — a ticket that's
+// archived or rejected outright never reaches a review status at all, so without this it would
+// have no cycle_time_end and get silently excluded from the average forever.
+const CYCLE_TIME_UNIVERSAL_END_STATUSES = ['archived', 'rejected'];
+
+/**
+ * The representative review-handoff status for this issue type's GROUP — used where only group
+ * membership matters (e.g. ToolAssistedApi.gs excluding Investigations from its comparison),
+ * not the full set of statuses that can end cycle time — see cycleTimeEndStatusesForIssueType_
+ * for that.
+ */
 function cycleTimeEndStatusForIssueType_(issueType) {
-  return CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE[(issueType || '').toLowerCase()] || 'for peer review';
+  const type = (issueType || '').toLowerCase();
+  return CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.indexOf(type) !== -1 ? 'for checking' : 'for peer review';
+}
+
+/**
+ * Every status that ends this issue type's cycle time (see extractReviewCycleTimeRange_) —
+ * "backend changes" issue types (Company Policy, Backend Changes, Task, Account Creation, Data
+ * Deletion, Technical Story — also the fallback for anything unlisted) hand off at For Peer
+ * Review; "Investigations" issue types hand off at For Checking or For Product Team instead.
+ * Archived/Rejected apply on top, regardless of group.
+ */
+function cycleTimeEndStatusesForIssueType_(issueType) {
+  const type = (issueType || '').toLowerCase();
+  const reviewHandoffStatuses = CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.indexOf(type) !== -1
+    ? ['for checking', 'for product team']
+    : ['for peer review'];
+  return reviewHandoffStatuses.concat(CYCLE_TIME_UNIVERSAL_END_STATUSES);
 }
 
 /**
  * SE/ST cycle-time definition (replaces backlog-exit -> resolution for teams with
  * has_peer_review_tracking): the span from when the ticket first moved OUT of Backlog/To Do
  * (`backlogExitFallback`, i.e. `first_out_of_backlog_todo` — a fixed point per ticket) to the
- * most recent `endStatus` entry (see cycleTimeEndStatusForIssueType_ — "For Peer Review" for most
- * issue types, "For Checking" for Data Generation/Investigation). `cycleTimeEnd` is overwritten
- * every time a later matching transition is seen while walking the changelog chronologically, so
- * a ticket that bounces On Hold -> In Progress -> endStatus again automatically recomputes using
- * the LATEST endStatus entry — no separate "bounce" case needed. The start does NOT track
- * "In Progress" re-entries — it's always the ticket's original backlog-exit moment, regardless of
- * how many times it later cycles back through review.
+ * most recent transition into ANY of `endStatuses` (see cycleTimeEndStatusesForIssueType_).
+ * `cycleTimeEnd` is overwritten every time a later matching transition is seen while walking the
+ * changelog chronologically, so a ticket that bounces On Hold -> In Progress -> endStatus again
+ * automatically recomputes using the LATEST matching entry — no separate "bounce" case needed,
+ * and a ticket that reaches its review status and is LATER archived/rejected correctly picks up
+ * the later (archived/rejected) timestamp instead. The start does NOT track "In Progress"
+ * re-entries — it's always the ticket's original backlog-exit moment, regardless of how many
+ * times it later cycles back through review.
  */
-function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatus) {
+function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatuses) {
   let cycleTimeEnd = null;
 
   for (let i = 0; i < changelog.length; i++) {
@@ -398,7 +420,7 @@ function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatus)
     if (!statusItem) continue;
 
     const toStatus = (statusItem.toString || '').toLowerCase();
-    if (toStatus === endStatus) {
+    if (endStatuses.indexOf(toStatus) !== -1) {
       cycleTimeEnd = changelog[i].created;
     }
   }
