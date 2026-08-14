@@ -2,6 +2,7 @@ import { fetchGas } from "@/lib/gas-client";
 import { getSupabaseClient } from "@/lib/supabase";
 import { getTeams } from "@/lib/teams";
 import { resolvePeriodToDateRange, monthsInRange } from "@/lib/period-range";
+import { getCompletedPeerReviewCycles, aggregateByReviewer } from "@/lib/peer-review";
 
 export type TicketMetrics = {
   team: string;
@@ -40,6 +41,8 @@ export type AssigneeMetric = {
   backlogAgingRate: number | null;
   avgLeadTimeMinutes: number | null;
   avgCycleTimeMinutes: number | null;
+  /** Attributed to the reviewer, not the ticket owner — reflects this person's own review throughput. ST only. */
+  avgReviewWaitMinutes: number | null;
   flags: string[];
 };
 
@@ -331,6 +334,28 @@ export async function getAssigneeMetrics(team: string, range: string, period: st
       }
     }
 
+    // Attributed to the REVIEWER, not the ticket owner (they're often different people) — see
+    // lib/peer-review.ts. A person who only reviews and owns no tickets this period wouldn't
+    // otherwise have a row at all, so union them in with zeroed ticket stats rather than
+    // silently dropping their review-wait number (same reasoning as gas/Aggregation.gs's
+    // resolved-in-month union: "assignees who resolved tickets... even if none were
+    // created-assigned to them this month").
+    const reviewWaitByReviewer: Record<string, number> = {};
+    const teamConfig = (await getTeams()).find((t) => t.team_key === team);
+    if (teamConfig?.has_peer_review_tracking) {
+      const { cycles } = await getCompletedPeerReviewCycles(range, period);
+      for (const r of aggregateByReviewer(cycles)) {
+        reviewWaitByReviewer[r.reviewerName] = r.avgWaitMinutes;
+        if (!byAssignee[r.reviewerName]) {
+          byAssignee[r.reviewerName] = {
+            name: r.reviewerName, ticketsAssigned: 0, ticketsResolved: 0, resolvedInPeriod: 0, overdueInPeriod: 0,
+            fcrYesResolved: 0, escQualifyingResolved: 0,
+            leadTimeWeightedSum: 0, leadTimeWeight: 0, cycleTimeWeightedSum: 0, cycleTimeWeight: 0,
+          };
+        }
+      }
+    }
+
     const assignees: AssigneeMetric[] = Object.values(byAssignee).map((b) => ({
       name: b.name,
       ticketsAssigned: b.ticketsAssigned,
@@ -343,6 +368,7 @@ export async function getAssigneeMetrics(team: string, range: string, period: st
       backlogAgingRate: b.resolvedInPeriod ? round4(b.overdueInPeriod / b.resolvedInPeriod) : null,
       avgLeadTimeMinutes: b.leadTimeWeight ? round2(b.leadTimeWeightedSum / b.leadTimeWeight) : null,
       avgCycleTimeMinutes: b.cycleTimeWeight ? round2(b.cycleTimeWeightedSum / b.cycleTimeWeight) : null,
+      avgReviewWaitMinutes: reviewWaitByReviewer[b.name] ?? null,
       flags: [],
     }));
 

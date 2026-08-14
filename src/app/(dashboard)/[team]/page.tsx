@@ -86,10 +86,11 @@ export default async function TeamDashboardPage({
         />
         {team.has_peer_review_tracking && (
           <MetricCard
-            label="Ticket Wait Time"
+            label="Review Wait Time"
             value={formatMinutesDecimalValue(metrics.peerReviewWaitAvgMinutes)}
             sublabel={formatDurationBreakdown(metrics.peerReviewWaitAvgMinutes)}
-            tooltip="Average time a ticket spends in For Peer Review before moving on to On Hold or For Checking, across review cycles that finished during the period."
+            tooltip="Average time a ticket spends in For Peer Review before moving on to On Hold or For Checking, across review cycles that finished during the period. Click through for the by-reviewer breakdown."
+            href={`/monitoring/peer-review-wait?${filterQuery}`}
           />
         )}
         <MetricCard

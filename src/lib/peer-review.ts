@@ -77,6 +77,74 @@ async function fetchPeerReviewTickets(startDate: string, endDate: string): Promi
 }
 
 /**
+ * Ported from gas/PeerReviewApi.gs's getPeerReviewWaitReport_ cycle-walking loop. Shared by
+ * getPeerReviewWaitReport (the dedicated drill-down) and lib/metrics.ts's getAssigneeMetrics
+ * (the Performance Breakdown's per-reviewer Review Wait Time column) so both agree on exactly
+ * which cycles count.
+ */
+export async function getCompletedPeerReviewCycles(
+  range: string,
+  period: string
+): Promise<{ cycles: PeerReviewCycle[]; inReview: PeerReviewInReview[] }> {
+  const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+  const rows = await fetchPeerReviewTickets(startDate, endDate);
+
+  const cycles: PeerReviewCycle[] = [];
+  const inReview: PeerReviewInReview[] = [];
+
+  for (const r of rows) {
+    if (!r.peer_review_cycles_json) continue;
+
+    for (const c of r.peer_review_cycles_json) {
+      if (!c.enteredAt) continue;
+      const enteredDate = toManilaDateString(c.enteredAt);
+      if (!enteredDate || enteredDate < startDate || enteredDate > endDate) continue;
+
+      if (!c.exitedAt) {
+        inReview.push({ issueKey: r.issue_key, reviewer: c.reviewer || "", enteredAt: c.enteredAt });
+        continue;
+      }
+
+      // Business rule only cares about exits to On Hold / For Checking — cycles that exit
+      // some other way (e.g. cancelled) are still recorded by the extractor but excluded
+      // here rather than dropped at extraction time, so no data is silently lost upstream.
+      const exitedToStatus = (c.exitedToStatus || "").toLowerCase();
+      if (exitedToStatus !== "on hold" && exitedToStatus !== "for checking") continue;
+
+      cycles.push({
+        issueKey: r.issue_key,
+        reviewer: c.reviewer || "(unassigned)",
+        enteredAt: c.enteredAt,
+        exitedAt: c.exitedAt,
+        exitedToStatus: c.exitedToStatus || "",
+        waitMinutes: round2((new Date(c.exitedAt).getTime() - new Date(c.enteredAt).getTime()) / 60000),
+      });
+    }
+  }
+
+  return { cycles, inReview };
+}
+
+export function aggregateByReviewer(cycles: PeerReviewCycle[]): PeerReviewByReviewer[] {
+  const byReviewer: Record<string, { reviewerName: string; cycleCount: number; sumWaitMinutes: number; maxWaitMinutes: number }> = {};
+  for (const c of cycles) {
+    if (!byReviewer[c.reviewer]) byReviewer[c.reviewer] = { reviewerName: c.reviewer, cycleCount: 0, sumWaitMinutes: 0, maxWaitMinutes: 0 };
+    const b = byReviewer[c.reviewer];
+    b.cycleCount++;
+    b.sumWaitMinutes += c.waitMinutes;
+    b.maxWaitMinutes = Math.max(b.maxWaitMinutes, c.waitMinutes);
+  }
+  return Object.values(byReviewer)
+    .map((b) => ({
+      reviewerName: b.reviewerName,
+      cycleCount: b.cycleCount,
+      avgWaitMinutes: round2(b.sumWaitMinutes / b.cycleCount),
+      maxWaitMinutes: b.maxWaitMinutes,
+    }))
+    .sort((a, b) => b.avgWaitMinutes - a.avgWaitMinutes);
+}
+
+/**
  * Phase 4 of the Sheets -> Supabase migration: reads the `tickets` table directly instead of
  * proxying through the GAS `peer-review-wait-report` route. Ported from
  * gas/PeerReviewApi.gs's getPeerReviewWaitReport_ — peer_review_cycles_json is jsonb in
@@ -84,62 +152,9 @@ async function fetchPeerReviewTickets(startDate: string, endDate: string): Promi
  */
 export async function getPeerReviewWaitReport(range: string, period: string): Promise<PeerReviewWaitReport> {
   try {
-    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
-    const rows = await fetchPeerReviewTickets(startDate, endDate);
-
-    const byReviewer: Record<string, { reviewerName: string; cycleCount: number; sumWaitMinutes: number; maxWaitMinutes: number }> = {};
-    const cycles: PeerReviewCycle[] = [];
-    const inReview: PeerReviewInReview[] = [];
-
-    for (const r of rows) {
-      if (!r.peer_review_cycles_json) continue;
-
-      for (const c of r.peer_review_cycles_json) {
-        if (!c.enteredAt) continue;
-        const enteredDate = toManilaDateString(c.enteredAt);
-        if (!enteredDate || enteredDate < startDate || enteredDate > endDate) continue;
-
-        if (!c.exitedAt) {
-          inReview.push({ issueKey: r.issue_key, reviewer: c.reviewer || "", enteredAt: c.enteredAt });
-          continue;
-        }
-
-        // Business rule only cares about exits to On Hold / For Checking — cycles that exit
-        // some other way (e.g. cancelled) are still recorded by the extractor but excluded
-        // here rather than dropped at extraction time, so no data is silently lost upstream.
-        const exitedToStatus = (c.exitedToStatus || "").toLowerCase();
-        if (exitedToStatus !== "on hold" && exitedToStatus !== "for checking") continue;
-
-        const waitMinutes = round2((new Date(c.exitedAt).getTime() - new Date(c.enteredAt).getTime()) / 60000);
-        const reviewer = c.reviewer || "(unassigned)";
-
-        cycles.push({
-          issueKey: r.issue_key,
-          reviewer,
-          enteredAt: c.enteredAt,
-          exitedAt: c.exitedAt,
-          exitedToStatus: c.exitedToStatus || "",
-          waitMinutes,
-        });
-
-        if (!byReviewer[reviewer]) byReviewer[reviewer] = { reviewerName: reviewer, cycleCount: 0, sumWaitMinutes: 0, maxWaitMinutes: 0 };
-        const b = byReviewer[reviewer];
-        b.cycleCount++;
-        b.sumWaitMinutes += waitMinutes;
-        b.maxWaitMinutes = Math.max(b.maxWaitMinutes, waitMinutes);
-      }
-    }
-
-    const byReviewerList: PeerReviewByReviewer[] = Object.values(byReviewer)
-      .map((b) => ({
-        reviewerName: b.reviewerName,
-        cycleCount: b.cycleCount,
-        avgWaitMinutes: round2(b.sumWaitMinutes / b.cycleCount),
-        maxWaitMinutes: b.maxWaitMinutes,
-      }))
-      .sort((a, b) => b.avgWaitMinutes - a.avgWaitMinutes);
-
-    return { team: "ST", range, period, byReviewer: byReviewerList, cycles, inReview };
+    const { cycles, inReview } = await getCompletedPeerReviewCycles(range, period);
+    const byReviewer = aggregateByReviewer(cycles);
+    return { team: "ST", range, period, byReviewer, cycles, inReview };
   } catch {
     return { ...EMPTY_REPORT, range, period };
   }
