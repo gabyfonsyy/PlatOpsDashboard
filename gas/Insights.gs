@@ -1,11 +1,25 @@
 /**
- * Gemini free-tier narrative insights. Runs once daily (see Triggers.gs) — 3 teams +
- * 1 rollup = 4 calls/day, trivially inside free-tier limits, so no batching tricks needed.
- * Outlier detection is rule-based (detectOutliers_), not left to the LLM to notice —
- * the model only writes prose around numbers this script already computed and verified.
+ * Narrative insights, written by the open-weight model behind AiClient.gs (Groq-hosted).
+ * Runs once daily (see Triggers.gs) — 3 teams + 1 rollup = 4 calls/day, so no batching
+ * tricks are needed on any provider tier. Outlier detection is rule-based (detectOutliers_),
+ * not left to the LLM to notice — the model only writes prose around numbers this script
+ * already computed and verified.
+ *
+ * Previously called Gemini directly from this file; the transport now lives in AiClient.gs so
+ * the incident-log assist and the Next.js side share one provider and one key (AI_API_KEY).
  */
 
-const GEMINI_MODEL = 'gemini-2.0-flash'; // confirm this is still the current free-tier model id before relying on it
+/**
+ * Held to the same discipline the user prompts already state: the model is a writer, not an
+ * analyst. Open-weight models are more prone than Gemini was to 'helpfully' rounding or
+ * restating a number it half-remembers, so the no-invented-numbers rule is stated at the
+ * system level too, not only per prompt.
+ */
+const INSIGHT_SYSTEM_PROMPT = [
+  'You are an operations analyst writing summaries for an engineering manager.',
+  'Never invent, estimate, or round a number that is not present in the data you are given.',
+  'Write plain prose. No markdown headers, no bullet lists, no preamble like "Here is the summary".',
+].join(' ');
 
 function generateInsightsAllTeams() {
   const teams = getActiveTeamsConfig_();
@@ -24,8 +38,8 @@ function generateInsightsAllTeams() {
   if (!teamSummaries.length) return;
 
   try {
-    const result = callGemini_(buildRollupPrompt_(teamSummaries));
-    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), result.narrative, [], 'SUCCESS', '');
+    const narrative = callAiModel_(buildRollupPrompt_(teamSummaries), { systemPrompt: INSIGHT_SYSTEM_PROMPT });
+    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), narrative, [], 'SUCCESS', '');
   } catch (err) {
     writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), '', [], 'FAILED', String(err));
     notifyFailure_('generateInsightsAllTeams rollup failed', err);
@@ -39,14 +53,14 @@ function generateInsightForScope_(team) {
   const previousAssignees = getAssigneeMetrics_({ team: team.team_key, range: 'month', period: previousMonthLabel_() }).assignees;
 
   const outliers = detectOutliers_(team, currentAssignees, previousAssignees);
-  const result = callGemini_(buildGeminiPrompt_(team, current, previous, outliers));
+  const narrative = callAiModel_(buildInsightPrompt_(team, current, previous, outliers), { systemPrompt: INSIGHT_SYSTEM_PROMPT });
 
-  writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), result.narrative, outliers, 'SUCCESS', '');
+  writeInsightCache_(`TEAM:`, currentMonthLabel_(), narrative, outliers, 'SUCCESS', '');
   return current;
 }
 
 /**
- * Deterministic outlier flags — feeds both the Gemini prompt and flags_json, and is
+ * Deterministic outlier flags — feeds both the model prompt and flags_json, and is
  * what the Performance page (Next.js) merges onto assignee rows for review badges.
  */
 function detectOutliers_(team, currentAssignees, previousAssignees) {
@@ -139,7 +153,7 @@ function pct_(n) { return `${(n * 100).toFixed(1)}%`; }
  * dumps), both for free-tier token budget and to structurally prevent hallucinated
  * ticket-level detail.
  */
-function buildGeminiPrompt_(team, current, previous, outliers) {
+function buildInsightPrompt_(team, current, previous, outliers) {
   const data = {
     team: team.team_name,
     period: current.period,
@@ -185,43 +199,6 @@ function pickMetricsForPrompt_(m) {
   };
 }
 
-/** Same retry-with-backoff pattern as JiraClient.gs's fetchWithRetry_, applied to the Gemini REST endpoint. */
-function callGemini_(prompt) {
-  const apiKey = getScriptProperty_('GEMINI_API_KEY');
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    payload: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-    muteHttpExceptions: true,
-  };
-
-  const retryableCodes = [429, 500, 502, 503, 504];
-  let lastErrorMessage;
-
-  for (let attempt = 0; attempt <= 3; attempt++) {
-    const response = UrlFetchApp.fetch(url, options);
-    const code = response.getResponseCode();
-
-    if (code >= 200 && code < 300) {
-      const json = JSON.parse(response.getContentText());
-      const candidate = json.candidates && json.candidates[0];
-      const text = candidate && candidate.content && candidate.content.parts
-        ? candidate.content.parts.map((p) => p.text).join('')
-        : '';
-      return { narrative: text.trim() };
-    }
-
-    lastErrorMessage = `Gemini request failed (HTTP ${code}): ${response.getContentText().slice(0, 300)}`;
-    if (retryableCodes.indexOf(code) !== -1 && attempt < 3) {
-      Utilities.sleep(1000 * Math.pow(2, attempt));
-      continue;
-    }
-    break;
-  }
-  throw new Error(lastErrorMessage);
-}
-
 function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, errorMessage) {
   const sheet = getManagerDataSpreadsheet_().getSheetByName('INSIGHTS_CACHE');
   const rows = sheetToObjects_(sheet);
@@ -232,7 +209,7 @@ function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, err
     narrative_text: narrative || '',
     flags_json: JSON.stringify(flags || []),
     generated_at: nowIso_(),
-    model_used: GEMINI_MODEL,
+    model_used: getAiModel_(),
     prompt_tokens_est: '',
     generation_status: status,
     error_message: errorMessage || '',
