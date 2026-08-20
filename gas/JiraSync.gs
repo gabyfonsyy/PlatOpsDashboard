@@ -311,22 +311,42 @@ function extractHoldingCyclesWithReasons_(changelog) {
 
 /**
  * Walks the changelog chronologically and returns every "For Peer Review" cycle as
- * { enteredAt, exitedAt, exitedToStatus, reviewer }. `reviewer` is the last value the
- * ticket's native Assignee field was changed to as of the moment the cycle closes — a
- * running value updated on every assignee changelog item (mirrors currentReason in
- * extractHoldingCyclesWithReasons_), not reset per cycle, so a cycle with no in-window
- * reassignment still reports whoever was already assigned. The assignee item is applied
- * BEFORE the status item is checked within the same changelog entry (loop order matters):
- * Jira batches simultaneous field changes into one changelog entry, so a reassignment that
- * happens in the same entry as the "For Peer Review" exit must already be reflected in
- * currentAssignee by the time that exit closes the cycle, not one entry later.
- * Every exit is recorded (not just to On Hold/For Checking) via exitedToStatus — callers
- * filter to the exits they care about rather than losing data for other exit paths.
+ * { enteredAt, exitedAt, exitedToStatus, reviewer, reviewerAtEntry }.
+ *
+ * TWO assignee snapshots, because "who was assigned" answers two different questions and the
+ * answers genuinely differ:
+ *
+ *   reviewerAtEntry — the assignee at the moment the ticket moved INTO For Peer Review. This is
+ *                     the person asked to review it: the doer picks a reviewer and hands off in
+ *                     one action, so the assignee set on that transition IS the reviewer.
+ *   reviewer        — the assignee as of the moment the cycle CLOSES. Retained unchanged because
+ *                     PeerReviewApi.gs and src/lib/peer-review.ts already report on it; do not
+ *                     repoint those at reviewerAtEntry without deciding that report's attribution
+ *                     question on purpose.
+ *
+ * Worked example (ST-84873): Jasper Razo was assigned when it went to For Peer Review, then
+ * Angelo Nico Ravilas was assigned when it moved on to For Checking. reviewerAtEntry is Jasper
+ * (the validator); reviewer is Angelo Nico (who picked it up at the NEXT stage, and was never the
+ * peer reviewer at all). Attributing the review to the exit assignee is what made the Incident
+ * Logs validator wrong for most tickets.
+ *
+ * `currentAssignee` is a running value updated on every assignee changelog item (mirrors
+ * currentReason in extractHoldingCyclesWithReasons_), not reset per cycle, so a cycle with no
+ * in-window reassignment still reports whoever was already assigned. The assignee item is applied
+ * BEFORE the status item is checked within the same changelog entry (loop order matters): Jira
+ * batches simultaneous field changes into one changelog entry, so a reassignment that happens in
+ * the same entry as a For Peer Review entry/exit must already be reflected in currentAssignee by
+ * the time that transition is handled, not one entry later. That ordering is exactly what makes
+ * reviewerAtEntry pick up a hand-off where the reassignment and the transition are one action.
+ *
+ * Every exit is recorded (not just to On Hold/For Checking) via exitedToStatus — callers filter to
+ * the exits they care about rather than losing data for other exit paths.
  */
 function extractPeerReviewCyclesWithReviewer_(changelog) {
   let currentAssignee = null;
   const cycles = [];
   let cycleStart = null;
+  let cycleStartAssignee = null;
 
   for (let i = 0; i < changelog.length; i++) {
     const items = changelog[i].items || [];
@@ -345,17 +365,25 @@ function extractPeerReviewCyclesWithReviewer_(changelog) {
 
     if (toStatus === 'for peer review') {
       cycleStart = changelog[i].created;
+      cycleStartAssignee = currentAssignee;
     } else if (fromStatus === 'for peer review' && cycleStart) {
       cycles.push({
         enteredAt: cycleStart, exitedAt: changelog[i].created,
-        exitedToStatus: statusItem.toString || '', reviewer: currentAssignee || '',
+        exitedToStatus: statusItem.toString || '',
+        reviewer: currentAssignee || '',
+        reviewerAtEntry: cycleStartAssignee || '',
       });
       cycleStart = null;
+      cycleStartAssignee = null;
     }
   }
 
   if (cycleStart) {
-    cycles.push({ enteredAt: cycleStart, exitedAt: null, exitedToStatus: null, reviewer: currentAssignee || '' });
+    cycles.push({
+      enteredAt: cycleStart, exitedAt: null, exitedToStatus: null,
+      reviewer: currentAssignee || '',
+      reviewerAtEntry: cycleStartAssignee || '',
+    });
   }
 
   return cycles;

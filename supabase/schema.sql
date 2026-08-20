@@ -218,6 +218,68 @@ create table app_config (
   updated_at timestamptz not null default now()
 );
 
+-- Incident Logs. Two tables on purpose, mirroring the INCIDENT_TICKETS / INCIDENT_LOGS split in
+-- gas/IncidentsApi.gs: the first is overwritten from Jira on every sync, the second holds
+-- manager-typed feedback a sync must never touch. Keeping them apart makes that structural
+-- rather than something the upsert has to remember to avoid.
+--
+-- A ticket enters incident_tickets when the manager sets Jira's Report Tagging field
+-- (customfield_10262) on it. That value is used purely as a flag — presence means "valid
+-- incident log" — so it is deliberately not stored here.
+
+create table incident_tickets (
+  issue_key text primary key,
+  team_key text references teams_config(team_key),
+  project_key text,
+  summary text,
+  issue_type text,
+  status text,
+  -- The team's configured owner field (Assigned SE / Assigned COD), falling back to Jira's assignee.
+  doer text,
+  -- Whoever held the ticket when it last left "For Peer Review". Null for teams without one.
+  validator text,
+  created timestamptz,
+  updated timestamptz,
+  resolved_datetime timestamptz,
+  -- Resolved date falling back to created — the date the year/month filter counts it under.
+  incident_date date not null,
+  last_synced_at timestamptz not null default now()
+);
+
+create index incident_tickets_team_date_idx on incident_tickets (team_key, incident_date);
+
+create table incident_logs (
+  incident_id uuid primary key default gen_random_uuid(),
+  issue_key text not null,
+  team_key text,
+  -- 'Both' is not a value: an incident implicating the doer AND the validator is two rows, because
+  -- each carries its own severity and its own feedback and feeds a different person's evaluation.
+  role text not null check (role in ('Doer', 'Validator')),
+  employee_name text not null,
+  severity text not null check (severity in ('S1', 'S2', 'S3', 'S4')),
+  -- Always derived from severity by the backend on write (S1 -3, S2 -2, S3 -1.5, S4 -1), never
+  -- accepted from a client, so a stale frontend can't change what an incident costs.
+  score_impact numeric not null,
+  incident_date date not null,
+  -- What the manager typed, kept verbatim and never overwritten by the AI rewrite.
+  feedback_raw text,
+  -- The AI's neutral, professional-but-warm rewrite — what gets shared with the person.
+  feedback_polished text,
+  improvements text,
+  categories_json jsonb not null default '[]'::jsonb,
+  ai_model text,
+  ai_generated_at timestamptz,
+  notes text,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- One log per person-role per ticket; a second one for the same role is an edit, not a new log.
+  unique (issue_key, role)
+);
+
+create index incident_logs_team_date_idx on incident_logs (team_key, incident_date);
+create index incident_logs_employee_idx on incident_logs (employee_name, incident_date);
+
 -- ============================================================================
 -- Workbook 3: Initiatives
 -- ============================================================================
@@ -310,7 +372,8 @@ begin
       and tablename in (
         'teams_config', 'tickets', 'metrics_daily', 'metrics_by_assignee_monthly',
         'sync_checkpoint', 'agg_checkpoint', 'error_log', 'roster', 'leave', 'rto',
-        'insights_cache', 'app_config', 'projects', 'initiative_tickets',
+        'insights_cache', 'app_config', 'incident_tickets', 'incident_logs',
+        'projects', 'initiative_tickets',
         'ticket_project_map', 'project_progress', 'project_tasks'
       )
   loop

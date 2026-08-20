@@ -57,6 +57,13 @@ function handleRequest_(e, method) {
         if (params.action === 'sync') return jsonResponse_({ ok: true, data: InitiativesApi.sync() });
         return jsonResponse_({ ok: false, error: `Unknown action for initiatives: ${params.action}` });
 
+      case 'incidents':
+        // Non-CRUD actions are checked before dispatchCrud_ (which only knows create/update/delete)
+        // — same shape as 'rto' + bulkUpsert above.
+        if (params.action === 'sync') return jsonResponse_({ ok: true, data: IncidentsApi.sync(params) });
+        if (params.action === 'setValidator') return jsonResponse_({ ok: true, data: IncidentsApi.setValidator(body) });
+        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, IncidentsApi) });
+
       case 'ticket-projects':
         if (method === 'GET') return jsonResponse_({ ok: true, data: TicketProjectApi.list() });
         if (params.action === 'assign') return jsonResponse_({ ok: true, data: TicketProjectApi.assign(body) });

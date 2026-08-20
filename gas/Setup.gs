@@ -312,6 +312,12 @@ function setupManagerDataSpreadsheet_() {
     'model_used', 'prompt_tokens_est', 'generation_status', 'error_message',
   ]);
 
+  // Incident Logs, two tabs on purpose (see IncidentsApi.gs): INCIDENT_TICKETS is overwritten from
+  // Jira on every sync, INCIDENT_LOGS holds manager-typed feedback that a sync must never touch.
+  // Headers live in IncidentsApi.gs so the sync, the API, and this provisioning never drift.
+  ensureTab_(ss, 'INCIDENT_TICKETS', INCIDENT_TICKET_HEADERS);
+  ensureTab_(ss, 'INCIDENT_LOGS', INCIDENT_LOG_HEADERS);
+
   ensureTab_(ss, 'APP_CONFIG', ['key', 'value', 'updated_at']);
 
   removeDefaultBlankSheet_(ss);
@@ -520,6 +526,24 @@ function migrateAddLeaveHalfDay() {
   } else {
     Logger.log('LEAVE: half_day_period already present.');
   }
+}
+
+/**
+ * One-time convenience for an already-provisioned Manager Data workbook: creates the two Incident
+ * Logs tabs if they're missing (re-running setupAll does the same; this is a targeted alias).
+ * IncidentsApi.gs also creates them on first touch, so this is really just for provisioning them
+ * ahead of the first sync so the headers can be eyeballed in the sheet. Safe to re-run.
+ */
+function migrateAddIncidentLogs() {
+  const ss = getManagerDataSpreadsheet_();
+  [
+    { name: 'INCIDENT_TICKETS', headers: INCIDENT_TICKET_HEADERS },
+    { name: 'INCIDENT_LOGS', headers: INCIDENT_LOG_HEADERS },
+  ].forEach(function (tab) {
+    const existed = !!ss.getSheetByName(tab.name);
+    ensureTab_(ss, tab.name, tab.headers);
+    Logger.log(existed ? tab.name + ' already present.' : tab.name + ' created.');
+  });
 }
 
 /** Appends `headerName` as a new last column if the sheet doesn't already have it. Returns true if added. */

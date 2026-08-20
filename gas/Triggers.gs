@@ -6,12 +6,18 @@
  */
 
 function installTriggers() {
-  ['syncAllTeams', 'aggregateAllTeams', 'generateInsightsAllTeams', 'syncInitiativeTickets'].forEach(deleteTriggersFor_);
+  ['syncAllTeams', 'aggregateAllTeams', 'generateInsightsAllTeams', 'syncInitiativeTickets', 'syncIncidentTickets']
+    .forEach(deleteTriggersFor_);
 
   ScriptApp.newTrigger('syncAllTeams').timeBased().everyHours(2).create();
 
   // Pull cod-initiative tickets (DE/DEV) every 4h — independent of the metrics sync.
   ScriptApp.newTrigger('syncInitiativeTickets').timeBased().everyHours(4).create();
+
+  // Pull tickets the manager tagged with Report Tagging (customfield_10262) into the incident
+  // list. Daily, not hourly: that tag is set by hand hours or days after the ticket closes, so a
+  // tighter loop would just re-run the same JQL against an unchanged result set.
+  ScriptApp.newTrigger('syncIncidentTickets').timeBased().everyDays(1).atHour(7).nearMinute(0).create();
 
   // A short gap before installing the aggregation trigger so it tends to fire a couple
   // minutes after sync, not concurrently — not required for correctness (aggregation is
@@ -21,7 +27,7 @@ function installTriggers() {
 
   ScriptApp.newTrigger('generateInsightsAllTeams').timeBased().everyDays(1).atHour(6).nearMinute(0).create();
 
-  Logger.log('Triggers installed: syncAllTeams (2h), syncInitiativeTickets (4h), aggregateAllTeams (2h, staggered), generateInsightsAllTeams (daily ~6am Asia/Manila).');
+  Logger.log('Triggers installed: syncAllTeams (2h), syncInitiativeTickets (4h), syncIncidentTickets (daily ~7am), aggregateAllTeams (2h, staggered), generateInsightsAllTeams (daily ~6am Asia/Manila).');
 }
 
 function deleteTriggersFor_(functionName) {
@@ -31,8 +37,8 @@ function deleteTriggersFor_(functionName) {
 }
 
 /**
- * Stops the daily Gemini insights trigger without touching sync/aggregation — useful when the
- * Gemini free-tier quota is exhausted and it's just generating failed-run noise (alert emails,
+ * Stops the daily narrative-insights trigger without touching sync/aggregation — useful when the
+ * AI provider's rate limit is exhausted and it's just generating failed-run noise (alert emails,
  * wasted Executions) while you're focused on something else. Nothing else depends on this trigger
  * firing: MetricsApi.gs's getCachedInsight_ only ever reads whatever's already in INSIGHTS_CACHE
  * and the frontend already handles a missing/stale cached insight gracefully, so pausing this is
@@ -41,5 +47,5 @@ function deleteTriggersFor_(functionName) {
  */
 function pauseInsightsTrigger() {
   deleteTriggersFor_('generateInsightsAllTeams');
-  Logger.log('generateInsightsAllTeams trigger removed — Gemini insights paused. Re-run installTriggers to resume.');
+  Logger.log('generateInsightsAllTeams trigger removed — narrative insights paused. Re-run installTriggers to resume.');
 }
