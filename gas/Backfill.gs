@@ -211,11 +211,12 @@ function deleteStHoldingTrigger_() {
  * Targeted re-backfill for ST "For Peer Review" cycles (peer_review_cycles_json) AND the
  * cycle_time_start/cycle_time_end columns (extractReviewCycleTimeRange_ in JiraSync.gs) —
  * both are computed from the same changelog walk inside processAndUpsertIssue_'s
- * has_peer_review_tracking block, so one rebackfill covers both. Fetches ST tickets that
- * have ever been in "For Peer Review" OR "For Checking" status — the latter because Data
- * Generation/Investigation tickets skip dev review and go straight to For Checking, so their
- * cycle time ends there instead (see cycleTimeEndStatusForIssueType_ in JiraSync.gs); without
- * including them here they'd never get cycle_time_start/end populated. Re-extracts everything
+ * has_peer_review_tracking block, so one rebackfill covers both. Fetches ST tickets that have
+ * ever been in any status that can end cycle time (see cycleTimeEndStatusesForIssueType_ in
+ * JiraSync.gs): For Peer Review or For Checking for the normal review path, For Product Team
+ * for the Investigations path, and Archived/Rejected for every issue type regardless of path
+ * (a ticket archived/rejected outright never reaches a review status at all, so it needs its
+ * own JQL clause too, or it'd never get cycle_time_start/end populated). Re-extracts everything
  * via changelog and upserts into the existing RAW rows. Needed because ordinary incremental
  * sync only reprocesses tickets Jira has touched since the last checkpoint — historical
  * tickets that already passed through one of these statuses but haven't been touched since
@@ -227,7 +228,9 @@ function deleteStHoldingTrigger_() {
  * Uses its own Script Properties cursor (ST_PEER_REVIEW_REBACKFILL_CURSOR) so it never
  * touches SYNC_CHECKPOINT or interferes with the regular sync triggers. Mirrors
  * runStHoldingRebackfill exactly. Run once manually (and again any time the cycle-time or
- * peer-review extraction logic changes, to re-derive historical rows under the new logic).
+ * peer-review extraction logic changes, to re-derive historical rows under the new logic) —
+ * safe to just re-run: it deletes its own cursor on completion rather than a permanent
+ * done-flag, so nothing needs resetting first.
  */
 const ST_PEER_REVIEW_BACKFILL_SINCE = '2025-01-01';
 const ST_PEER_REVIEW_CURSOR_KEY = 'ST_PEER_REVIEW_REBACKFILL_CURSOR';
@@ -239,7 +242,7 @@ function runStPeerReviewRebackfill() {
   const props = PropertiesService.getScriptProperties();
   const pageToken = props.getProperty(ST_PEER_REVIEW_CURSOR_KEY) || undefined;
 
-  const jql = `project = ${team.jira_project_key} AND created >= "${ST_PEER_REVIEW_BACKFILL_SINCE}" AND (status WAS "For Peer Review" OR status WAS "For Checking") ORDER BY created ASC`;
+  const jql = `project = ${team.jira_project_key} AND created >= "${ST_PEER_REVIEW_BACKFILL_SINCE}" AND (status WAS "For Peer Review" OR status WAS "For Checking" OR status WAS "For Product Team" OR status WAS "Archived" OR status WAS "Rejected") ORDER BY created ASC`;
   const fields = buildJiraFieldList_(team);
 
   let page;
@@ -287,7 +290,7 @@ function runStPeerReviewRebackfill() {
   deleteStPeerReviewTrigger_();
   sendAlertEmail_(
     'ST peer-review re-backfill complete',
-    `All ST tickets since ${ST_PEER_REVIEW_BACKFILL_SINCE} that were ever in For Peer Review or For Checking have been re-processed with peer-review cycle data and the per-issue-type cycle-time definition (For Peer Review for reviewed types, For Checking for Data Generation/Investigation). Historical METRICS_DAILY/METRICS_BY_ASSIGNEE_MONTHLY cycle-time averages will update automatically once aggregateAllTeams next processes the affected dates.`
+    `All ST tickets since ${ST_PEER_REVIEW_BACKFILL_SINCE} that were ever in For Peer Review, For Checking, For Product Team, Archived, or Rejected have been re-processed with peer-review cycle data and the updated per-issue-type cycle-time definition (For Peer Review for backend-change types; For Checking or For Product Team for Investigations; Archived/Rejected end cycle time for any issue type). Historical METRICS_DAILY/METRICS_BY_ASSIGNEE_MONTHLY cycle-time averages will update automatically once aggregateAllTeams next processes the affected dates.`
   );
 }
 

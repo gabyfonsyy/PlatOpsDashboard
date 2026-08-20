@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/leave", label: "Leave" },
   { href: "/rto", label: "RTO" },
   { href: "/projects", label: "Projects" },
+  { href: "/incident-logs", label: "Incident Logs" },
   { href: "/monitoring", label: "Ticket Monitoring" },
 ];
 

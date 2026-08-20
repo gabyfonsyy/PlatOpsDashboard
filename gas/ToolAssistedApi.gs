@@ -6,8 +6,9 @@
  * — both already-synced fields, no new changelog extraction needed for this report.
  *
  * Restricted to issue types whose review path actually ends at For Peer Review
- * (cycleTimeEndStatusForIssueType_ in JiraSync.gs) — Investigation/Data Generation end at For
- * Checking instead, so `cycle_time_end` wouldn't mean the same thing for those.
+ * (cycleTimeEndStatusForIssueType_ in JiraSync.gs) — Investigations (Data Generation, External
+ * Support Request, Investigation, Team Viewer) end at For Checking/For Product Team instead, so
+ * `cycle_time_end` wouldn't mean the same thing for those.
  *
  * Splits tickets CREATED in the period into "tool-assisted" (Jira label match, case-insensitive,
  * defaults to 'tool-assisted') vs every other in-scope ticket, so the two averages are directly

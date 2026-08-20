@@ -1,4 +1,4 @@
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
 
@@ -33,16 +33,14 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-// Ported from gas/JiraSync.gs's CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE/cycleTimeEndStatusForIssueType_ —
-// Investigation/Data Generation end at "For Checking" instead of "For Peer Review", so
+// Ported from gas/JiraSync.gs's CYCLE_TIME_INVESTIGATION_ISSUE_TYPES/cycleTimeEndStatusForIssueType_ —
+// Investigations end at "For Checking"/"For Product Team" instead of "For Peer Review", so
 // cycle_time_end wouldn't mean the same thing for those; excluded from this comparison.
-const CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE: Record<string, string> = {
-  "data generation": "for checking",
-  investigation: "for checking",
-};
+const CYCLE_TIME_INVESTIGATION_ISSUE_TYPES = ["data generation", "external support request", "investigation", "team viewer"];
 
 function cycleTimeEndStatusForIssueType(issueType: string | null): string {
-  return CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE[(issueType || "").toLowerCase()] || "for peer review";
+  const type = (issueType || "").toLowerCase();
+  return CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.includes(type) ? "for checking" : "for peer review";
 }
 
 type TicketRow = {
@@ -62,14 +60,15 @@ async function fetchStTicketsCreatedBetween(startDate: string, endDate: string):
   const rangeEndUtc = new Date(`${endDate}T00:00:00Z`);
   rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
 
-  const { data, error } = await getSupabaseClient()
-    .from("tickets")
-    .select("issue_key,issue_type,created,first_out_of_backlog_todo,cycle_time_end,assigned_se,labels")
-    .eq("team_key", "ST")
-    .gte("created", rangeStartUtc.toISOString())
-    .lte("created", rangeEndUtc.toISOString());
-  if (error) throw new Error(`Supabase tickets query failed: ${error.message}`);
-  return (data ?? []) as TicketRow[];
+  return fetchAllRows<TicketRow>((from, to) =>
+    getSupabaseClient()
+      .from("tickets")
+      .select("issue_key,issue_type,created,first_out_of_backlog_todo,cycle_time_end,assigned_se,labels")
+      .eq("team_key", "ST")
+      .gte("created", rangeStartUtc.toISOString())
+      .lte("created", rangeEndUtc.toISOString())
+      .range(from, to)
+  );
 }
 
 /**

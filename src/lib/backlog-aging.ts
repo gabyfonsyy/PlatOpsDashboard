@@ -1,4 +1,4 @@
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
 import { getTeams, backlogAgingAssignee, backlogAgingAssigneeLabel } from "@/lib/teams";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString, isoDateDiffDays } from "@/lib/manila-date";
@@ -63,18 +63,17 @@ async function fetchResolvedTickets(
   const rangeEndUtc = new Date(`${endDate}T00:00:00Z`);
   rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
 
-  let query = getSupabaseClient()
-    .from("tickets")
-    .select("team_key,issue_key,issue_type,resolved_datetime,due_date,assigned_se,assigned_cod")
-    .in("team_key", teamKeys)
-    .not("resolved_datetime", "is", null)
-    .gte("resolved_datetime", rangeStartUtc.toISOString())
-    .lte("resolved_datetime", rangeEndUtc.toISOString());
-  if (issueType) query = query.eq("issue_type", issueType);
-
-  const { data, error } = await query;
-  if (error) throw new Error(`Supabase tickets query failed: ${error.message}`);
-  return (data ?? []) as ResolvedTicketRow[];
+  return fetchAllRows<ResolvedTicketRow>((from, to) => {
+    let query = getSupabaseClient()
+      .from("tickets")
+      .select("team_key,issue_key,issue_type,resolved_datetime,due_date,assigned_se,assigned_cod")
+      .in("team_key", teamKeys)
+      .not("resolved_datetime", "is", null)
+      .gte("resolved_datetime", rangeStartUtc.toISOString())
+      .lte("resolved_datetime", rangeEndUtc.toISOString());
+    if (issueType) query = query.eq("issue_type", issueType);
+    return query.range(from, to);
+  });
 }
 
 /**

@@ -1,4 +1,4 @@
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString } from "@/lib/manila-date";
 
@@ -65,15 +65,16 @@ async function fetchPeerReviewTickets(startDate: string, endDate: string): Promi
   const startYear = Number(startDate.slice(0, 4));
   const endYear = Number(endDate.slice(0, 4));
 
-  const { data, error } = await getSupabaseClient()
-    .from("tickets")
-    .select("issue_key,peer_review_cycles_json")
-    .eq("team_key", "ST")
-    .not("peer_review_cycles_json", "is", null)
-    .gte("created", `${startYear}-01-01T00:00:00Z`)
-    .lte("created", `${endYear}-12-31T23:59:59Z`);
-  if (error) throw new Error(`Supabase tickets query failed: ${error.message}`);
-  return (data ?? []) as TicketRow[];
+  return fetchAllRows<TicketRow>((from, to) =>
+    getSupabaseClient()
+      .from("tickets")
+      .select("issue_key,peer_review_cycles_json")
+      .eq("team_key", "ST")
+      .not("peer_review_cycles_json", "is", null)
+      .gte("created", `${startYear}-01-01T00:00:00Z`)
+      .lte("created", `${endYear}-12-31T23:59:59Z`)
+      .range(from, to)
+  );
 }
 
 /**

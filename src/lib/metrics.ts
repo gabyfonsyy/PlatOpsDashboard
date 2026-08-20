@@ -1,5 +1,5 @@
 import { fetchGas } from "@/lib/gas-client";
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
 import { getTeams } from "@/lib/teams";
 import { resolvePeriodToDateRange, monthsInRange } from "@/lib/period-range";
 import { getCompletedPeerReviewCycles, aggregateByReviewer } from "@/lib/peer-review";
@@ -118,17 +118,16 @@ async function fetchMetricsDailyRows(
   endDate: string,
   issueType?: string
 ): Promise<MetricsDailyRow[]> {
-  let query = getSupabaseClient()
-    .from("metrics_daily")
-    .select("*")
-    .in("team_key", teamKeys)
-    .gte("date", startDate)
-    .lte("date", endDate);
-  if (issueType) query = query.eq("issue_type", issueType);
-
-  const { data, error } = await query;
-  if (error) throw new Error(`Supabase metrics_daily query failed: ${error.message}`);
-  return (data ?? []) as MetricsDailyRow[];
+  return fetchAllRows<MetricsDailyRow>((from, to) => {
+    let query = getSupabaseClient()
+      .from("metrics_daily")
+      .select("*")
+      .in("team_key", teamKeys)
+      .gte("date", startDate)
+      .lte("date", endDate);
+    if (issueType) query = query.eq("issue_type", issueType);
+    return query.range(from, to);
+  });
 }
 
 /**
@@ -280,13 +279,14 @@ type AssigneeMonthlyRow = {
 };
 
 async function fetchAssigneeMonthlyRows(team: string, months: string[]): Promise<AssigneeMonthlyRow[]> {
-  const { data, error } = await getSupabaseClient()
-    .from("metrics_by_assignee_monthly")
-    .select("*")
-    .eq("team_key", team)
-    .in("month", months);
-  if (error) throw new Error(`Supabase metrics_by_assignee_monthly query failed: ${error.message}`);
-  return (data ?? []) as AssigneeMonthlyRow[];
+  return fetchAllRows<AssigneeMonthlyRow>((from, to) =>
+    getSupabaseClient()
+      .from("metrics_by_assignee_monthly")
+      .select("*")
+      .eq("team_key", team)
+      .in("month", months)
+      .range(from, to)
+  );
 }
 
 /**

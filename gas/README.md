@@ -29,11 +29,13 @@ For readability, arrange them (drag in the editor's left file list) as:
 5. `Backfill.gs` — one-time historical load, self-continuing
 6. `Aggregation.gs` — precomputes METRICS_DAILY / METRICS_BY_ASSIGNEE_MONTHLY from raw rows
 7. `MetricsApi.gs` — read-only rollup API the frontend actually queries
-8. `Insights.gs` — Gemini narrative generation + deterministic outlier detection
-9. `Code.gs` — the `doGet`/`doPost` router, ties everything together
-10. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`, `ProgressApi.gs`, `TasksApi.gs`
-11. `Setup.gs` — one-time bootstrap, not called by the router
-12. `Triggers.gs` — installs every recurring trigger, run last of all
+8. `AiClient.gs` — the one AI transport (open-weight models on Groq); no prompts live here
+9. `Insights.gs` — narrative generation (via `AiClient.gs`) + deterministic outlier detection
+10. `Code.gs` — the `doGet`/`doPost` router, ties everything together
+11. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`, `ProgressApi.gs`, `TasksApi.gs`
+12. `IncidentsApi.gs` — Incident Logs: the Jira pull of Report-Tagged tickets + log CRUD
+13. `Setup.gs` — one-time bootstrap, not called by the router
+14. `Triggers.gs` — installs every recurring trigger, run last of all
 
 ## First-time setup
 
@@ -47,7 +49,7 @@ For readability, arrange them (drag in the editor's left file list) as:
    JIRA_BASE_URL=https://sprouthq.atlassian.net
    JIRA_EMAIL=<your dedicated Jira email>
    JIRA_API_TOKEN=<your dedicated Jira API token — do not reuse Operations Hub's or Jira Tagging's>
-   GEMINI_API_KEY=<Gemini free-tier API key>
+   AI_API_KEY=<Groq API key from console.groq.com/keys — open-weight models; replaced GEMINI_API_KEY>
    API_SHARED_SECRET=<generate a random string, e.g. `openssl rand -hex 24`>
    ALERT_EMAIL=<your email — recommended; see Troubleshooting below if omitted>
    ```
@@ -57,8 +59,8 @@ For readability, arrange them (drag in the editor's left file list) as:
 5. Open `PlatOps - Manager Data` → `TEAMS_CONFIG` tab and confirm the 3 pre-filled rows
    (ST/DE/DEV) look right — especially `issue_types_csv`, which is left blank for you to
    fill in with your real Jira issue types (comma-separated, no spaces after commas).
-6. Populate the `ROSTER` tab with real team members (used for per-person filtering and
-   Gemini outlier flagging later).
+6. Populate the `ROSTER` tab with real team members (used for per-person filtering, the
+   Incident Logs person picker, and outlier flagging later).
 7. Deploy → New deployment → type **Web app** → Execute as **Me** → Who has access
    **Anyone**. Copy the `/exec` URL.
 8. In the Next.js app's `.env.local`, set:
@@ -165,10 +167,10 @@ should equal the "N of M resolved overdue" the `metrics` route reports for the s
 team + period. If the two disagree, `aggregateAllTeams` hasn't caught up with the latest
 sync — the report reads raw rows live, the scorecard reads `METRICS_DAILY`.
 
-## Gemini insights (Milestone 5)
+## Narrative insights (Milestone 5)
 
-`GEMINI_API_KEY` must already be set in Script Properties (see step 3). Smoke-test once
-`Insights.gs` is pasted in:
+`AI_API_KEY` must already be set in Script Properties (see step 3). Smoke-test once
+`AiClient.gs` and `Insights.gs` are pasted in:
 
 1. Select `generateInsightsAllTeams` in the function dropdown and click **Run**.
 2. Check `PlatOps - Manager Data` → `INSIGHTS_CACHE` — one row per team (`TEAM:ST`, etc.)
@@ -176,13 +178,223 @@ sync — the report reads raw rows live, the scorecard reads `METRICS_DAILY`.
 3. Read the narratives for hallucination/accuracy before trusting them for a real
    MBR/QBR — the prompt only receives aggregated numbers (never raw tickets), but LLM
    output should still be spot-checked, especially early on.
-4. Confirm `gemini-2.0-flash` (the model id hardcoded in `Insights.gs`) is still current
-   on the [Gemini API free tier](https://ai.google.dev/gemini-api/docs/pricing) — model
-   availability shifts over time.
+4. Confirm `llama-3.3-70b-versatile` (`AI_DEFAULT_MODEL` in `AiClient.gs`) is still served
+   on [Groq's model list](https://console.groq.com/docs/models) — providers retire model ids,
+   and a retired id fails with a non-retryable HTTP 404 rather than falling back. Set an
+   `AI_MODEL` Script Property to re-point it without editing code.
+
+## Incident Logs (IncidentsApi.gs)
+
+The trigger for an incident log is **you**, in Jira: setting the Report Tagging custom field
+(`customfield_10262`) on a ticket is what marks it a valid incident. `IncidentsApi.sync()` finds
+those tickets (`cf[10262] IS NOT EMPTY`, per project, bounded to the last 730 days) and upserts
+them into `INCIDENT_TICKETS`. **Nothing is ever written back to Jira** — the field's value is
+used purely as a flag, so it isn't even stored.
+
+Severity, feedback, and AI-inferred categories live in a separate `INCIDENT_LOGS` tab, so a
+re-sync can never clobber typed feedback. Two tabs, two lifecycles:
+
+| Tab | Written by | Overwritten by a sync? |
+|---|---|---|
+| `INCIDENT_TICKETS` | `IncidentsApi.sync()` | Yes, every run |
+| `INCIDENT_LOGS` | the dashboard's forms | Never |
+
+Smoke-test:
+
+1. Tag one ticket's Report Tagging field in Jira.
+2. Select `syncIncidentTickets` in the function dropdown and click **Run**.
+3. Check `PlatOps - Manager Data` → `INCIDENT_TICKETS` for the row, and that `doer` matches the
+   team's configured owner field. On ST, `validator` should be whoever last held the ticket
+   leaving *For Peer Review* — it's derived from the changelog, so it's blank if the ticket never
+   went through review.
+4. If a team errors with a JQL complaint about the field, that project doesn't expose
+   `customfield_10262`. The sync returns per-team errors instead of throwing, so the other teams
+   still sync — the failure shows up in the response and on the page's Sync button.
+
+Score impact is recomputed backend-side from the severity code on every write (S1 -3, S2 -2,
+S3 -1.5, S4 -1), never taken from the request — so a stale frontend or a hand-edited sheet row
+can't quietly change what an incident costs someone.
+
+### Sync performance, and why it's built this way
+
+The validator attribution is the expensive part, and it is deliberately NOT derived from Jira
+during the sync. Measured on the first real run: 155 tagged ST tickets, one full paginated
+changelog fetch each, **182 seconds** — past every serverless timeout on the calling side, so the
+Next.js route returned 504 while Apps Script carried on working and the result was never reported.
+The symptom is a Sync button that appears to do nothing.
+
+`buildIncidentValidatorIndex_` reads `peer_review_cycles_json` out of the `RAW_ST_<year>` tabs
+instead — data the metrics sync already extracted with the same
+`extractPeerReviewCyclesWithReviewer_`, so the two cannot disagree (verified: across all 155
+tickets the RAW-derived validator matched the changelog-derived one exactly, blanks included).
+The index is lazy and memoised per run, so a re-sync where every ticket is unchanged never builds
+it at all. Same 155 tickets: **~5 seconds**.
+
+Two backstops remain, both reported in the sync response:
+- `INCIDENT_SYNC_TIME_BUDGET_MS` (40s) stops a run early and returns `capped: true`; the UI says
+  to run it again. This is normal, not an error.
+- `changelogFetches` counts live fallbacks — one per tagged ticket the RAW tabs don't cover yet.
+  A spike here means the metrics sync is behind, not that Jira slowed down.
+
+So: **run `syncAllTeams` before a large first incident sync**, and the incident sync stays cheap.
+
+### Validator attribution (read this before changing it)
+
+The validator is the assignee **at the moment the ticket entered "For Peer Review"** — the doer
+picks a reviewer and hands off in one action, so the assignee set on that transition IS the reviewer.
+
+`extractPeerReviewCyclesWithReviewer_` therefore records TWO snapshots per cycle:
+
+| Field | Snapshot | Consumed by |
+|---|---|---|
+| `reviewerAtEntry` | assignee when the cycle **opened** | Incident Logs validator |
+| `reviewer` | assignee when the cycle **closed** | Peer Review Wait report |
+
+They genuinely differ. On ST-84873: Jasper Razo was assigned going into For Peer Review, then
+Angelo Nico Ravilas was assigned going on to For Checking. `reviewerAtEntry` is Jasper (the
+validator); `reviewer` is Angelo Nico, who picked it up at the *next* stage and never reviewed it.
+Attributing to the exit assignee is what made the validator wrong on most tickets originally.
+
+`reviewer` was left as-is rather than repointed, because `src/lib/peer-review.ts` already reports on
+it — **the same attribution question applies to the Peer Review Wait report**, and it should be
+decided deliberately rather than changed as a side effect.
+
+### Designated validators
+
+Only the people in `INCIDENT_VALIDATOR_NAMES_DEFAULT` (Angelo Fajardo, Jasper Razo, Mark Jayson
+Manosca) can be recorded as a validator. Anyone else appearing as the assignee on a
+*For Peer Review* transition leaves the field **blank** rather than being credited with a review.
+
+The changelog assignee is usually the reviewer but not always — a ticket can be moved into review
+still assigned to the doer, or passed through by someone covering a queue. Those cases would credit
+a review to somebody who never did one, and that feeds an evaluation. A blank is a much better
+answer than a confidently wrong name. On the 2026 set the allowlist changed exactly two rows
+(Marlon Montecerin, Rancel Reynoso → blank), which is the right order of magnitude: the
+entry-assignee rule already got 26 of 28 right on its own.
+
+Override the list with an `INCIDENT_VALIDATORS` script property (comma-separated), then run a
+forced sync. Bump `INCIDENT_VALIDATOR_ATTRIBUTION` too if the change should revisit rows already
+carrying the current marker.
+
+### Manual validator override
+
+`INCIDENT_TICKETS` keeps **two** validator columns, and the distinction matters:
+
+| Column | Holds | Written by |
+|---|---|---|
+| `validator` | the **derived** value | the sync only |
+| `validator_override` | the **manual** value | `setValidator` only |
+
+`list()` composes the effective value as `override \|\| derived`. Neither writer touches the other's
+column, which is what makes clearing an override reveal the real derivation underneath.
+
+Getting this wrong is easy and was in fact gotten wrong first: the initial version had
+`setValidator` write the effective value into `validator`, which destroyed the derived value — so
+clearing an override "fell back" to the override that had just been cleared and the wrong name
+stuck permanently. Keep the two columns independent.
+
+`setValidator` rejects any name outside the designated validators rather than accepting it, and
+matches case-insensitively so a lowercase entry is canonicalised rather than refused.
+
+Two consequences worth knowing:
+
+- A RAW row synced before `reviewerAtEntry` existed yields nothing from the index and falls back to
+  a live changelog fetch. That self-heals as `syncAllTeams` re-syncs, so no coordinated backfill is
+  needed — but until then `changelogFetches` stays high and syncs are slow.
+- `validator_source` stamps every row with `INCIDENT_VALIDATOR_ATTRIBUTION`. This is what makes a
+  forced re-derive **converge**: `force` ignores the updated-unchanged skip, so without the marker
+  every run redoes the same first N tickets until the time budget expires and never reaches the
+  rest — repeated runs make no progress at all. Rows already carrying the current marker are skipped
+  even under force. **Bump that constant whenever the derivation changes meaning**; that alone makes
+  the next forced sync revisit every row exactly once.
+
+To re-derive after such a change: `POST /api/gas/incidents/sync` with `{"force": true}`, repeatedly
+until the response reports `capped: false`. (The 2026 cutover took 2 runs for 38 tickets: 27 then 11.)
+
+### Issue-type groups
+
+The incident view segregates tickets into `Backend Changes` (Backend Changes, Account Creation,
+Task, Company Policy, Data Deletion, Technical Story), `Investigation` (Data Generation,
+Investigation), and `Others` for anything unlisted — so a new Jira issue type shows up as
+uncategorised and obvious instead of silently inflating a real group.
+
+Derived on read from `issue_type`, not stored, so changing the grouping takes effect immediately
+without re-syncing every row.
+
+**This is not the same split as `CYCLE_TIME_INVESTIGATION_ISSUE_TYPES` in `JiraSync.gs`**, which
+also counts External Support Request and Team Viewer as investigations. That list decides which
+status ends cycle time; this one is a reporting grouping. Independent on purpose — don't unify them
+without confirming both meanings should move.
+
+### Scores
+
+Two 100-based numbers, both computed over whatever period is filtered:
+
+```
+individual = 100 - (sum of that person's severity deductions)
+team       = 100 - (team's total deductions / active roster size)
+```
+
+Severity impacts are stored negative (S1 = -3); the scores subtract their MAGNITUDE, so incidents
+always push a score down.
+
+The team denominator is the **full active roster**, not just people who had an incident. That makes
+the team score the true average of its members' individual scores — since `avg(100 - d_i)` equals
+`100 - avg(d_i)` and a member with no incidents contributes 100 — and it keeps the number stable.
+Dividing by "people with logs" would score a team where one person slipped once the same as a team
+where everyone did.
+
+Not clamped at 0: it would take 34 S1 incidents by one person to go negative, so a negative score
+is more useful as a signal that something is wrong with the data than a floor quietly hiding it.
+
+Team scores always cover the whole team, **even when a member filter is active** — the team's score
+doesn't change because you're looking at one person. That's why `computeIncidentStats_` takes the
+member-unfiltered log set as a separate `scoreLogs` argument.
+
+**Ordering matters in `list()`.** The date window is applied immediately after the team filter,
+before anything is derived from those lists. It originally ran last, which silently broke both
+derivations downstream of it: the member dropdown offered people with no logs in the window, and the
+team score was computed across every date on record regardless of the selected period — Q1 with zero
+logs still reported the full-year score. Keep the range filter first.
+
+### Filters
+
+`year` plus a single `period` — `''` (full year), `Q1`-`Q4`, or `01`-`12`. One control because a
+quarter and a month are mutually exclusive; two selects would allow "Q1 and also August".
+
+`member` filters on the **log's** person, not the ticket's doer/validator: the question is which
+incidents a person is accountable for, and on a ticket where they were only the validator, the
+doer's name is irrelevant to that. A tagged ticket with no log for them drops out entirely,
+including from the awaiting-feedback queue. Options come from logs in the current window, collected
+before the member filter is applied so selecting someone doesn't collapse the dropdown to one entry.
+
+### The tracked window
+
+`INCIDENT_SYNC_START_DATE_DEFAULT` (`2026-01-01`) is a **fixed floor**, not a rolling lookback —
+incidents feed evaluations, and a rolling window would silently drop the earliest month of history
+every time it moved. Override it with an `INCIDENT_SYNC_START_DATE` script property (`yyyy-MM-dd`)
+to move the floor without a redeploy.
+
+It is enforced in two places, and both are needed:
+- the JQL `updated >= floor` clause, a cheap prefilter and a safe superset (a ticket cannot be
+  created or resolved after its own last-updated timestamp);
+- a precise per-ticket check on `incident_date`, which is what the year/month filter actually keys
+  on. Without it, a 2025 incident touched in 2026 would pass the JQL and land under 2025 on screen.
+
+Narrowing the floor also **prunes** rows already stored from before it — otherwise the window would
+only stop new rows arriving and leave the old ones in the list forever. A ticket that already has an
+incident log is exempt and reported as `prunedKeptBecauseLogged`: that log is manager-written
+feedback feeding someone's evaluation, and orphaning it to tidy a date range would destroy the most
+valuable data on the page to remove the least valuable.
+
+Observed on the 2026 cutover: `prunedBefore: 117` (9 from 2024, 108 from 2025), `outOfWindow: 21`
+per run, leaving 38 tickets and a year filter offering only 2026. The prune is a one-time cost —
+117 individual row deletions took ~38s; the next run was 5s.
 
 ## Installing the recurring triggers (after Milestones 1-5 are all deployed)
 
 Run `installTriggers` once from the editor. It installs `syncAllTeams` (every 2h),
+`syncInitiativeTickets` (every 4h), `syncIncidentTickets` (daily, ~7am Asia/Manila),
 `aggregateAllTeams` (every 2h, staggered ~2min later), and `generateInsightsAllTeams`
 (daily, ~6am Asia/Manila) — and is safe to re-run any time (it clears old triggers for
 these functions first, so it never creates duplicates).
@@ -257,6 +469,6 @@ this feature.
 `gas/appsscript.json` sets the project timezone to `Asia/Manila` (matches the
 `TIMEZONE` constant hardcoded in `Utils.gs`, which the text-datetime parsing and daily
 trigger scheduling both depend on), the Web App access/executeAs settings, and the
-OAuth scopes needed (Sheets, external requests for Jira/Gemini, and mail for alerts).
+OAuth scopes needed (Sheets, external requests for Jira/the AI provider, and mail for alerts).
 In the Apps Script editor: Project Settings → check "Show `appsscript.json` manifest
 file in editor", then paste this file's contents in to replace the default.

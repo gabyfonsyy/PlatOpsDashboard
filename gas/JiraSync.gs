@@ -100,8 +100,8 @@ function processAndUpsertIssue_(team, issue) {
     }
     if (team.has_peer_review_tracking) {
       row.peer_review_cycles_json = JSON.stringify(extractPeerReviewCyclesWithReviewer_(changelog));
-      const endStatus = cycleTimeEndStatusForIssueType_(row.issue_type);
-      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, endStatus);
+      const endStatuses = cycleTimeEndStatusesForIssueType_(row.issue_type);
+      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, endStatuses);
       row.cycle_time_start = reviewCycleTime.startAt || '';
       row.cycle_time_end = reviewCycleTime.endAt || '';
     }
@@ -311,22 +311,42 @@ function extractHoldingCyclesWithReasons_(changelog) {
 
 /**
  * Walks the changelog chronologically and returns every "For Peer Review" cycle as
- * { enteredAt, exitedAt, exitedToStatus, reviewer }. `reviewer` is the last value the
- * ticket's native Assignee field was changed to as of the moment the cycle closes — a
- * running value updated on every assignee changelog item (mirrors currentReason in
- * extractHoldingCyclesWithReasons_), not reset per cycle, so a cycle with no in-window
- * reassignment still reports whoever was already assigned. The assignee item is applied
- * BEFORE the status item is checked within the same changelog entry (loop order matters):
- * Jira batches simultaneous field changes into one changelog entry, so a reassignment that
- * happens in the same entry as the "For Peer Review" exit must already be reflected in
- * currentAssignee by the time that exit closes the cycle, not one entry later.
- * Every exit is recorded (not just to On Hold/For Checking) via exitedToStatus — callers
- * filter to the exits they care about rather than losing data for other exit paths.
+ * { enteredAt, exitedAt, exitedToStatus, reviewer, reviewerAtEntry }.
+ *
+ * TWO assignee snapshots, because "who was assigned" answers two different questions and the
+ * answers genuinely differ:
+ *
+ *   reviewerAtEntry — the assignee at the moment the ticket moved INTO For Peer Review. This is
+ *                     the person asked to review it: the doer picks a reviewer and hands off in
+ *                     one action, so the assignee set on that transition IS the reviewer.
+ *   reviewer        — the assignee as of the moment the cycle CLOSES. Retained unchanged because
+ *                     PeerReviewApi.gs and src/lib/peer-review.ts already report on it; do not
+ *                     repoint those at reviewerAtEntry without deciding that report's attribution
+ *                     question on purpose.
+ *
+ * Worked example (ST-84873): Jasper Razo was assigned when it went to For Peer Review, then
+ * Angelo Nico Ravilas was assigned when it moved on to For Checking. reviewerAtEntry is Jasper
+ * (the validator); reviewer is Angelo Nico (who picked it up at the NEXT stage, and was never the
+ * peer reviewer at all). Attributing the review to the exit assignee is what made the Incident
+ * Logs validator wrong for most tickets.
+ *
+ * `currentAssignee` is a running value updated on every assignee changelog item (mirrors
+ * currentReason in extractHoldingCyclesWithReasons_), not reset per cycle, so a cycle with no
+ * in-window reassignment still reports whoever was already assigned. The assignee item is applied
+ * BEFORE the status item is checked within the same changelog entry (loop order matters): Jira
+ * batches simultaneous field changes into one changelog entry, so a reassignment that happens in
+ * the same entry as a For Peer Review entry/exit must already be reflected in currentAssignee by
+ * the time that transition is handled, not one entry later. That ordering is exactly what makes
+ * reviewerAtEntry pick up a hand-off where the reassignment and the transition are one action.
+ *
+ * Every exit is recorded (not just to On Hold/For Checking) via exitedToStatus — callers filter to
+ * the exits they care about rather than losing data for other exit paths.
  */
 function extractPeerReviewCyclesWithReviewer_(changelog) {
   let currentAssignee = null;
   const cycles = [];
   let cycleStart = null;
+  let cycleStartAssignee = null;
 
   for (let i = 0; i < changelog.length; i++) {
     const items = changelog[i].items || [];
@@ -345,52 +365,82 @@ function extractPeerReviewCyclesWithReviewer_(changelog) {
 
     if (toStatus === 'for peer review') {
       cycleStart = changelog[i].created;
+      cycleStartAssignee = currentAssignee;
     } else if (fromStatus === 'for peer review' && cycleStart) {
       cycles.push({
         enteredAt: cycleStart, exitedAt: changelog[i].created,
-        exitedToStatus: statusItem.toString || '', reviewer: currentAssignee || '',
+        exitedToStatus: statusItem.toString || '',
+        reviewer: currentAssignee || '',
+        reviewerAtEntry: cycleStartAssignee || '',
       });
       cycleStart = null;
+      cycleStartAssignee = null;
     }
   }
 
   if (cycleStart) {
-    cycles.push({ enteredAt: cycleStart, exitedAt: null, exitedToStatus: null, reviewer: currentAssignee || '' });
+    cycles.push({
+      enteredAt: cycleStart, exitedAt: null, exitedToStatus: null,
+      reviewer: currentAssignee || '',
+      reviewerAtEntry: cycleStartAssignee || '',
+    });
   }
 
   return cycles;
 }
 
 /**
- * Which status marks the end of SE active work, per issue type. Most ST issue types get
- * peer-reviewed (SE hands off at "For Peer Review"), but Data Generation and Investigation
- * skip dev review entirely and go straight to the requester at "For Checking" — for those,
- * extractReviewCycleTimeRange_ would otherwise never find a "For Peer Review" transition and
- * silently exclude them from cycle time forever. Falls back to 'for peer review' (the common
- * case) for any issue type not listed here.
+ * Which issue types skip peer/dev review entirely and hand off straight to the requester
+ * ("Investigations") vs which go through the normal SE peer-review path ("backend changes" —
+ * also the fallback for any issue type not explicitly listed in either group).
  */
-const CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE = {
-  'data generation': 'for checking',
-  'investigation': 'for checking',
-};
+const CYCLE_TIME_INVESTIGATION_ISSUE_TYPES = ['data generation', 'external support request', 'investigation', 'team viewer'];
 
+// Archived/Rejected end cycle time for EVERY issue type regardless of group — a ticket that's
+// archived or rejected outright never reaches a review status at all, so without this it would
+// have no cycle_time_end and get silently excluded from the average forever.
+const CYCLE_TIME_UNIVERSAL_END_STATUSES = ['archived', 'rejected'];
+
+/**
+ * The representative review-handoff status for this issue type's GROUP — used where only group
+ * membership matters (e.g. ToolAssistedApi.gs excluding Investigations from its comparison),
+ * not the full set of statuses that can end cycle time — see cycleTimeEndStatusesForIssueType_
+ * for that.
+ */
 function cycleTimeEndStatusForIssueType_(issueType) {
-  return CYCLE_TIME_END_STATUS_BY_ISSUE_TYPE[(issueType || '').toLowerCase()] || 'for peer review';
+  const type = (issueType || '').toLowerCase();
+  return CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.indexOf(type) !== -1 ? 'for checking' : 'for peer review';
+}
+
+/**
+ * Every status that ends this issue type's cycle time (see extractReviewCycleTimeRange_) —
+ * "backend changes" issue types (Company Policy, Backend Changes, Task, Account Creation, Data
+ * Deletion, Technical Story — also the fallback for anything unlisted) hand off at For Peer
+ * Review; "Investigations" issue types hand off at For Checking or For Product Team instead.
+ * Archived/Rejected apply on top, regardless of group.
+ */
+function cycleTimeEndStatusesForIssueType_(issueType) {
+  const type = (issueType || '').toLowerCase();
+  const reviewHandoffStatuses = CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.indexOf(type) !== -1
+    ? ['for checking', 'for product team']
+    : ['for peer review'];
+  return reviewHandoffStatuses.concat(CYCLE_TIME_UNIVERSAL_END_STATUSES);
 }
 
 /**
  * SE/ST cycle-time definition (replaces backlog-exit -> resolution for teams with
  * has_peer_review_tracking): the span from when the ticket first moved OUT of Backlog/To Do
  * (`backlogExitFallback`, i.e. `first_out_of_backlog_todo` — a fixed point per ticket) to the
- * most recent `endStatus` entry (see cycleTimeEndStatusForIssueType_ — "For Peer Review" for most
- * issue types, "For Checking" for Data Generation/Investigation). `cycleTimeEnd` is overwritten
- * every time a later matching transition is seen while walking the changelog chronologically, so
- * a ticket that bounces On Hold -> In Progress -> endStatus again automatically recomputes using
- * the LATEST endStatus entry — no separate "bounce" case needed. The start does NOT track
- * "In Progress" re-entries — it's always the ticket's original backlog-exit moment, regardless of
- * how many times it later cycles back through review.
+ * most recent transition into ANY of `endStatuses` (see cycleTimeEndStatusesForIssueType_).
+ * `cycleTimeEnd` is overwritten every time a later matching transition is seen while walking the
+ * changelog chronologically, so a ticket that bounces On Hold -> In Progress -> endStatus again
+ * automatically recomputes using the LATEST matching entry — no separate "bounce" case needed,
+ * and a ticket that reaches its review status and is LATER archived/rejected correctly picks up
+ * the later (archived/rejected) timestamp instead. The start does NOT track "In Progress"
+ * re-entries — it's always the ticket's original backlog-exit moment, regardless of how many
+ * times it later cycles back through review.
  */
-function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatus) {
+function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatuses) {
   let cycleTimeEnd = null;
 
   for (let i = 0; i < changelog.length; i++) {
@@ -398,7 +448,7 @@ function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatus)
     if (!statusItem) continue;
 
     const toStatus = (statusItem.toString || '').toLowerCase();
-    if (toStatus === endStatus) {
+    if (endStatuses.indexOf(toStatus) !== -1) {
       cycleTimeEnd = changelog[i].created;
     }
   }

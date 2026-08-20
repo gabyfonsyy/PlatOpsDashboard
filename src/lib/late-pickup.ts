@@ -1,4 +1,4 @@
-import { getSupabaseClient } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import {
   toManilaDateString,
@@ -74,15 +74,16 @@ async function fetchAccountCreationTicketsCreatedBetween(startDate: string, endD
   const rangeEndUtc = new Date(`${endDate}T00:00:00Z`);
   rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
 
-  const { data, error } = await getSupabaseClient()
-    .from("tickets")
-    .select("issue_key,created,first_out_of_backlog_todo,resolved_datetime,assigned_se")
-    .eq("team_key", "ST")
-    .eq("issue_type", "Account Creation")
-    .gte("created", rangeStartUtc.toISOString())
-    .lte("created", rangeEndUtc.toISOString());
-  if (error) throw new Error(`Supabase tickets query failed: ${error.message}`);
-  return (data ?? []) as TicketRow[];
+  return fetchAllRows<TicketRow>((from, to) =>
+    getSupabaseClient()
+      .from("tickets")
+      .select("issue_key,created,first_out_of_backlog_todo,resolved_datetime,assigned_se")
+      .eq("team_key", "ST")
+      .eq("issue_type", "Account Creation")
+      .gte("created", rangeStartUtc.toISOString())
+      .lte("created", rangeEndUtc.toISOString())
+      .range(from, to)
+  );
 }
 
 /**
