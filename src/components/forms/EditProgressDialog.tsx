@@ -52,7 +52,7 @@ export function EditProgressDialog({
       className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-900/40 p-4"
       onClick={onClose}
     >
-      <div className="card bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="card bg-surface w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-neutral-900">Edit Processed Batch</h2>
           <button onClick={onClose} className="text-neutral-400 hover:text-neutral-700" aria-label="Close">

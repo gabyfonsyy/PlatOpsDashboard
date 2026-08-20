@@ -8,25 +8,41 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RefreshDataButton } from "@/components/layout/RefreshDataButton";
+import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import { celebrate } from "@/lib/celebrate";
+import { PAGE_NAMES } from "@/lib/nav";
+import { Copy } from "@/components/ui/Copy";
 
+/**
+ * Rendered BEFORE the Teams dropdown, so it is literally the first tab. It's the page the day
+ * starts on, it's where signing in lands (see login/page.tsx), and it's where the brand mark in
+ * the header goes back to — three routes to the same place, because it's the home of the app.
+ */
+const PRIMARY_NAV = { href: "/my-work", page: "home" } as const;
+
+/** Labels come from lib/nav.ts, which carries both names for every page. */
 const NAV_ITEMS = [
-  { href: "/leave", label: "Leave" },
-  { href: "/rto", label: "RTO" },
-  { href: "/projects", label: "Projects" },
-  { href: "/incident-logs", label: "Incident Logs" },
-  { href: "/monitoring", label: "Ticket Monitoring" },
-];
+  { href: "/leave", page: "leave" },
+  { href: "/rto", page: "rto" },
+  { href: "/projects", page: "projects" },
+  { href: "/incident-logs", page: "incidents" },
+  { href: "/monitoring", page: "monitoring" },
+] as const;
 
 export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   const pathname = usePathname();
   const { data: session } = useSession();
   const [teamsOpen, setTeamsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  // Easter egg #1: the logo. Counts clicks and pays out on the 5th, then resets. Deliberately
+  // attached to a decorative element that does nothing else, so there's no workflow to disrupt.
+  const logoClicks = useRef(0);
 
-  // Teams menu = the cross-team Overview plus one entry per configured team.
+  // Teams menu = the cross-team Overview plus one entry per configured team. Only the Overview
+  // entry is renamed by theme; team names are real team names.
   const teamMenu = [
-    { label: "Overview", href: "/" },
-    ...teamTabs.map((t) => ({ label: t.label, href: `/${t.key}` })),
+    { label: PAGE_NAMES.overview.nav.serious, playful: PAGE_NAMES.overview.nav.playful, href: "/" },
+    ...teamTabs.map((t) => ({ label: t.label, playful: t.label, href: `/${t.key}` })),
   ];
 
   // Highlight the Teams pill on the overview or any team route (incl. /<team>/performance).
@@ -47,19 +63,54 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   return (
     <>
       {/* Header: brand + account only */}
-      <header className="sticky top-0 z-20 bg-white/70 backdrop-blur-xl border-b border-neutral-200/60">
+      <header className="sticky top-0 z-20 bg-surface/70 backdrop-blur-xl border-b border-neutral-200/60">
         <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between gap-6">
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-sprout-400 to-sprout-600 shadow-glow flex items-center justify-center">
-              <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 text-white" stroke="currentColor" strokeWidth={2}>
-                <path d="M3 17l6-6 4 4 8-8" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M14 7h7v7" strokeLinecap="round" strokeLinejoin="round" />
+          {/* The mark goes home — to Mission Control, not the team Overview. This stopped being a
+              chart-viewer a while ago; the thing it actually is now is the place your own day is
+              run from, so the logo is an orbit (you in the middle, everything else circling) and
+              it navigates rather than just sitting there. */}
+          <Link
+            href={PRIMARY_NAV.href}
+            aria-label={`Platform Ops — ${PAGE_NAMES[PRIMARY_NAV.page].nav.serious}`}
+            onClick={(e) => {
+              // Easter egg #1: still here. It counts clicks and pays out on the 5th, then resets.
+              // No preventDefault — the navigation is the mark's real job and the confetti rides
+              // along with it, so the egg can't strand you on the wrong page.
+              logoClicks.current += 1;
+              if (logoClicks.current >= 5) {
+                logoClicks.current = 0;
+                celebrate("chaos", { x: e.clientX, y: e.clientY });
+              }
+            }}
+            className="flex items-center gap-2 shrink-0 group"
+          >
+            <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-sprout-400 to-sprout-600 shadow-glow flex items-center justify-center transition-transform duration-200 group-active:scale-90">
+              <svg
+                viewBox="0 0 24 24"
+                className="w-5 h-5 text-white transition-transform duration-500 ease-out group-hover:rotate-[25deg]"
+              >
+                {/* Ring and satellite share one rotation so the dot stays ON the orbit. */}
+                <g transform="rotate(-30 12 12)">
+                  <ellipse
+                    cx="12"
+                    cy="12"
+                    rx="9.5"
+                    ry="4.6"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={1.6}
+                    opacity={0.8}
+                  />
+                  <circle cx="21.5" cy="12" r="1.7" fill="currentColor" />
+                </g>
+                <circle cx="12" cy="12" r="3" fill="currentColor" />
               </svg>
-            </div>
+            </span>
             <span className="font-serif font-medium text-neutral-900 text-sm hidden sm:inline">Platform Ops</span>
-          </div>
+          </Link>
 
           <div className="flex items-center gap-4 shrink-0">
+            <ThemeToggle />
             <RefreshDataButton />
             {session?.user && (
               <button onClick={() => signOut({ callbackUrl: "/login" })} className="flex items-center gap-2 group">
@@ -85,6 +136,16 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
       {/* Floating pill nav — lives outside the header, centered, straddling the boundary */}
       <div className="relative z-30 -mt-5 flex justify-center px-6 pointer-events-none">
         <nav className="pill-nav pointer-events-auto">
+          <Link
+            href={PRIMARY_NAV.href}
+            className={cn("pill", pathname === PRIMARY_NAV.href && "pill-active")}
+          >
+            <Copy
+              serious={PAGE_NAMES[PRIMARY_NAV.page].nav.serious}
+              playful={PAGE_NAMES[PRIMARY_NAV.page].nav.playful}
+            />
+          </Link>
+
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setTeamsOpen((o) => !o)}
@@ -92,7 +153,7 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
               aria-haspopup="menu"
               aria-expanded={teamsOpen}
             >
-              Teams
+              <Copy serious={PAGE_NAMES.teams.nav.serious} playful={PAGE_NAMES.teams.nav.playful} />
               <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", teamsOpen && "rotate-180")} />
             </button>
             {teamsOpen && (
@@ -106,7 +167,9 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
                       role="menuitem"
                       className={cn("dropdown-item", active && "dropdown-item-active")}
                     >
-                      <span>{item.label}</span>
+                      <span>
+                        <Copy serious={item.label} playful={item.playful} />
+                      </span>
                       {active && <Check className="w-4 h-4 shrink-0" />}
                     </Link>
                   );
@@ -117,9 +180,10 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
 
           {NAV_ITEMS.map((item) => {
             const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const name = PAGE_NAMES[item.page].nav;
             return (
               <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>
-                {item.label}
+                <Copy serious={name.serious} playful={name.playful} />
               </Link>
             );
           })}

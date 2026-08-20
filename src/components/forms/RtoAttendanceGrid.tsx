@@ -141,7 +141,7 @@ export function RtoAttendanceGrid({
                     data-active={values[m.employee_name] === t}
                     onClick={() => setValues((prev) => ({ ...prev, [m.employee_name]: t }))}
                     className={cn(
-                      "px-2.5 py-1 rounded-md text-xs font-medium text-neutral-500 bg-white border border-neutral-200 transition-colors",
+                      "px-2.5 py-1 rounded-md text-xs font-medium text-neutral-500 bg-surface border border-neutral-200 transition-colors",
                       TONE[t]
                     )}
                   >

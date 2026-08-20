@@ -307,9 +307,11 @@ function setupManagerDataSpreadsheet_() {
 
   // PROJECTS moved to the separate Initiatives workbook — see setupInitiativesSpreadsheet_().
 
+  // source_version fingerprints the data the insight was generated FROM, so a regeneration
+  // request with unchanged metrics can be answered from cache instead of spending an AI call.
   ensureTab_(ss, 'INSIGHTS_CACHE', [
     'scope_key', 'period_label', 'narrative_text', 'flags_json', 'generated_at',
-    'model_used', 'prompt_tokens_est', 'generation_status', 'error_message',
+    'model_used', 'prompt_tokens_est', 'generation_status', 'error_message', 'source_version',
   ]);
 
   // Incident Logs, two tabs on purpose (see IncidentsApi.gs): INCIDENT_TICKETS is overwritten from

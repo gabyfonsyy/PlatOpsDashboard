@@ -13,8 +13,25 @@
 
 const AI_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
-/** Kept in step with gas/AiClient.gs's AI_DEFAULT_MODEL — override per-environment with AI_MODEL. */
-const AI_DEFAULT_MODEL = "llama-3.3-70b-versatile";
+/**
+ * Two tiers, kept in step with gas/AiClient.gs's AI_MODELS.
+ *
+ *   fast — Llama 3.1 8B. Rewriting a paragraph, classifying into a fixed list, writing prose
+ *          around numbers that are already computed. Most of what this app asks for.
+ *   deep — Llama 3.3 70B. Multi-variable reasoning where the answer depends on relating several
+ *          independent signals — currently only Work Mirror.
+ *
+ * Defaulting to the big model is the expensive habit. On a free tier the tier choice is what
+ * decides whether a feature is affordable, so it's explicit per call site rather than global.
+ */
+export const AI_MODELS = {
+  fast: "llama-3.1-8b-instant",
+  deep: "llama-3.3-70b-versatile",
+} as const;
+
+export type AiTier = keyof typeof AI_MODELS;
+
+const AI_DEFAULT_TIER: AiTier = "fast";
 
 const AI_RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
 const AI_MAX_RETRIES = 2;
@@ -22,8 +39,9 @@ const AI_MAX_RETRIES = 2;
 export class AiConfigError extends Error {}
 export class AiRequestError extends Error {}
 
-export function getAiModel(): string {
-  return process.env.AI_MODEL || AI_DEFAULT_MODEL;
+/** An explicit AI_MODEL env var overrides every tier — escape hatch for a retired model id. */
+export function getAiModel(tier: AiTier = AI_DEFAULT_TIER): string {
+  return process.env.AI_MODEL || AI_MODELS[tier];
 }
 
 /**
@@ -41,6 +59,8 @@ type ChatOptions = {
   temperature?: number;
   maxTokens?: number;
   json?: boolean;
+  /** Which model tier to spend. Defaults to "fast" — opt in to "deep" deliberately. */
+  tier?: AiTier;
 };
 
 async function chatRaw(prompt: string, options: ChatOptions = {}): Promise<string> {
@@ -52,7 +72,7 @@ async function chatRaw(prompt: string, options: ChatOptions = {}): Promise<strin
   messages.push({ role: "user", content: prompt });
 
   const body: Record<string, unknown> = {
-    model: getAiModel(),
+    model: getAiModel(options.tier),
     messages,
     temperature: options.temperature ?? 0.3,
     max_tokens: options.maxTokens ?? 1024,

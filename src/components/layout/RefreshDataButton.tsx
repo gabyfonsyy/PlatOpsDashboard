@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { RefreshCw, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { celebrate } from "@/lib/celebrate";
 
 /**
  * Manual cache-bust for the two layers that can make a just-deployed backend fix look like it
@@ -21,9 +22,11 @@ export function RefreshDataButton() {
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body?.ok === false) throw new Error(body?.error || `Request failed (HTTP ${res.status})`);
       router.refresh();
+      celebrate("success");
       setState("done");
       setTimeout(() => setState("idle"), 2000);
     } catch {
+      celebrate("nope");
       setState("error");
       setTimeout(() => setState("idle"), 2000);
     }

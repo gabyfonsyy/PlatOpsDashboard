@@ -7,6 +7,7 @@ export function MetricCard({
   sublabel,
   tooltip,
   href,
+  className,
 }: {
   label: string;
   value: string;
@@ -14,6 +15,8 @@ export function MetricCard({
   tooltip?: string;
   /** When set, the whole card becomes a link to a drill-down page (e.g. Backlog Aging -> ticket list). */
   href?: string;
+  /** Extra classes on the card shell — e.g. `adhd-happy` to give a good-news card ambient drift. */
+  className?: string;
 }) {
   const body = (
     <>
@@ -41,11 +44,11 @@ export function MetricCard({
 
   if (href) {
     return (
-      <Link href={href} className="card card-interactive p-5 block">
+      <Link href={href} className={`card card-interactive p-5 block ${className ?? ""}`}>
         {body}
       </Link>
     );
   }
 
-  return <div className="card p-5">{body}</div>;
+  return <div className={`card p-5 ${className ?? ""}`}>{body}</div>;
 }

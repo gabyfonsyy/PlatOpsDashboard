@@ -6,6 +6,9 @@
  */
 
 function installTriggers() {
+  // generateInsightsAllTeams is in the DELETE list but never re-created below — see the note at
+  // the bottom of this function. Listing it here means re-running installTriggers actively removes
+  // a previously-installed AI trigger rather than leaving it running.
   ['syncAllTeams', 'aggregateAllTeams', 'generateInsightsAllTeams', 'syncInitiativeTickets', 'syncIncidentTickets']
     .forEach(deleteTriggersFor_);
 
@@ -25,9 +28,19 @@ function installTriggers() {
   Utilities.sleep(2 * 60 * 1000);
   ScriptApp.newTrigger('aggregateAllTeams').timeBased().everyHours(2).create();
 
-  ScriptApp.newTrigger('generateInsightsAllTeams').timeBased().everyDays(1).atHour(6).nearMinute(0).create();
-
-  Logger.log('Triggers installed: syncAllTeams (2h), syncInitiativeTickets (4h), syncIncidentTickets (daily ~7am), aggregateAllTeams (2h, staggered), generateInsightsAllTeams (daily ~6am Asia/Manila).');
+  // NO AI TRIGGER. generateInsightsAllTeams is deliberately NOT scheduled.
+  //
+  // It used to run daily at 06:00, which cost 4 Groq calls every day (3 teams + rollup) whether
+  // anyone opened the dashboard or not — roughly 1,460 requests a year to generate paragraphs that
+  // often went unread. On a free tier that is the entire budget spent on nobody's behalf.
+  //
+  // Insights are now generated ON REQUEST only, from the 'generate-insight' route, and served from
+  // INSIGHTS_CACHE on every page load after that. A page view costs zero AI requests.
+  //
+  // If you ever do want it scheduled, call generateInsightsAllTeams() from a trigger you add by
+  // hand — it still works, and its source-version check means a run with unchanged metrics skips
+  // the model call anyway.
+  Logger.log('Triggers installed: syncAllTeams (2h), syncInitiativeTickets (4h), syncIncidentTickets (daily ~7am), aggregateAllTeams (2h, staggered). No AI trigger — insights are generated on request.');
 }
 
 function deleteTriggersFor_(functionName) {
@@ -37,15 +50,11 @@ function deleteTriggersFor_(functionName) {
 }
 
 /**
- * Stops the daily narrative-insights trigger without touching sync/aggregation — useful when the
- * AI provider's rate limit is exhausted and it's just generating failed-run noise (alert emails,
- * wasted Executions) while you're focused on something else. Nothing else depends on this trigger
- * firing: MetricsApi.gs's getCachedInsight_ only ever reads whatever's already in INSIGHTS_CACHE
- * and the frontend already handles a missing/stale cached insight gracefully, so pausing this is
- * safe and fully reversible — run installTriggers again (or just re-add this one trigger) once
- * the quota resets.
+ * Removes any lingering AI trigger. Kept as a one-liner for an install that predates the
+ * no-scheduled-AI policy above: installTriggers already deletes it, but this makes it possible to
+ * stop unattended AI spend without touching the sync/aggregation schedule at the same time.
  */
 function pauseInsightsTrigger() {
   deleteTriggersFor_('generateInsightsAllTeams');
-  Logger.log('generateInsightsAllTeams trigger removed — narrative insights paused. Re-run installTriggers to resume.');
+  Logger.log('generateInsightsAllTeams trigger removed. Insights are generated on request only.');
 }

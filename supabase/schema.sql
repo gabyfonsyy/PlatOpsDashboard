@@ -359,6 +359,14 @@ create table project_tasks (
 );
 
 -- ============================================================================
+-- My Work (personal work tracking) lives in its own file: supabase/my-work.sql
+--
+-- Kept separate rather than inlined here so there is exactly ONE copy of that DDL. It is written
+-- idempotently (`create table if not exists`), so the same file serves a fresh project and an
+-- existing one. Run it after this file.
+-- ============================================================================
+
+-- ============================================================================
 -- Lock every table down to service_role only (no anon/authenticated policies)
 -- ============================================================================
 

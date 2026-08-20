@@ -4,6 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { DownloadCloud } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { celebrate } from "@/lib/celebrate";
+import { Copy } from "@/components/ui/Copy";
 
 type SyncResult = {
   scanned: number;
@@ -49,10 +51,14 @@ export function SyncIncidentsButton({ team }: { team?: string }) {
       if (!res.ok || body?.ok === false) {
         throw new Error(body?.error || `Request failed (HTTP ${res.status})`);
       }
-      setResult(body.data as SyncResult);
+      const data = body.data as SyncResult;
+      setResult(data);
+      // A sync that actually pulled something in is worth more than one that found nothing new.
+      celebrate(data.byTeam.some((t) => t.upserted > 0) ? "milestone" : "success");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      celebrate("nope");
     } finally {
       setState("idle");
     }
@@ -69,7 +75,10 @@ export function SyncIncidentsButton({ team }: { team?: string }) {
 
       {state === "loading" && (
         <p className="text-xs text-neutral-400">
-          Reading tagged tickets — can take a while on the first run.
+          <Copy
+            serious="Reading tagged tickets — can take a while on the first run."
+            playful="Asking Jira what everyone's been up to…"
+          />
         </p>
       )}
 

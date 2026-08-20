@@ -117,7 +117,7 @@ export function ProjectTasksPanel({
       <div className="flex flex-col gap-1.5">
         {tasks.length === 0 && <p className="text-sm text-neutral-400">No tasks yet — add one below.</p>}
         {tasks.map((t) => (
-          <div key={t.task_id} className="flex items-center gap-3 bg-white rounded-md border border-neutral-200 px-3 py-2">
+          <div key={t.task_id} className="flex items-center gap-3 bg-surface rounded-md border border-neutral-200 px-3 py-2">
             <input
               type="checkbox"
               checked={t.done}

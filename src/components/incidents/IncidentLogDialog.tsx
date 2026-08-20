@@ -8,6 +8,7 @@ import { createPortal } from "react-dom";
 import { X, Sparkles, Loader2, ExternalLink } from "lucide-react";
 import { z } from "zod";
 import { cn } from "@/lib/utils";
+import { celebrate } from "@/lib/celebrate";
 import { formatManilaDate } from "@/lib/format";
 import {
   INCIDENT_CATEGORIES,
@@ -76,6 +77,16 @@ export function IncidentLogDialog({
   // re-runs the assist, which is the honest outcome.
   const [aiMeta, setAiMeta] = useState<{ model: string; at: string } | null>(
     log?.ai_model ? { model: log.ai_model, at: log.ai_generated_at } : null
+  );
+  /**
+   * The exact note that produced the draft currently on screen. Re-pressing the button on
+   * unchanged text would produce a near-identical rewrite for the price of a live AI request, so
+   * the button goes inert instead — the cheapest possible saving, on the app's most-used AI
+   * feature. Seeded from the stored log so re-opening a saved incident doesn't offer a pointless
+   * regeneration either.
+   */
+  const [assistedFrom, setAssistedFrom] = useState<string | null>(
+    log?.feedback_polished ? log.feedback_raw : null
   );
 
   const availableRoles = rolesForTeam(hasPeerReview);
@@ -151,8 +162,11 @@ export function IncidentLogDialog({
       // stale picks from a previous run would misrepresent what it actually classified.
       setCategories(data.categories);
       setAiMeta({ model: data.model, at: new Date().toISOString() });
+      setAssistedFrom(feedbackRaw);
+      celebrate("success");
     } catch (err) {
       setAssistError(err instanceof Error ? err.message : String(err));
+      celebrate("nope");
     } finally {
       setAssisting(false);
     }
@@ -179,9 +193,13 @@ export function IncidentLogDialog({
       if (!res.ok || body?.ok === false) {
         throw new Error(body?.error || `Request failed (HTTP ${res.status})`);
       }
+      // Writing up an incident is the tedious part of this job — the one place a reward is
+      // genuinely earned.
+      celebrate("milestone");
       onClose();
       router.refresh();
     } catch (err) {
+      celebrate("nope");
       setError(
         `Could not save: ${err instanceof Error ? err.message : String(err)}. If this says "Unauthorized", sign out and back in.`
       );
@@ -191,6 +209,9 @@ export function IncidentLogDialog({
   }
 
   const rubric = severity ? INCIDENT_SEVERITIES[severity] : null;
+  // Unchanged note + an existing draft = nothing new to ask for.
+  const alreadyDrafted =
+    assistedFrom !== null && assistedFrom.trim() === (feedbackRaw ?? "").trim() && Boolean(polished);
 
   return createPortal(
     <div
@@ -198,7 +219,7 @@ export function IncidentLogDialog({
       onClick={onClose}
     >
       <div
-        className="card bg-white w-full max-w-3xl max-h-[92vh] overflow-y-auto p-6"
+        className="card bg-surface w-full max-w-3xl max-h-[92vh] overflow-y-auto p-6 adhd-springy"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-4 mb-5">
@@ -285,7 +306,7 @@ export function IncidentLogDialog({
                       "text-left px-3 py-2 rounded-xl border transition-all duration-200",
                       active
                         ? "border-sprout-300 bg-sprout-50 ring-2 ring-sprout-400/40"
-                        : "border-neutral-200/80 bg-white/60 hover:border-sprout-200"
+                        : "border-neutral-200/80 bg-surface/60 hover:border-sprout-200"
                     )}
                   >
                     <span className="flex items-center justify-between gap-2">
@@ -315,13 +336,19 @@ export function IncidentLogDialog({
               <label className="form-label mb-0">Why this was flagged as a valid incident</label>
               <button
                 type="button"
-                onClick={runAssist}
-                disabled={!aiEnabled || assisting || !feedbackRaw?.trim()}
+                onClick={() => { void runAssist(); }}
+                disabled={!aiEnabled || assisting || !feedbackRaw?.trim() || alreadyDrafted}
                 className="btn-secondary py-1.5 px-3 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-                title={aiEnabled ? "Rephrase and categorise with AI" : "Set AI_API_KEY to enable"}
+                title={
+                  !aiEnabled
+                    ? "Set AI_API_KEY to enable"
+                    : alreadyDrafted
+                      ? "Already drafted for this note — edit the note to rephrase again"
+                      : "Rephrase and categorise with AI"
+                }
               >
                 {assisting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                {assisting ? "Working…" : "Rephrase with AI"}
+                {assisting ? "Working…" : alreadyDrafted ? "Drafted" : "Rephrase with AI"}
               </button>
             </div>
             <textarea
@@ -383,7 +410,7 @@ export function IncidentLogDialog({
                       "badge border transition-all duration-200",
                       active
                         ? "bg-sprout-50 text-sprout-700 border-sprout-300"
-                        : "bg-white/60 text-neutral-500 border-neutral-200 hover:border-sprout-200"
+                        : "bg-surface/60 text-neutral-500 border-neutral-200 hover:border-sprout-200"
                     )}
                   >
                     {category}

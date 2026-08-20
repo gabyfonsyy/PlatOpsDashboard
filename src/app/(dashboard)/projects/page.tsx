@@ -12,6 +12,7 @@ import { ProgressRecordsTable } from "@/components/forms/ProgressRecordsTable";
 import type { ProgressTicketOption } from "@/components/forms/progress-fields";
 import { BatchCalculator } from "@/components/forms/BatchCalculator";
 import { InitiativeTicketsTable } from "@/components/dashboard/InitiativeTicketsTable";
+import { PageTitle } from "@/components/ui/PageTitle";
 
 export default async function ProjectsPage({
   searchParams,
@@ -71,7 +72,7 @@ export default async function ProjectsPage({
   return (
     <div className="flex flex-col gap-8">
       <div>
-        <h1>Projects &amp; Initiatives</h1>
+        <PageTitle page="projects" />
         <p className="text-sm text-neutral-500 mt-1">
           Log cross-team projects, project batch throughput, and track their Jira cod-initiative tickets.
         </p>

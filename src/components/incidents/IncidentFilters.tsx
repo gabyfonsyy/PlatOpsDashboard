@@ -69,7 +69,7 @@ export function IncidentFilters({
           disabled={isPending}
           className={cn(
             "px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:cursor-wait",
-            !team ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
+            !team ? "bg-surface-raised text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
           )}
         >
           All teams
@@ -81,7 +81,7 @@ export function IncidentFilters({
             disabled={isPending}
             className={cn(
               "px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:cursor-wait",
-              team === t.key ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
+              team === t.key ? "bg-surface-raised text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
             )}
           >
             {t.label}

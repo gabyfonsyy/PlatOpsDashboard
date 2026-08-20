@@ -16,17 +16,32 @@
 const AI_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 /**
- * Llama 3.3 70B — open weights (Meta community licence), Groq's general-purpose workhorse.
- * Confirm the id is still served before relying on it; Groq retires model ids periodically,
+ * Two tiers, because most of what this backend asks for is easy.
+ *
+ *   fast — Llama 3.1 8B. Writing prose around numbers that are already computed, rewriting a
+ *          sentence, picking labels from a fixed list. Cheaper and quicker, and on a free tier
+ *          that difference is the difference between having the feature and rationing it.
+ *   deep — Llama 3.3 70B. Reserved for genuine multi-variable reasoning.
+ *
+ * Reaching for the big model by default is the expensive habit; pick the tier per task instead.
+ * Confirm both ids are still served before relying on them — Groq retires model ids periodically,
  * and a retired id fails with a non-retryable HTTP 404 rather than silently falling back.
  */
-const AI_DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+const AI_MODELS = {
+  fast: 'llama-3.1-8b-instant',
+  deep: 'llama-3.3-70b-versatile',
+};
+
+const AI_DEFAULT_MODEL = AI_MODELS.fast;
 
 const AI_RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
 const AI_MAX_RETRIES = 3;
 
-function getAiModel_() {
-  return PropertiesService.getScriptProperties().getProperty('AI_MODEL') || AI_DEFAULT_MODEL;
+/** An explicit AI_MODEL script property overrides every tier — an escape hatch for a retired id. */
+function getAiModel_(tier) {
+  const override = PropertiesService.getScriptProperties().getProperty('AI_MODEL');
+  if (override) return override;
+  return AI_MODELS[tier] || AI_DEFAULT_MODEL;
 }
 
 /**
@@ -39,6 +54,7 @@ function getAiModel_() {
  *   maxTokens      — defaults to 1024
  *   json           — true to request a JSON object back (response_format json_object). The
  *                    prompt must still say "respond with JSON" or the provider rejects it.
+ *   tier           — 'fast' (default) or 'deep'. See AI_MODELS.
  *
  * Throws on a non-retryable error or after AI_MAX_RETRIES, same as jiraFetchWithRetry_ —
  * callers (generateInsightsAllTeams) are expected to catch and record the failure rather
@@ -51,7 +67,7 @@ function callAiModel_(prompt, options) {
   messages.push({ role: 'user', content: prompt });
 
   const payload = {
-    model: getAiModel_(),
+    model: getAiModel_(opts.tier),
     messages: messages,
     temperature: opts.temperature === undefined ? 0.3 : opts.temperature,
     max_tokens: opts.maxTokens || 1024,

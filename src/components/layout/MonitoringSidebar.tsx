@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { PageName } from "@/components/ui/PageTitle";
 
 const MONITORING_NAV_ITEMS = [
   { href: "/monitoring/late-pickup", label: "Account Creation Review" },
@@ -16,7 +17,7 @@ export function MonitoringSidebar() {
   return (
     <nav className="sm:w-56 shrink-0">
       <p className="text-xs font-semibold text-neutral-400 uppercase tracking-wide px-3 mb-2">
-        Ticket Monitoring
+        <PageName page="monitoring" />
       </p>
       <div className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-visible">
         {MONITORING_NAV_ITEMS.map((item) => {

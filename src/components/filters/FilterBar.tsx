@@ -52,7 +52,7 @@ export function FilterBar({ issueTypes = [] as string[] }: { issueTypes?: string
             disabled={isPending}
             className={cn(
               "px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:cursor-wait",
-              range === opt.value ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
+              range === opt.value ? "bg-surface-raised text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
             )}
           >
             {opt.label}

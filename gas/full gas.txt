@@ -940,17 +940,32 @@ function writeAggCheckpoint_(teamKey, patch) {
 const AI_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 /**
- * Llama 3.3 70B — open weights (Meta community licence), Groq's general-purpose workhorse.
- * Confirm the id is still served before relying on it; Groq retires model ids periodically,
+ * Two tiers, because most of what this backend asks for is easy.
+ *
+ *   fast — Llama 3.1 8B. Writing prose around numbers that are already computed, rewriting a
+ *          sentence, picking labels from a fixed list. Cheaper and quicker, and on a free tier
+ *          that difference is the difference between having the feature and rationing it.
+ *   deep — Llama 3.3 70B. Reserved for genuine multi-variable reasoning.
+ *
+ * Reaching for the big model by default is the expensive habit; pick the tier per task instead.
+ * Confirm both ids are still served before relying on them — Groq retires model ids periodically,
  * and a retired id fails with a non-retryable HTTP 404 rather than silently falling back.
  */
-const AI_DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+const AI_MODELS = {
+  fast: 'llama-3.1-8b-instant',
+  deep: 'llama-3.3-70b-versatile',
+};
+
+const AI_DEFAULT_MODEL = AI_MODELS.fast;
 
 const AI_RETRYABLE_STATUS_CODES = [408, 429, 500, 502, 503, 504];
 const AI_MAX_RETRIES = 3;
 
-function getAiModel_() {
-  return PropertiesService.getScriptProperties().getProperty('AI_MODEL') || AI_DEFAULT_MODEL;
+/** An explicit AI_MODEL script property overrides every tier — an escape hatch for a retired id. */
+function getAiModel_(tier) {
+  const override = PropertiesService.getScriptProperties().getProperty('AI_MODEL');
+  if (override) return override;
+  return AI_MODELS[tier] || AI_DEFAULT_MODEL;
 }
 
 /**
@@ -963,6 +978,7 @@ function getAiModel_() {
  *   maxTokens      — defaults to 1024
  *   json           — true to request a JSON object back (response_format json_object). The
  *                    prompt must still say "respond with JSON" or the provider rejects it.
+ *   tier           — 'fast' (default) or 'deep'. See AI_MODELS.
  *
  * Throws on a non-retryable error or after AI_MAX_RETRIES, same as jiraFetchWithRetry_ —
  * callers (generateInsightsAllTeams) are expected to catch and record the failure rather
@@ -975,7 +991,7 @@ function callAiModel_(prompt, options) {
   messages.push({ role: 'user', content: prompt });
 
   const payload = {
-    model: getAiModel_(),
+    model: getAiModel_(opts.tier),
     messages: messages,
     temperature: opts.temperature === undefined ? 0.3 : opts.temperature,
     max_tokens: opts.maxTokens || 1024,
@@ -1027,6 +1043,102 @@ function callAiModelJson_(prompt, options) {
   } catch (err) {
     throw new Error(`AI returned unparseable JSON: ${unfenced.slice(0, 300)}`);
   }
+}
+
+
+// ================================================================
+// AiVoice.gs
+// ================================================================
+
+/**
+ * The AI's personality, for the Apps Script side.
+ *
+ * MIRRORS src/lib/ai-voice.ts. The two runtimes can't share a module, so the text exists twice —
+ * that is the one duplication in the design and it is deliberate. What must NOT be duplicated is
+ * personality inside individual feature prompts: Insights.gs describes what to analyse, this file
+ * describes how it talks, and voicedSystemPrompt_ composes them. A new AI feature here inherits
+ * the voice by calling this instead of writing its own tone instructions.
+ *
+ * When editing, change BOTH files. src/lib/ai-voice.ts is the canonical wording.
+ */
+
+/** 'normal' | 'gaby' | 'chaos'. */
+var AI_VOICE_MODES = ['normal', 'gaby', 'chaos'];
+
+function normalizeVoiceMode_(mode) {
+  const candidate = String(mode || '').trim().toLowerCase();
+  return AI_VOICE_MODES.indexOf(candidate) !== -1 ? candidate : 'normal';
+}
+
+var AI_BASE_VOICE = [
+  "You are the AI that lives inside Gaby's Platform Operations Dashboard.",
+  '',
+  "You're a familiar, conversational presence — the kind that says 'hey, I noticed something'",
+  "rather than 'our analytics have detected a trend'. You're alongside her, not managing her.",
+  '',
+  'HOW YOU TALK:',
+  '- Natural, casual, human. Contractions and the occasional sentence fragment are fine.',
+  '- Warm, curious, observant, a bit witty. Energetic when there is a reason to be.',
+  "- Specific over complimentary. 'Volume held steady but the mix shifted to higher-priority work'",
+  "  beats 'strong performance this month'.",
+  '- Concise. 1-3 sentences for a card. Say less when there is little to say; padding is worse',
+  '  than brevity.',
+  '',
+  'WHAT YOU ARE NOT:',
+  '- Not an enterprise chatbot, a productivity coach, a therapist, or a motivational speaker.',
+  '- Not relentlessly enthusiastic. No exclamation-mark energy, no LinkedIn voice.',
+  '- Not an AI visibly trying to be funny. Humour lands when it is incidental, not performed.',
+].join('\n');
+
+/**
+ * Non-negotiable in every mode. Correctness and safety constraints, kept beside the tone rules so
+ * a future personality edit can't quietly drop them.
+ */
+var AI_HARD_RULES = [
+  '',
+  'RULES THAT ALWAYS APPLY:',
+  "- Never invent, estimate or imply a number, event or detail that isn't in the data you're given.",
+  '- Separate what the data SHOWS from what you SUSPECT. No manufactured certainty, and never',
+  '  present a correlation as a cause.',
+  '- No productivity advice unless it was explicitly asked for. Observe → explain → contextualise,',
+  '  not observe → lecture.',
+  '- Never diagnose. No mental-health, psychological, medical or personality claims about anyone.',
+  "- You may disagree with a reading the data doesn't support. Say so plainly and kindly.",
+  '- When something is genuinely serious, drop the humour entirely and be direct and operational.',
+  '  Clarity always wins.',
+  "- Don't over-use her name. Second person is the default.",
+  "- Don't lean on stock phrases. If a turn of phrase would work as a catchphrase, don't reuse it.",
+].join('\n');
+
+var AI_VOICE_LAYERS = {
+  normal: [
+    '',
+    'REGISTER: measured. Conversational and plainly written, personality only where it genuinely',
+    'helps. No profanity.',
+  ].join('\n'),
+
+  gaby: [
+    '',
+    'REGISTER: the full voice. Casual, witty, expressive. Dry humour where the situation earns it.',
+    "Light profanity ('shit', 'damn', the occasional 'fuck') is fine when it's the honest reaction",
+    "to something genuinely rough — sparingly, never as decoration. 'That's rough' is usually enough.",
+  ].join('\n'),
+
+  chaos: [
+    '',
+    'REGISTER: turned up. More playful, more expressive asides, freer profanity — still not constant.',
+    'The ceiling is unchanged: operational content stays exactly as clear and accurate. If being',
+    'funny would cost clarity, be clear.',
+  ].join('\n'),
+};
+
+/**
+ * voice + mode + hard rules + this feature's own instructions.
+ * Feature instructions go LAST so they win on output shape and subject matter.
+ */
+function voicedSystemPrompt_(featureInstructions, mode) {
+  const layer = AI_VOICE_LAYERS[normalizeVoiceMode_(mode)];
+  return [AI_BASE_VOICE, layer, AI_HARD_RULES, '', '---', '', featureInstructions].join('\n');
 }
 
 
@@ -1910,7 +2022,17 @@ function handleRequest_(e, method) {
         return jsonResponse_({ ok: false, error: `Unknown action for ticket-projects: ${params.action}` });
 
       case 'insight':
+        // READ ONLY — never generates. Every page that shows an insight uses this, so a page view
+        // costs zero AI requests no matter how often it's loaded.
         return jsonResponse_({ ok: true, data: getCachedInsight_(params.scope) });
+
+      case 'generate-insight':
+        // The ONLY path that can spend an AI request on a narrative insight, and it exists solely
+        // to be called from an explicit button press. force=true bypasses the source-version check.
+        return jsonResponse_({
+          ok: true,
+          data: generateInsightForScopeKey(params.scope, String(params.force) === 'true', params.voice),
+        });
 
       case 'refresh-cache':
         return jsonResponse_({ ok: true, data: invalidateAllCaches_() });
@@ -3369,53 +3491,171 @@ function upsertInitiativeTicketRow_(sheet, index, row) {
  */
 
 /**
- * Held to the same discipline the user prompts already state: the model is a writer, not an
- * analyst. Open-weight models are more prone than Gemini was to 'helpfully' rounding or
- * restating a number it half-remembers, so the no-invented-numbers rule is stated at the
- * system level too, not only per prompt.
+ * What this feature does. The TONE comes from AiVoice.gs and is composed on top at call time —
+ * nothing about personality belongs in here, and nothing about ticket metrics belongs in there.
+ *
+ * The model is a writer, not an analyst: every figure it sees was computed and verified by
+ * Aggregation.gs first. Open-weight models will otherwise 'helpfully' round or restate a number
+ * they half-remember, so the no-invented-numbers rule is repeated here on top of the shared rules.
  */
-const INSIGHT_SYSTEM_PROMPT = [
-  'You are an operations analyst writing summaries for an engineering manager.',
-  'Never invent, estimate, or round a number that is not present in the data you are given.',
-  'Write plain prose. No markdown headers, no bullet lists, no preamble like "Here is the summary".',
-].join(' ');
+const INSIGHT_FEATURE_INSTRUCTIONS = [
+  'TASK: summarise how a team\'s month is going, for the manager who owns it.',
+  '',
+  'SPECIFIC TO THIS FEATURE:',
+  '- Every number you need is in the data. Never invent, estimate or round one that is not there.',
+  '- Compare this month to last month and say what actually changed — a shift in the mix matters',
+  '  more than a headline total that held steady.',
+  '- If flaggedIndividuals is non-empty, name each person with the specific metric and number that',
+  '  flagged them. If it is empty, do not mention individuals at all.',
+  '- Plain prose. No markdown headers, no bullet lists, no "Here is the summary" preamble.',
+  '- 2-4 sentences. This is a card, not a report.',
+].join('\n');
 
-function generateInsightsAllTeams() {
+/**
+ * Generates every scope. NOT on a trigger (see Triggers.gs) — reachable from the
+ * 'generate-insight' route with scope=ALL, or by running it by hand from the editor.
+ *
+ * `force` bypasses the source-version check. Without it, a scope whose underlying metrics haven't
+ * moved since its last successful generation is skipped entirely: no model call, cached row left
+ * as-is. That's what makes an accidental double-click, or a second person asking the same
+ * question, cost nothing.
+ */
+function generateInsightsAllTeams(force, voice) {
   const teams = getActiveTeamsConfig_();
   const teamSummaries = [];
+  const results = [];
 
   teams.forEach((team) => {
     try {
-      const summary = generateInsightForScope_(team);
-      teamSummaries.push({ team: team.team_name, metrics: summary });
+      const outcome = generateInsightForScope_(team, force, voice);
+      teamSummaries.push({ team: team.team_name, metrics: outcome.metrics });
+      results.push({ scope: `TEAM:${team.team_key}`, status: outcome.skipped ? 'CACHED' : 'GENERATED' });
     } catch (err) {
-      writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), '', [], 'FAILED', String(err));
-      notifyFailure_(`generateInsightsAllTeams failed for ${team.team_key}`, err);
+      writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), '', [], 'FAILED', String(err), '');
+      results.push({ scope: `TEAM:${team.team_key}`, status: 'FAILED', error: String(err) });
+      notifyFailure_(`generateInsights failed for ${team.team_key}`, err);
     }
   });
 
-  if (!teamSummaries.length) return;
+  if (!teamSummaries.length) return { results: results, aiCalls: countGenerated_(results) };
 
   try {
-    const narrative = callAiModel_(buildRollupPrompt_(teamSummaries), { systemPrompt: INSIGHT_SYSTEM_PROMPT });
-    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), narrative, [], 'SUCCESS', '');
+    const rollupData = teamSummaries.map((s) => Object.assign({ team: s.team }, pickMetricsForPrompt_(s.metrics)));
+    // Voice is part of the key: the same numbers in a different register are a different answer,
+    // so switching theme and regenerating must not be answered from the other register's cache.
+    const version = sourceVersion_({ rollup: rollupData, voice: normalizeVoiceMode_(voice) });
+    if (!force && isInsightCurrent_('ROLLUP:ALL', currentMonthLabel_(), version)) {
+      results.push({ scope: 'ROLLUP:ALL', status: 'CACHED' });
+    } else {
+      const narrative = callAiModel_(buildRollupPrompt_(teamSummaries), {
+        systemPrompt: voicedSystemPrompt_(INSIGHT_FEATURE_INSTRUCTIONS, voice),
+        tier: 'fast',
+      });
+      writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), narrative, [], 'SUCCESS', '', version);
+      results.push({ scope: 'ROLLUP:ALL', status: 'GENERATED' });
+    }
   } catch (err) {
-    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), '', [], 'FAILED', String(err));
-    notifyFailure_('generateInsightsAllTeams rollup failed', err);
+    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), '', [], 'FAILED', String(err), '');
+    results.push({ scope: 'ROLLUP:ALL', status: 'FAILED', error: String(err) });
+    notifyFailure_('generateInsights rollup failed', err);
+  }
+
+  return { results: results, aiCalls: countGenerated_(results) };
+}
+
+function countGenerated_(results) {
+  return results.filter(function (r) { return r.status === 'GENERATED'; }).length;
+}
+
+/**
+ * Generates ONE scope on request. `scope` is 'ROLLUP:ALL' or 'TEAM:<key>'.
+ * Returns { scope, status: 'GENERATED' | 'CACHED' | 'FAILED', aiCalls } so the caller can show
+ * honestly whether an AI request was actually spent.
+ */
+function generateInsightForScopeKey(scope, force, voice) {
+  if (!scope || scope === 'ALL') return generateInsightsAllTeams(force, voice);
+
+  if (scope === 'ROLLUP:ALL') {
+    // The rollup is a function of every team's metrics, so it can't be produced in isolation
+    // without recomputing them all anyway.
+    return generateInsightsAllTeams(force, voice);
+  }
+
+  const key = String(scope).indexOf('TEAM:') === 0 ? String(scope).slice(5) : String(scope);
+  const team = getActiveTeamsConfig_().find(function (t) { return t.team_key === key; });
+  if (!team) throw new Error(`Unknown insight scope: ${scope}`);
+
+  try {
+    const outcome = generateInsightForScope_(team, force, voice);
+    return {
+      results: [{ scope: `TEAM:${team.team_key}`, status: outcome.skipped ? 'CACHED' : 'GENERATED' }],
+      aiCalls: outcome.skipped ? 0 : 1,
+    };
+  } catch (err) {
+    writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), '', [], 'FAILED', String(err), '');
+    throw err;
   }
 }
 
-function generateInsightForScope_(team) {
+function generateInsightForScope_(team, force, voice) {
   const current = getTicketMetrics_({ team: team.team_key, range: 'month', period: currentMonthLabel_() });
   const previous = getTicketMetrics_({ team: team.team_key, range: 'month', period: previousMonthLabel_() });
   const currentAssignees = getAssigneeMetrics_({ team: team.team_key, range: 'month', period: currentMonthLabel_() }).assignees;
   const previousAssignees = getAssigneeMetrics_({ team: team.team_key, range: 'month', period: previousMonthLabel_() }).assignees;
 
   const outliers = detectOutliers_(team, currentAssignees, previousAssignees);
-  const narrative = callAiModel_(buildInsightPrompt_(team, current, previous, outliers), { systemPrompt: INSIGHT_SYSTEM_PROMPT });
 
-  writeInsightCache_(`TEAM:`, currentMonthLabel_(), narrative, outliers, 'SUCCESS', '');
-  return current;
+  // The fingerprint covers exactly what the prompt will contain — nothing more. So one extra
+  // ticket that doesn't move any of these rolled-up figures does NOT invalidate the insight, which
+  // is the whole point: regenerating for every trivial data change is how a free tier evaporates.
+  const version = sourceVersion_({
+    thisMonth: pickMetricsForPrompt_(current),
+    lastMonth: pickMetricsForPrompt_(previous),
+    flags: outliers,
+    // See the rollup note: register is part of what makes an answer distinct.
+    voice: normalizeVoiceMode_(voice),
+  });
+
+  if (!force && isInsightCurrent_(`TEAM:${team.team_key}`, currentMonthLabel_(), version)) {
+    return { metrics: current, skipped: true };
+  }
+
+  // 'fast' tier: this is prose written around numbers that are already computed and verified.
+  // It needs fluency, not reasoning, so the small model is the right tool.
+  const narrative = callAiModel_(buildInsightPrompt_(team, current, previous, outliers), {
+    systemPrompt: voicedSystemPrompt_(INSIGHT_FEATURE_INSTRUCTIONS, voice),
+    tier: 'fast',
+  });
+
+  writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), narrative, outliers, 'SUCCESS', '', version);
+  return { metrics: current, skipped: false };
+}
+
+/**
+ * Short, stable hash of whatever will be sent to the model. Compared against the stored
+ * source_version to decide whether a regeneration would actually produce anything new.
+ *
+ * MD5 is used purely as a change detector here (not for security) — cheap, built in, and the
+ * collision risk on "did these numbers change" is irrelevant.
+ */
+function sourceVersion_(payload) {
+  const json = JSON.stringify(payload);
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, json, Utilities.Charset.UTF_8);
+  return bytes
+    .map(function (b) { return ((b & 0xff) + 0x100).toString(16).slice(1); })
+    .join('')
+    .slice(0, 16);
+}
+
+/** True when a SUCCESSFUL insight already exists for this scope/period at this exact source version. */
+function isInsightCurrent_(scopeKey, periodLabel, version) {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('INSIGHTS_CACHE');
+  if (!sheet) return false;
+  const row = sheetToObjects_(sheet).find(function (r) {
+    return r.scope_key === scopeKey && String(r.period_label) === String(periodLabel);
+  });
+  if (!row) return false;
+  return String(row.generation_status) === 'SUCCESS' && String(row.source_version || '') === String(version);
 }
 
 /**
@@ -3558,8 +3798,12 @@ function pickMetricsForPrompt_(m) {
   };
 }
 
-function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, errorMessage) {
+function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, errorMessage, sourceVersion) {
   const sheet = getManagerDataSpreadsheet_().getSheetByName('INSIGHTS_CACHE');
+  // Self-heal: the column arrived after this tab was first provisioned, and objectToSheetRow_ maps
+  // by header name — without the column the version would be silently dropped and every check
+  // would miss, quietly restoring the regenerate-every-time behaviour this exists to prevent.
+  appendColumnIfMissing_(sheet, 'source_version');
   const rows = sheetToObjects_(sheet);
   const existing = rows.find((r) => r.scope_key === scopeKey && r.period_label === periodLabel);
   const record = {
@@ -3568,10 +3812,11 @@ function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, err
     narrative_text: narrative || '',
     flags_json: JSON.stringify(flags || []),
     generated_at: nowIso_(),
-    model_used: getAiModel_(),
+    model_used: getAiModel_('fast'),
     prompt_tokens_est: '',
     generation_status: status,
     error_message: errorMessage || '',
+    source_version: sourceVersion || '',
   };
   if (existing) {
     updateSheetRow_(sheet, existing._row, record);
@@ -5669,9 +5914,11 @@ function setupManagerDataSpreadsheet_() {
 
   // PROJECTS moved to the separate Initiatives workbook — see setupInitiativesSpreadsheet_().
 
+  // source_version fingerprints the data the insight was generated FROM, so a regeneration
+  // request with unchanged metrics can be answered from cache instead of spending an AI call.
   ensureTab_(ss, 'INSIGHTS_CACHE', [
     'scope_key', 'period_label', 'narrative_text', 'flags_json', 'generated_at',
-    'model_used', 'prompt_tokens_est', 'generation_status', 'error_message',
+    'model_used', 'prompt_tokens_est', 'generation_status', 'error_message', 'source_version',
   ]);
 
   // Incident Logs, two tabs on purpose (see IncidentsApi.gs): INCIDENT_TICKETS is overwritten from
@@ -6982,6 +7229,9 @@ function getToolAssistedCycleTimeReport_(params) {
  */
 
 function installTriggers() {
+  // generateInsightsAllTeams is in the DELETE list but never re-created below — see the note at
+  // the bottom of this function. Listing it here means re-running installTriggers actively removes
+  // a previously-installed AI trigger rather than leaving it running.
   ['syncAllTeams', 'aggregateAllTeams', 'generateInsightsAllTeams', 'syncInitiativeTickets', 'syncIncidentTickets']
     .forEach(deleteTriggersFor_);
 
@@ -7001,9 +7251,19 @@ function installTriggers() {
   Utilities.sleep(2 * 60 * 1000);
   ScriptApp.newTrigger('aggregateAllTeams').timeBased().everyHours(2).create();
 
-  ScriptApp.newTrigger('generateInsightsAllTeams').timeBased().everyDays(1).atHour(6).nearMinute(0).create();
-
-  Logger.log('Triggers installed: syncAllTeams (2h), syncInitiativeTickets (4h), syncIncidentTickets (daily ~7am), aggregateAllTeams (2h, staggered), generateInsightsAllTeams (daily ~6am Asia/Manila).');
+  // NO AI TRIGGER. generateInsightsAllTeams is deliberately NOT scheduled.
+  //
+  // It used to run daily at 06:00, which cost 4 Groq calls every day (3 teams + rollup) whether
+  // anyone opened the dashboard or not — roughly 1,460 requests a year to generate paragraphs that
+  // often went unread. On a free tier that is the entire budget spent on nobody's behalf.
+  //
+  // Insights are now generated ON REQUEST only, from the 'generate-insight' route, and served from
+  // INSIGHTS_CACHE on every page load after that. A page view costs zero AI requests.
+  //
+  // If you ever do want it scheduled, call generateInsightsAllTeams() from a trigger you add by
+  // hand — it still works, and its source-version check means a run with unchanged metrics skips
+  // the model call anyway.
+  Logger.log('Triggers installed: syncAllTeams (2h), syncInitiativeTickets (4h), syncIncidentTickets (daily ~7am), aggregateAllTeams (2h, staggered). No AI trigger — insights are generated on request.');
 }
 
 function deleteTriggersFor_(functionName) {
@@ -7013,17 +7273,13 @@ function deleteTriggersFor_(functionName) {
 }
 
 /**
- * Stops the daily narrative-insights trigger without touching sync/aggregation — useful when the
- * AI provider's rate limit is exhausted and it's just generating failed-run noise (alert emails,
- * wasted Executions) while you're focused on something else. Nothing else depends on this trigger
- * firing: MetricsApi.gs's getCachedInsight_ only ever reads whatever's already in INSIGHTS_CACHE
- * and the frontend already handles a missing/stale cached insight gracefully, so pausing this is
- * safe and fully reversible — run installTriggers again (or just re-add this one trigger) once
- * the quota resets.
+ * Removes any lingering AI trigger. Kept as a one-liner for an install that predates the
+ * no-scheduled-AI policy above: installTriggers already deletes it, but this makes it possible to
+ * stop unattended AI spend without touching the sync/aggregation schedule at the same time.
  */
 function pauseInsightsTrigger() {
   deleteTriggersFor_('generateInsightsAllTeams');
-  Logger.log('generateInsightsAllTeams trigger removed — narrative insights paused. Re-run installTriggers to resume.');
+  Logger.log('generateInsightsAllTeams trigger removed. Insights are generated on request only.');
 }
 
 

@@ -70,7 +70,17 @@ function handleRequest_(e, method) {
         return jsonResponse_({ ok: false, error: `Unknown action for ticket-projects: ${params.action}` });
 
       case 'insight':
+        // READ ONLY — never generates. Every page that shows an insight uses this, so a page view
+        // costs zero AI requests no matter how often it's loaded.
         return jsonResponse_({ ok: true, data: getCachedInsight_(params.scope) });
+
+      case 'generate-insight':
+        // The ONLY path that can spend an AI request on a narrative insight, and it exists solely
+        // to be called from an explicit button press. force=true bypasses the source-version check.
+        return jsonResponse_({
+          ok: true,
+          data: generateInsightForScopeKey(params.scope, String(params.force) === 'true', params.voice),
+        });
 
       case 'refresh-cache':
         return jsonResponse_({ ok: true, data: invalidateAllCaches_() });

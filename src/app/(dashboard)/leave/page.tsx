@@ -8,6 +8,7 @@ import { LeaveGanttChart } from "@/components/forms/LeaveGanttChart";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { formatNumber, formatManilaDate } from "@/lib/format";
 import { teamSelectOptions } from "@/lib/utils";
+import { PageTitle } from "@/components/ui/PageTitle";
 
 type LeaveListResult = { records: LeaveRecord[]; stats: LeaveStats };
 
@@ -49,7 +50,7 @@ export default async function LeavePage({
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1>Leave Tracker</h1>
+        <PageTitle page="leave" />
         <p className="text-sm text-neutral-500 mt-1">Manager-entered — team members do not submit their own leave.</p>
       </div>
 
