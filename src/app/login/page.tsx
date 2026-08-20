@@ -6,6 +6,13 @@ import { useEffect, useState } from "react";
 
 const isDev = process.env.NODE_ENV === "development";
 
+/**
+ * Where signing in lands you. Your own work rather than the cross-team Overview: the first question
+ * of the day is "what do I need to do", not "how is everyone doing". The Overview is still at "/"
+ * via the Teams menu — this only changes the post-login destination.
+ */
+const LANDING_PAGE = "/my-work";
+
 export default function LoginPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
@@ -13,13 +20,13 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (status === "authenticated") router.push("/");
+    if (status === "authenticated") router.push(LANDING_PAGE);
   }, [status, router]);
 
   async function handleSignIn() {
     setLoading(true);
     setError(null);
-    const result = await signIn("google", { callbackUrl: "/" });
+    const result = await signIn("google", { callbackUrl: LANDING_PAGE });
     if (result?.error) {
       setError("Access denied. Only @sprout.ph accounts are allowed.");
       setLoading(false);
@@ -91,7 +98,7 @@ export default function LoginPage() {
           <div className="w-full border-t border-neutral-100 pt-4 flex flex-col gap-2">
             <p className="text-[11px] text-neutral-400 text-center uppercase tracking-wider">Dev only</p>
             <button
-              onClick={() => signIn("dev-bypass", { callbackUrl: "/" })}
+              onClick={() => signIn("dev-bypass", { callbackUrl: LANDING_PAGE })}
               className="btn-secondary w-full justify-center py-2"
             >
               Skip login (local dev)

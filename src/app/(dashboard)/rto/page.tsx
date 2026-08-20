@@ -9,6 +9,7 @@ import { MetricCard } from "@/components/dashboard/MetricCard";
 import { formatPercent } from "@/lib/format";
 import { teamSelectOptions } from "@/lib/utils";
 import { computeRtoQuickStats } from "@/lib/rto-stats";
+import { PageTitle } from "@/components/ui/PageTitle";
 
 export default async function RtoPage({
   searchParams,
@@ -49,7 +50,7 @@ export default async function RtoPage({
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1>RTO Tracker</h1>
+        <PageTitle page="rto" />
         <p className="text-sm text-neutral-500 mt-1">Manager-entered attendance log and compliance summary.</p>
       </div>
 

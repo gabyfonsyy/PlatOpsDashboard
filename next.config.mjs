@@ -11,6 +11,12 @@ const nextConfig = {
   experimental: {
     staleTimes: { dynamic: 0 },
   },
+  // The page is Mission Control in Gaby's View and My Work everywhere else, so the URL follows the
+  // plain name — the one that matches lib/work.ts, /api/work/* and the work_* tables. /mission-control
+  // existed briefly as the route and is the sort of thing that gets pinned as a tab, so it redirects.
+  async redirects() {
+    return [{ source: "/mission-control", destination: "/my-work", permanent: true }];
+  },
 };
 
 export default nextConfig;
