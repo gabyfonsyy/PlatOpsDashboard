@@ -49,7 +49,7 @@ export default async function TeamDashboardPage({
         <FilterBar issueTypes={issueTypes} />
       </div>
 
-      <InsightPanel insight={insight} />
+      <InsightPanel insight={insight} scope={`TEAM:${team.team_key}`} />
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
         <MetricCard

@@ -150,7 +150,10 @@ export async function POST(req: NextRequest) {
         severity: String(body.severity ?? ""),
         teamLabel: String(body.teamLabel ?? ""),
       }),
-      { systemPrompt: FEEDBACK_SYSTEM_PROMPT, temperature: 0.4, maxTokens: 900 }
+      // "fast" tier: rewriting one paragraph and picking labels from a closed list is not a
+      // reasoning task. The 8B model does it well, and this is the most frequently used AI
+      // feature in the app, so it's the one where model choice matters most to the budget.
+      { systemPrompt: FEEDBACK_SYSTEM_PROMPT, temperature: 0.4, maxTokens: 900, tier: "fast" }
     );
 
     return NextResponse.json({
@@ -161,7 +164,7 @@ export async function POST(req: NextRequest) {
         polished: String(result.polished ?? "").trim() || feedback,
         improvements: String(result.improvements ?? "").trim(),
         categories: sanitizeCategories(result.categories),
-        model: getAiModel(),
+        model: getAiModel("fast"),
       },
     });
   } catch (err) {

@@ -7,6 +7,7 @@ import { formatDaysValue, formatDurationBreakdown, formatPercent, formatNumber }
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { InsightPanel } from "@/components/dashboard/InsightPanel";
+import { PageTitle } from "@/components/ui/PageTitle";
 
 export default async function RollupPage({
   searchParams,
@@ -19,7 +20,7 @@ export default async function RollupPage({
     return (
       <div className="flex flex-col gap-6">
         <div>
-          <h1>Overview</h1>
+          <PageTitle page="overview" />
           <p className="text-sm text-neutral-500 mt-1">Cross-team rollup — Jira metrics, insights, and capacity.</p>
         </div>
         <div className="card p-6 text-sm text-neutral-500">
@@ -42,13 +43,13 @@ export default async function RollupPage({
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <h1>Overview</h1>
+          <PageTitle page="overview" />
           <p className="text-sm text-neutral-500 mt-1">Cross-team rollup — Jira metrics, insights, and capacity.</p>
         </div>
         <FilterBar />
       </div>
 
-      <InsightPanel insight={insight} />
+      <InsightPanel insight={insight} scope="ROLLUP:ALL" />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <MetricCard

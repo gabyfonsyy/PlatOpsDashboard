@@ -10,53 +10,171 @@
  */
 
 /**
- * Held to the same discipline the user prompts already state: the model is a writer, not an
- * analyst. Open-weight models are more prone than Gemini was to 'helpfully' rounding or
- * restating a number it half-remembers, so the no-invented-numbers rule is stated at the
- * system level too, not only per prompt.
+ * What this feature does. The TONE comes from AiVoice.gs and is composed on top at call time —
+ * nothing about personality belongs in here, and nothing about ticket metrics belongs in there.
+ *
+ * The model is a writer, not an analyst: every figure it sees was computed and verified by
+ * Aggregation.gs first. Open-weight models will otherwise 'helpfully' round or restate a number
+ * they half-remember, so the no-invented-numbers rule is repeated here on top of the shared rules.
  */
-const INSIGHT_SYSTEM_PROMPT = [
-  'You are an operations analyst writing summaries for an engineering manager.',
-  'Never invent, estimate, or round a number that is not present in the data you are given.',
-  'Write plain prose. No markdown headers, no bullet lists, no preamble like "Here is the summary".',
-].join(' ');
+const INSIGHT_FEATURE_INSTRUCTIONS = [
+  'TASK: summarise how a team\'s month is going, for the manager who owns it.',
+  '',
+  'SPECIFIC TO THIS FEATURE:',
+  '- Every number you need is in the data. Never invent, estimate or round one that is not there.',
+  '- Compare this month to last month and say what actually changed — a shift in the mix matters',
+  '  more than a headline total that held steady.',
+  '- If flaggedIndividuals is non-empty, name each person with the specific metric and number that',
+  '  flagged them. If it is empty, do not mention individuals at all.',
+  '- Plain prose. No markdown headers, no bullet lists, no "Here is the summary" preamble.',
+  '- 2-4 sentences. This is a card, not a report.',
+].join('\n');
 
-function generateInsightsAllTeams() {
+/**
+ * Generates every scope. NOT on a trigger (see Triggers.gs) — reachable from the
+ * 'generate-insight' route with scope=ALL, or by running it by hand from the editor.
+ *
+ * `force` bypasses the source-version check. Without it, a scope whose underlying metrics haven't
+ * moved since its last successful generation is skipped entirely: no model call, cached row left
+ * as-is. That's what makes an accidental double-click, or a second person asking the same
+ * question, cost nothing.
+ */
+function generateInsightsAllTeams(force, voice) {
   const teams = getActiveTeamsConfig_();
   const teamSummaries = [];
+  const results = [];
 
   teams.forEach((team) => {
     try {
-      const summary = generateInsightForScope_(team);
-      teamSummaries.push({ team: team.team_name, metrics: summary });
+      const outcome = generateInsightForScope_(team, force, voice);
+      teamSummaries.push({ team: team.team_name, metrics: outcome.metrics });
+      results.push({ scope: `TEAM:${team.team_key}`, status: outcome.skipped ? 'CACHED' : 'GENERATED' });
     } catch (err) {
-      writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), '', [], 'FAILED', String(err));
-      notifyFailure_(`generateInsightsAllTeams failed for ${team.team_key}`, err);
+      writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), '', [], 'FAILED', String(err), '');
+      results.push({ scope: `TEAM:${team.team_key}`, status: 'FAILED', error: String(err) });
+      notifyFailure_(`generateInsights failed for ${team.team_key}`, err);
     }
   });
 
-  if (!teamSummaries.length) return;
+  if (!teamSummaries.length) return { results: results, aiCalls: countGenerated_(results) };
 
   try {
-    const narrative = callAiModel_(buildRollupPrompt_(teamSummaries), { systemPrompt: INSIGHT_SYSTEM_PROMPT });
-    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), narrative, [], 'SUCCESS', '');
+    const rollupData = teamSummaries.map((s) => Object.assign({ team: s.team }, pickMetricsForPrompt_(s.metrics)));
+    // Voice is part of the key: the same numbers in a different register are a different answer,
+    // so switching theme and regenerating must not be answered from the other register's cache.
+    const version = sourceVersion_({ rollup: rollupData, voice: normalizeVoiceMode_(voice) });
+    if (!force && isInsightCurrent_('ROLLUP:ALL', currentMonthLabel_(), version)) {
+      results.push({ scope: 'ROLLUP:ALL', status: 'CACHED' });
+    } else {
+      const narrative = callAiModel_(buildRollupPrompt_(teamSummaries), {
+        systemPrompt: voicedSystemPrompt_(INSIGHT_FEATURE_INSTRUCTIONS, voice),
+        tier: 'fast',
+      });
+      writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), narrative, [], 'SUCCESS', '', version);
+      results.push({ scope: 'ROLLUP:ALL', status: 'GENERATED' });
+    }
   } catch (err) {
-    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), '', [], 'FAILED', String(err));
-    notifyFailure_('generateInsightsAllTeams rollup failed', err);
+    writeInsightCache_('ROLLUP:ALL', currentMonthLabel_(), '', [], 'FAILED', String(err), '');
+    results.push({ scope: 'ROLLUP:ALL', status: 'FAILED', error: String(err) });
+    notifyFailure_('generateInsights rollup failed', err);
+  }
+
+  return { results: results, aiCalls: countGenerated_(results) };
+}
+
+function countGenerated_(results) {
+  return results.filter(function (r) { return r.status === 'GENERATED'; }).length;
+}
+
+/**
+ * Generates ONE scope on request. `scope` is 'ROLLUP:ALL' or 'TEAM:<key>'.
+ * Returns { scope, status: 'GENERATED' | 'CACHED' | 'FAILED', aiCalls } so the caller can show
+ * honestly whether an AI request was actually spent.
+ */
+function generateInsightForScopeKey(scope, force, voice) {
+  if (!scope || scope === 'ALL') return generateInsightsAllTeams(force, voice);
+
+  if (scope === 'ROLLUP:ALL') {
+    // The rollup is a function of every team's metrics, so it can't be produced in isolation
+    // without recomputing them all anyway.
+    return generateInsightsAllTeams(force, voice);
+  }
+
+  const key = String(scope).indexOf('TEAM:') === 0 ? String(scope).slice(5) : String(scope);
+  const team = getActiveTeamsConfig_().find(function (t) { return t.team_key === key; });
+  if (!team) throw new Error(`Unknown insight scope: ${scope}`);
+
+  try {
+    const outcome = generateInsightForScope_(team, force, voice);
+    return {
+      results: [{ scope: `TEAM:${team.team_key}`, status: outcome.skipped ? 'CACHED' : 'GENERATED' }],
+      aiCalls: outcome.skipped ? 0 : 1,
+    };
+  } catch (err) {
+    writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), '', [], 'FAILED', String(err), '');
+    throw err;
   }
 }
 
-function generateInsightForScope_(team) {
+function generateInsightForScope_(team, force, voice) {
   const current = getTicketMetrics_({ team: team.team_key, range: 'month', period: currentMonthLabel_() });
   const previous = getTicketMetrics_({ team: team.team_key, range: 'month', period: previousMonthLabel_() });
   const currentAssignees = getAssigneeMetrics_({ team: team.team_key, range: 'month', period: currentMonthLabel_() }).assignees;
   const previousAssignees = getAssigneeMetrics_({ team: team.team_key, range: 'month', period: previousMonthLabel_() }).assignees;
 
   const outliers = detectOutliers_(team, currentAssignees, previousAssignees);
-  const narrative = callAiModel_(buildInsightPrompt_(team, current, previous, outliers), { systemPrompt: INSIGHT_SYSTEM_PROMPT });
 
-  writeInsightCache_(`TEAM:`, currentMonthLabel_(), narrative, outliers, 'SUCCESS', '');
-  return current;
+  // The fingerprint covers exactly what the prompt will contain — nothing more. So one extra
+  // ticket that doesn't move any of these rolled-up figures does NOT invalidate the insight, which
+  // is the whole point: regenerating for every trivial data change is how a free tier evaporates.
+  const version = sourceVersion_({
+    thisMonth: pickMetricsForPrompt_(current),
+    lastMonth: pickMetricsForPrompt_(previous),
+    flags: outliers,
+    // See the rollup note: register is part of what makes an answer distinct.
+    voice: normalizeVoiceMode_(voice),
+  });
+
+  if (!force && isInsightCurrent_(`TEAM:${team.team_key}`, currentMonthLabel_(), version)) {
+    return { metrics: current, skipped: true };
+  }
+
+  // 'fast' tier: this is prose written around numbers that are already computed and verified.
+  // It needs fluency, not reasoning, so the small model is the right tool.
+  const narrative = callAiModel_(buildInsightPrompt_(team, current, previous, outliers), {
+    systemPrompt: voicedSystemPrompt_(INSIGHT_FEATURE_INSTRUCTIONS, voice),
+    tier: 'fast',
+  });
+
+  writeInsightCache_(`TEAM:${team.team_key}`, currentMonthLabel_(), narrative, outliers, 'SUCCESS', '', version);
+  return { metrics: current, skipped: false };
+}
+
+/**
+ * Short, stable hash of whatever will be sent to the model. Compared against the stored
+ * source_version to decide whether a regeneration would actually produce anything new.
+ *
+ * MD5 is used purely as a change detector here (not for security) — cheap, built in, and the
+ * collision risk on "did these numbers change" is irrelevant.
+ */
+function sourceVersion_(payload) {
+  const json = JSON.stringify(payload);
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, json, Utilities.Charset.UTF_8);
+  return bytes
+    .map(function (b) { return ((b & 0xff) + 0x100).toString(16).slice(1); })
+    .join('')
+    .slice(0, 16);
+}
+
+/** True when a SUCCESSFUL insight already exists for this scope/period at this exact source version. */
+function isInsightCurrent_(scopeKey, periodLabel, version) {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('INSIGHTS_CACHE');
+  if (!sheet) return false;
+  const row = sheetToObjects_(sheet).find(function (r) {
+    return r.scope_key === scopeKey && String(r.period_label) === String(periodLabel);
+  });
+  if (!row) return false;
+  return String(row.generation_status) === 'SUCCESS' && String(row.source_version || '') === String(version);
 }
 
 /**
@@ -199,8 +317,12 @@ function pickMetricsForPrompt_(m) {
   };
 }
 
-function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, errorMessage) {
+function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, errorMessage, sourceVersion) {
   const sheet = getManagerDataSpreadsheet_().getSheetByName('INSIGHTS_CACHE');
+  // Self-heal: the column arrived after this tab was first provisioned, and objectToSheetRow_ maps
+  // by header name — without the column the version would be silently dropped and every check
+  // would miss, quietly restoring the regenerate-every-time behaviour this exists to prevent.
+  appendColumnIfMissing_(sheet, 'source_version');
   const rows = sheetToObjects_(sheet);
   const existing = rows.find((r) => r.scope_key === scopeKey && r.period_label === periodLabel);
   const record = {
@@ -209,10 +331,11 @@ function writeInsightCache_(scopeKey, periodLabel, narrative, flags, status, err
     narrative_text: narrative || '',
     flags_json: JSON.stringify(flags || []),
     generated_at: nowIso_(),
-    model_used: getAiModel_(),
+    model_used: getAiModel_('fast'),
     prompt_tokens_est: '',
     generation_status: status,
     error_message: errorMessage || '',
+    source_version: sourceVersion || '',
   };
   if (existing) {
     updateSheetRow_(sheet, existing._row, record);
