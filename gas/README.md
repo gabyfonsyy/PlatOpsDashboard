@@ -391,6 +391,31 @@ Observed on the 2026 cutover: `prunedBefore: 117` (9 from 2024, 108 from 2025), 
 per run, leaving 38 tickets and a year filter offering only 2026. The prune is a one-time cost —
 117 individual row deletions took ~38s; the next run was 5s.
 
+## AI cost control (read before adding a trigger)
+
+**There is deliberately NO scheduled AI.** `installTriggers` does not create a trigger for
+`generateInsightsAllTeams`, and lists it for deletion so re-running actively removes one.
+
+It used to run daily at 06:00: 4 Groq requests a day (3 teams + rollup), roughly 1,460 a year,
+generating narratives whether anyone opened the dashboard or not. On a free tier that is the whole
+budget spent unattended.
+
+Insights are now generated on request through the `generate-insight` route, and served from
+`INSIGHTS_CACHE` on every page view. **A page load costs zero AI requests.**
+
+Two mechanisms keep it that way:
+
+- `source_version` on each `INSIGHTS_CACHE` row fingerprints the metrics the insight was generated
+  from. `generateInsightForScope_` recomputes that fingerprint and returns early — no model call —
+  when it matches. `force=true` bypasses it. The fingerprint covers the *aggregated* figures the
+  prompt contains, so a single new ticket that doesn't move them changes nothing.
+- `AI_MODELS` in `AiClient.gs` has two tiers, picked per call site. Narrative insights use `fast`
+  (Llama 3.1 8B) because they are prose written around numbers that are already computed and
+  verified; that needs fluency, not reasoning.
+
+If you do want it scheduled, add a trigger for `generateInsightsAllTeams` by hand — it still works,
+and the source-version check means an unchanged-metrics run skips the model call anyway.
+
 ## Installing the recurring triggers (after Milestones 1-5 are all deployed)
 
 Run `installTriggers` once from the editor. It installs `syncAllTeams` (every 2h),

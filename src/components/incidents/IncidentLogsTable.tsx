@@ -15,6 +15,7 @@ import {
   type IncidentTicket,
 } from "@/lib/incidents";
 import { IncidentLogDialog } from "@/components/incidents/IncidentLogDialog";
+import { Copy } from "@/components/ui/Copy";
 
 type TeamMeta = { hasPeerReview: boolean; label: string };
 
@@ -83,7 +84,9 @@ export function IncidentLogsTable({
   if (!groups.length) {
     return (
       <div className="card p-10 text-center">
-        <p className="text-sm text-neutral-500">No incident logs in this period.</p>
+        <p className="text-sm text-neutral-500">
+          <Copy serious="No incident logs in this period." playful="Nothing is on fire ✨" />
+        </p>
         <p className="text-xs text-neutral-400 mt-1">
           Tag a ticket&apos;s Report Tagging field in Jira, sync, then add your feedback here.
         </p>

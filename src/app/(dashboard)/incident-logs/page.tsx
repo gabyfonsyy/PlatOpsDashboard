@@ -24,6 +24,7 @@ import { IncidentFilters } from "@/components/incidents/IncidentFilters";
 import { IncidentLogsTable } from "@/components/incidents/IncidentLogsTable";
 import { IncidentQueueTable } from "@/components/incidents/IncidentQueueTable";
 import { SyncIncidentsButton } from "@/components/incidents/SyncIncidentsButton";
+import { PageTitle } from "@/components/ui/PageTitle";
 
 /** period value -> label for the month entries, so the header can name the window. */
 const INCIDENT_MONTH_LABELS: Record<string, string> = Object.fromEntries(
@@ -115,7 +116,7 @@ export default async function IncidentLogsPage({
     <div className="flex flex-col gap-6">
       <div className="flex items-start justify-between flex-wrap gap-4">
         <div>
-          <h1>Incident Logs</h1>
+          <PageTitle page="incidents" />
           <p className="text-sm text-neutral-500 mt-1 max-w-2xl">
             Tickets you tagged with <span className="font-medium text-neutral-700">Report Tagging</span> in Jira,
             with the severity and feedback that feed each person&apos;s evaluation. Feedback stays here —
@@ -271,6 +272,9 @@ export default async function IncidentLogsPage({
           value={formatNumber(stats.unloggedTickets)}
           sublabel={stats.unloggedTickets ? "tagged but not written up" : "all caught up"}
           tooltip="Tickets tagged in Jira with no incident log yet."
+          // The one genuinely good state on this page gets a slow ambient drift in ADHD View.
+          // Styling only — the number and sublabel already say it, so nothing depends on motion.
+          className={stats.unloggedTickets === 0 ? "adhd-happy" : undefined}
         />
         <MetricCard
           label="Most Common"
