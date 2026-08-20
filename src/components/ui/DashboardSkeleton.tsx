@@ -1,7 +1,13 @@
+import { Copy } from "@/components/ui/Copy";
+
 /** Shown via loading.tsx while server components re-fetch metrics from the GAS backend. */
 export function DashboardSkeleton({ cards = 4 }: { cards?: number }) {
   return (
-    <div className="flex flex-col gap-6 animate-pulse">
+    <div className="flex flex-col gap-6">
+      <p className="sr-only" role="status">
+        <Copy serious="Loading dashboard data…" playful="Checking if production is behaving…" />
+      </p>
+      <div className="flex flex-col gap-6 animate-pulse">
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div className="space-y-2">
           <div className="h-7 w-48 bg-neutral-200 rounded" />
@@ -22,6 +28,7 @@ export function DashboardSkeleton({ cards = 4 }: { cards?: number }) {
       <div className="card p-5 h-64">
         <div className="h-4 w-32 bg-neutral-100 rounded mb-4" />
         <div className="h-full w-full bg-neutral-50 rounded" />
+      </div>
       </div>
     </div>
   );

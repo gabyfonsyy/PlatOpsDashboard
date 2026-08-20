@@ -72,7 +72,7 @@ export function EditLeaveDialog({
       onClick={onClose}
     >
       <div
-        className="card bg-white w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6"
+        className="card bg-surface w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">

@@ -4,21 +4,245 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================================
+   THEME TOKENS
+   Values are space-separated RGB channels so Tailwind's `<alpha-value>` works
+   (see tailwind.config.ts). Three themes, selected by `data-theme` on <html>:
+     (none)/light — the original palette, unchanged
+     dark         — neutral ramp inverted, same semantics
+     adhd         — dark-based but higher chroma, stronger bloom
+   ============================================================================ */
+
+:root {
+  --canvas: 250 249 252;
+  --surface: 255 255 255;
+  --surface-raised: 255 255 255;
+  --line: 255 255 255;
+
+  /* Accent — dusty mauve */
+  --a-50: 250 246 252;
+  --a-100: 242 231 247;
+  --a-200: 227 205 238;
+  --a-300: 205 168 217;
+  --a-400: 179 131 195;
+  --a-500: 152 99 168;
+  --a-600: 125 76 140;
+  --a-700: 100 60 112;
+  --a-800: 77 46 87;
+  --a-900: 56 33 66;
+  --a-950: 34 20 42;
+
+  /* Neutral — grey with a purple undertone. 50 = lightest, 900 = darkest text. */
+  --n-50: 250 249 252;
+  --n-100: 243 241 248;
+  --n-200: 230 225 240;
+  --n-300: 209 200 224;
+  --n-400: 168 155 192;
+  --n-500: 130 116 157;
+  --n-600: 101 90 128;
+  --n-700: 78 69 102;
+  --n-800: 57 50 77;
+  --n-900: 37 31 56;
+  --n-950: 22 15 36;
+
+  --danger-50: 254 242 242;
+  --danger-100: 254 226 226;
+  --danger-200: 254 202 202;
+  --danger-500: 239 68 68;
+  --danger-600: 220 38 38;
+  --danger-700: 185 28 28;
+
+  --warn-50: 255 251 235;
+  --warn-100: 254 243 199;
+  --warn-200: 253 230 138;
+  --warn-500: 245 158 11;
+  --warn-600: 217 119 6;
+  --warn-700: 180 83 9;
+  --warn-800: 146 64 14;
+  --warn-900: 120 53 15;
+
+  --ok-100: 209 250 229;
+  --ok-500: 16 185 129;
+  --ok-700: 4 120 87;
+
+  --shadow-card: 0 1px 2px rgba(56, 33, 66, 0.06), 0 12px 32px -16px rgba(107, 66, 148, 0.22);
+  --shadow-glow: 0 0 0 1px rgba(168, 124, 214, 0.18), 0 8px 24px -6px rgba(124, 79, 168, 0.35);
+  --shadow-glow-lg: 0 0 0 1px rgba(168, 124, 214, 0.22), 0 20px 48px -12px rgba(107, 66, 148, 0.45);
+
+  /* Body background blooms, per theme. */
+  --bloom-1: rgba(179, 131, 195, 0.18);
+  --bloom-2: rgba(230, 173, 209, 0.16);
+  --bloom-3: rgba(152, 99, 168, 0.12);
+  --scrollbar: rgba(152, 99, 168, 0.25);
+  --scrollbar-hover: rgba(152, 99, 168, 0.4);
+}
+
+[data-theme="dark"] {
+  --canvas: 16 13 22;
+  --surface: 27 22 38;
+  /* Deliberately well above --n-100 (31 26 42) so a selected pill is unmistakable. */
+  --surface-raised: 66 56 90;
+  --line: 62 53 84;
+
+  /* Accent lifted: the light-mode mauve goes muddy against a near-black ground. */
+  --a-50: 44 30 52;
+  --a-100: 58 40 68;
+  --a-200: 82 57 95;
+  --a-300: 120 84 138;
+  --a-400: 165 122 187;
+  --a-500: 191 146 214;
+  --a-600: 208 170 228;
+  --a-700: 223 196 239;
+  --a-800: 234 215 245;
+  --a-900: 244 234 250;
+  --a-950: 252 248 255;
+
+  /* Ramp INVERTED: 50 is now the darkest fill, 900 the brightest text. */
+  --n-50: 23 19 31;
+  --n-100: 31 26 42;
+  --n-200: 45 38 60;
+  --n-300: 62 53 82;
+  --n-400: 141 129 170;
+  --n-500: 163 150 194;
+  --n-600: 185 174 211;
+  --n-700: 205 196 224;
+  --n-800: 226 220 238;
+  --n-900: 244 241 250;
+  --n-950: 255 255 255;
+
+  /* Status text lightened for legibility on dark; fills darkened so badges aren't neon slabs. */
+  --danger-50: 60 24 28;
+  --danger-100: 76 29 34;
+  --danger-200: 106 40 46;
+  --danger-500: 248 113 113;
+  --danger-600: 252 152 152;
+  --danger-700: 254 178 178;
+
+  --warn-50: 62 42 16;
+  --warn-100: 78 52 18;
+  --warn-200: 104 70 24;
+  --warn-500: 251 191 36;
+  --warn-600: 252 211 77;
+  --warn-700: 253 224 130;
+  --warn-800: 254 235 170;
+  --warn-900: 254 243 199;
+
+  --ok-100: 20 62 48;
+  --ok-500: 52 211 153;
+  --ok-700: 110 231 183;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 14px 36px -18px rgba(0, 0, 0, 0.75);
+  --shadow-glow: 0 0 0 1px rgba(191, 146, 214, 0.22), 0 8px 26px -8px rgba(120, 70, 170, 0.55);
+  --shadow-glow-lg: 0 0 0 1px rgba(191, 146, 214, 0.3), 0 22px 52px -14px rgba(120, 70, 170, 0.7);
+
+  --bloom-1: rgba(138, 92, 176, 0.22);
+  --bloom-2: rgba(176, 92, 150, 0.16);
+  --bloom-3: rgba(96, 70, 170, 0.2);
+  --scrollbar: rgba(191, 146, 214, 0.22);
+  --scrollbar-hover: rgba(191, 146, 214, 0.4);
+}
+
+/* ADHD View — "Gaby's View". A spacecraft: deep-space ground, nebula bloom, a static star field,
+   and a periwinkle-indigo accent instead of the magenta it used to be.
+
+   The ramp is a HUE ROTATION of the old one, not a redesign. Every shade keeps its lightness and
+   saturation, so every existing sprout and neutral usage keeps exactly the contrast behaviour
+   they were built against — a mid-tone that white text sits on stays a mid-tone, a dark fill stays
+   a dark fill. Only the colour of space changes.
+
+   Switching from Dark should still be immediately obvious, not a subtle tint. */
+[data-theme="adhd"] {
+  /* Deep space, with the blue kept out of pure black so the nebula has something to sit on. */
+  --canvas: 7 9 24;
+  --surface: 18 22 46;
+  --surface-raised: 56 66 116;
+  --line: 56 66 118;
+
+  /* Accent — periwinkle through starlight. */
+  --a-50: 28 32 70;
+  --a-100: 38 44 94;
+  --a-200: 54 64 128;
+  --a-300: 86 100 182;
+  --a-400: 128 146 234;
+  --a-500: 154 170 246;
+  --a-600: 178 190 250;
+  --a-700: 202 212 252;
+  --a-800: 222 228 253;
+  --a-900: 238 242 254;
+  --a-950: 251 252 255;
+
+  /* Neutral — the same inverted ramp, tinted navy rather than purple. */
+  --n-50: 15 18 40;
+  --n-100: 22 26 52;
+  --n-200: 36 42 76;
+  --n-300: 54 62 104;
+  --n-400: 138 148 190;
+  --n-500: 160 170 210;
+  --n-600: 184 192 226;
+  --n-700: 206 212 238;
+  --n-800: 226 230 248;
+  --n-900: 243 246 255;
+  --n-950: 255 255 255;
+
+  --danger-50: 66 22 34;
+  --danger-100: 84 27 41;
+  --danger-200: 116 38 56;
+  --danger-500: 251 113 133;
+  --danger-600: 253 164 175;
+  --danger-700: 254 205 211;
+
+  --warn-50: 66 44 14;
+  --warn-100: 84 56 16;
+  --warn-200: 112 74 22;
+  --warn-500: 252 200 60;
+  --warn-600: 253 219 110;
+  --warn-700: 254 232 160;
+  --warn-800: 254 240 190;
+  --warn-900: 255 247 220;
+
+  --ok-100: 14 62 66;
+  --ok-500: 62 224 214;
+  --ok-700: 140 240 234;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.6), 0 16px 40px -18px rgba(30, 40, 140, 0.65);
+  --shadow-glow: 0 0 0 1px rgba(154, 170, 246, 0.3), 0 10px 30px -8px rgba(70, 90, 230, 0.6);
+  --shadow-glow-lg: 0 0 0 1px rgba(154, 170, 246, 0.4), 0 26px 60px -14px rgba(70, 90, 230, 0.75);
+
+  /* Nebula. Three clouds rather than one wash, and one of them cool — an all-violet sky reads as
+     a colour choice, whereas indigo drifting into teal reads as gas and distance. */
+  --bloom-1: rgba(74, 86, 232, 0.30);
+  --bloom-2: rgba(56, 176, 208, 0.16);
+  --bloom-3: rgba(150, 78, 232, 0.24);
+  --scrollbar: rgba(154, 170, 246, 0.3);
+  --scrollbar-hover: rgba(154, 170, 246, 0.5);
+}
+
 @layer base {
   * {
     box-sizing: border-box;
   }
 
+  html {
+    /* Native form controls, scrollbars and autofill follow the theme instead of staying light. */
+    color-scheme: light;
+  }
+  html[data-theme="dark"],
+  html[data-theme="adhd"] {
+    color-scheme: dark;
+  }
+
   body {
     @apply text-neutral-900 font-sans antialiased;
-    background-color: #faf9fc;
+    background-color: rgb(var(--canvas));
     background-image:
-      radial-gradient(1100px 700px at 6% -10%, rgba(179, 131, 195, 0.18), transparent 60%),
-      radial-gradient(900px 620px at 102% 0%, rgba(230, 173, 209, 0.16), transparent 55%),
-      radial-gradient(1000px 800px at 50% 105%, rgba(152, 99, 168, 0.12), transparent 60%);
+      radial-gradient(1100px 700px at 6% -10%, var(--bloom-1), transparent 60%),
+      radial-gradient(900px 620px at 102% 0%, var(--bloom-2), transparent 55%),
+      radial-gradient(1000px 800px at 50% 105%, var(--bloom-3), transparent 60%);
     background-attachment: fixed;
     background-repeat: no-repeat;
     min-height: 100vh;
+    /* Theme switches shouldn't feel like a page reload. Colour only — never layout. */
+    transition: background-color 0.35s ease, color 0.35s ease;
   }
 
   h1 { @apply font-serif text-[1.75rem] font-medium tracking-tight text-neutral-900; }
@@ -27,8 +251,8 @@
 
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: rgba(152, 99, 168, 0.25); border-radius: 999px; }
-  ::-webkit-scrollbar-thumb:hover { background: rgba(152, 99, 168, 0.4); }
+  ::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
 }
 
 @layer components {
@@ -41,10 +265,10 @@
   }
 
   .btn-secondary {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/60 text-neutral-700 font-medium text-sm
-           border border-neutral-200/70 backdrop-blur-md
-           hover:bg-white/90 hover:border-sprout-200 hover:text-sprout-700
-           active:bg-white transition-all duration-200 ease-out;
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-surface/60 text-neutral-700 font-medium text-sm
+           border border-line/70 backdrop-blur-md
+           hover:bg-surface/90 hover:border-sprout-200 hover:text-sprout-700
+           active:bg-surface transition-all duration-200 ease-out;
   }
 
   .btn-ghost {
@@ -53,8 +277,7 @@
   }
 
   .card {
-    @apply bg-white/70 backdrop-blur-xl rounded-2xl border border-white/70
-           shadow-[0_1px_2px_rgba(56,33,66,0.06),0_12px_32px_-16px_rgba(107,66,148,0.22)];
+    @apply bg-surface/70 backdrop-blur-xl rounded-2xl border border-line/70 shadow-card;
   }
 
   .card-interactive {
@@ -67,10 +290,10 @@
   }
 
   .form-input {
-    @apply w-full px-3 py-2 rounded-xl border border-neutral-200/80 bg-white/60 text-sm text-neutral-900
+    @apply w-full px-3 py-2 rounded-xl border border-neutral-200/80 bg-surface/60 text-sm text-neutral-900
            placeholder:text-neutral-400 backdrop-blur-sm
-           focus:outline-none focus:ring-2 focus:ring-sprout-400/50 focus:border-sprout-300 focus:bg-white
-           disabled:bg-neutral-50 disabled:text-neutral-400 transition-all duration-200;
+           focus:outline-none focus:ring-2 focus:ring-sprout-400/50 focus:border-sprout-300 focus:bg-surface
+           disabled:bg-neutral-100 disabled:text-neutral-400 transition-all duration-200;
   }
 
   .form-error {
@@ -87,13 +310,13 @@
   }
 
   .tab-active {
-    @apply text-sprout-700 bg-sprout-50 shadow-[inset_0_0_0_1px_rgba(152,99,168,0.16)];
+    @apply text-sprout-700 bg-sprout-50 shadow-[inset_0_0_0_1px_rgb(var(--a-500)/0.16)];
   }
 
   /* Segmented pill navigation — floating glass capsule */
   .pill-nav {
-    @apply flex items-center gap-1 bg-white/60 backdrop-blur-xl rounded-full p-1
-           shadow-glow ring-1 ring-white/70;
+    @apply flex items-center gap-1 bg-surface/60 backdrop-blur-xl rounded-full p-1
+           shadow-glow ring-1 ring-line/70;
   }
 
   .pill {
@@ -107,8 +330,8 @@
 
   /* Fluid dropdown menu */
   .dropdown-menu {
-    @apply absolute left-0 top-full mt-2 min-w-[12rem] rounded-2xl border border-white/70
-           bg-white/90 backdrop-blur-xl shadow-glow-lg p-1.5 z-30
+    @apply absolute left-0 top-full mt-2 min-w-[12rem] rounded-2xl border border-line/70
+           bg-surface/90 backdrop-blur-xl shadow-glow-lg p-1.5 z-30
            origin-top animate-dropdown-in;
   }
 
@@ -119,5 +342,237 @@
 
   .dropdown-item-active {
     @apply bg-sprout-50 text-sprout-700 font-medium hover:bg-sprout-50 hover:text-sprout-700;
+  }
+}
+
+/* ============================================================================
+   PLAYFUL MICROCOPY
+   Both variants render; CSS picks one. This keeps <Copy> usable inside server
+   components (no theme context, no client JS) and costs nothing at runtime.
+   ============================================================================ */
+.copy-playful { display: none; }
+[data-theme="adhd"] .copy-serious { display: none; }
+[data-theme="adhd"] .copy-playful { display: inline; }
+
+/* ============================================================================
+   ADHD VIEW — personality layer
+   Everything here is scoped under [data-theme="adhd"], so no other theme pays
+   for it, and all of it is disabled under prefers-reduced-motion below.
+   ============================================================================ */
+
+/* ----------------------------------------------------------------------------
+   COST CONTROL (read this before adding anything with `infinite` in it)
+
+   `backdrop-filter` is the most expensive thing on this page and there are a lot
+   of them: `.card` is blur(24px) and a busy page carries 10-18 cards, while
+   `.form-input` is blur(4px) and a single Mission Control task row has five.
+   Each one is its own composited layer, and each re-runs its blur whenever
+   anything behind or on it changes.
+
+   That is what made this theme feel heavy. Two rules now:
+
+     1. Nothing full-viewport animates forever. An animating fixed layer forces
+        the whole viewport to re-composite every frame, and invalidates the
+        backdrop of the sticky header and pill nav (both blur(24px), painted
+        above it) 60 times a second for as long as the tab is open.
+     2. Blur radius is spent where it shows. On this palette — dark ground, high
+        chroma, a bloom already behind everything — the difference between 24px
+        and 10px on a card is invisible, and 4px on a small input is invisible
+        full stop. The glass stays, at a fraction of the fill cost.
+   ---------------------------------------------------------------------------- */
+[data-theme="adhd"] .card {
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+/* Not "less blur" — none. A 4px backdrop on a 32px-tall select reads identically
+   with the filter off, and this drops a composited layer per control (roughly 50
+   of them on a full board). Surface alpha goes up slightly to compensate. */
+[data-theme="adhd"] .form-input,
+[data-theme="adhd"] .btn-secondary {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background-color: rgb(var(--surface) / 0.85);
+}
+
+/* Cards get a touch more life on hover, and a one-shot entrance. Transform-only
+   (GPU-friendly), and never on a property that would reflow the table beneath. */
+[data-theme="adhd"] .card {
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease,
+    border-color 0.22s ease;
+}
+[data-theme="adhd"] .card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-glow-lg);
+  border-color: rgb(var(--a-400) / 0.45);
+}
+
+/* A metric card that reads as "good news" gets a slow ambient glow. One element,
+   6s cycle — calm enough to notice only if you look for it.
+
+   Glow rather than the translateY drift this used to be: the class lands on a
+   `.card`, and moving a backdrop-filtered element re-samples and re-blurs its
+   backdrop on every frame of an infinite animation. A box-shadow change repaints
+   the card's own layer and leaves the (unmoved) backdrop cached. Same read, and
+   the expensive half of the work is gone. */
+[data-theme="adhd"] .adhd-happy {
+  animation: glow-breathe 6s ease-in-out infinite;
+}
+
+/* Buttons: a light sweep across the surface on hover. Pure CSS, no JS. */
+[data-theme="adhd"] .btn-primary {
+  position: relative;
+  overflow: hidden;
+}
+[data-theme="adhd"] .btn-primary::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  transform: translateX(-120%);
+  pointer-events: none;
+}
+[data-theme="adhd"] .btn-primary:hover::after {
+  animation: sheen-sweep 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="adhd"] .btn-secondary:hover,
+[data-theme="adhd"] .pill:hover {
+  transform: translateY(-1px);
+}
+[data-theme="adhd"] .btn-secondary,
+[data-theme="adhd"] .pill {
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s ease,
+    color 0.18s ease, border-color 0.18s ease;
+}
+
+/* Table rows respond to the cursor — makes scanning a long incident list less flat. */
+[data-theme="adhd"] tbody tr {
+  transition: background-color 0.16s ease;
+}
+[data-theme="adhd"] tbody tr:hover {
+  background-color: rgb(var(--a-500) / 0.07);
+}
+
+/* Badges pop in when they mount, so a status change is felt as well as seen.
+   Feeling one status change is worth an animation. Feeling 113 at once — which is
+   what /projects actually renders, and /incident-logs is not far behind — is a
+   stutter on first paint plus 113 composited layers held open by `both`. So the
+   pop belongs to badges you are looking AT (cards, dialogs, the task board) and
+   tables opt out. `:where()` keeps the exclusion at zero specificity, so it can
+   never win against something a component sets deliberately. */
+[data-theme="adhd"] .badge {
+  animation: pop-in 0.26s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+[data-theme="adhd"] :where(table) .badge {
+  animation: none;
+}
+
+/* Dialogs get a springier entrance. */
+[data-theme="adhd"] .adhd-springy {
+  animation: pop-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* A number that just changed. Applied briefly by JS, then removed. */
+[data-theme="adhd"] .adhd-flash {
+  animation: score-flash 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ----------------------------------------------------------------------------
+   STAR FIELD
+
+   Two fixed layers of static dots plus a faint galactic band. It replaces the
+   three lonely sparkles that used to be here, and it is deliberately STATIC:
+   nothing on a full-viewport fixed layer is allowed to animate forever (see COST
+   CONTROL above) because the sticky header and pill nav are backdrop-filtered and
+   painted on top of it, so a twinkle would re-blur them sixty times a second for
+   as long as the tab is open. A star field is texture, not motion — the moving
+   sparkle in this theme is the cursor canvas, which is bounded and self-stopping.
+
+   Both layers paint once, then fade in together. The cost is a single paint of a
+   viewport-sized layer at load and nothing thereafter.
+   ---------------------------------------------------------------------------- */
+
+/* Far stars: many, small, faint. Sizes and positions are irregular on purpose —
+   an even grid reads as a pattern, and the eye catches a pattern immediately. */
+[data-theme="adhd"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(1px 1px at 6% 12%, rgba(255, 255, 255, 0.55), transparent 60%),
+    radial-gradient(1px 1px at 13% 61%, rgba(214, 226, 255, 0.4), transparent 60%),
+    radial-gradient(1px 1px at 21% 34%, rgba(255, 255, 255, 0.32), transparent 60%),
+    radial-gradient(1px 1px at 27% 88%, rgba(226, 234, 255, 0.45), transparent 60%),
+    radial-gradient(1px 1px at 34% 7%, rgba(255, 255, 255, 0.38), transparent 60%),
+    radial-gradient(1px 1px at 39% 49%, rgba(205, 220, 255, 0.3), transparent 60%),
+    radial-gradient(1px 1px at 46% 73%, rgba(255, 255, 255, 0.5), transparent 60%),
+    radial-gradient(1px 1px at 52% 19%, rgba(230, 238, 255, 0.35), transparent 60%),
+    radial-gradient(1px 1px at 58% 92%, rgba(255, 255, 255, 0.42), transparent 60%),
+    radial-gradient(1px 1px at 64% 41%, rgba(210, 224, 255, 0.33), transparent 60%),
+    radial-gradient(1px 1px at 71% 66%, rgba(255, 255, 255, 0.46), transparent 60%),
+    radial-gradient(1px 1px at 77% 24%, rgba(232, 240, 255, 0.36), transparent 60%),
+    radial-gradient(1px 1px at 83% 79%, rgba(255, 255, 255, 0.3), transparent 60%),
+    radial-gradient(1px 1px at 88% 45%, rgba(216, 228, 255, 0.44), transparent 60%),
+    radial-gradient(1px 1px at 93% 15%, rgba(255, 255, 255, 0.34), transparent 60%),
+    radial-gradient(1px 1px at 97% 69%, rgba(228, 236, 255, 0.4), transparent 60%);
+  animation: fade-in 1.2s ease-out both;
+}
+
+/* Near stars and the galactic band. Fewer, brighter, faintly coloured — a few
+   warm and a few blue, because a sky of identical white dots looks printed. */
+[data-theme="adhd"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    radial-gradient(2px 2px at 17% 22%, rgba(255, 255, 255, 0.85), transparent 65%),
+    radial-gradient(2px 2px at 43% 78%, rgba(198, 216, 255, 0.8), transparent 65%),
+    radial-gradient(2.5px 2.5px at 68% 31%, rgba(255, 248, 232, 0.75), transparent 65%),
+    radial-gradient(2px 2px at 86% 62%, rgba(255, 255, 255, 0.7), transparent 65%),
+    radial-gradient(2px 2px at 31% 47%, rgba(226, 210, 255, 0.6), transparent 65%),
+    /* The band: a wide, very faint ellipse across the upper third. Reads as depth
+       rather than as a shape, which is the whole trick. */
+    radial-gradient(120% 34% at 62% 22%, rgba(150, 170, 255, 0.07), transparent 70%);
+  animation: fade-in 1.6s ease-out both;
+}
+
+/* ============================================================================
+   REDUCED MOTION
+   Everything above is motion-based enhancement; the information is always carried
+   by colour, text and layout as well. So this strips motion wholesale and leaves
+   the interface fully usable. The cursor/particle canvas is not rendered at all
+   (see AdhdEffects.tsx) rather than merely hidden.
+   ============================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  /* `html:not([data-motion="force"])` is the escape hatch: ADHD View can explicitly opt back into
+     motion (see MOTION_STORAGE_KEY). Without this scoping the JS effects would run while every
+     CSS transition stayed frozen — half-animated, which looks broken rather than accessible. */
+  html:not([data-motion="force"]) *,
+  html:not([data-motion="force"]) *::before,
+  html:not([data-motion="force"]) *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  html:not([data-motion="force"])[data-theme="adhd"] .card:hover,
+  html:not([data-motion="force"])[data-theme="adhd"] .btn-secondary:hover,
+  html:not([data-motion="force"])[data-theme="adhd"] .pill:hover {
+    transform: none;
+  }
+
+  /* The star field is static, so it STAYS under reduced motion — it carries no
+     information and asks nothing of the eye. Only its arrival animation goes. */
+  html:not([data-motion="force"])[data-theme="adhd"] body::before,
+  html:not([data-motion="force"])[data-theme="adhd"] body::after {
+    animation: none;
+    opacity: 1;
   }
 }

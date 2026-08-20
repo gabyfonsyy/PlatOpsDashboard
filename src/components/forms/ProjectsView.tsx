@@ -85,7 +85,7 @@ export function ProjectsView({
               onClick={() => setView(opt.value)}
               className={cn(
                 "px-3 py-1.5 rounded-md text-sm font-medium transition-colors",
-                view === opt.value ? "bg-white text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
+                view === opt.value ? "bg-surface-raised text-neutral-900 shadow-sm" : "text-neutral-500 hover:text-neutral-700"
               )}
             >
               {opt.label}
