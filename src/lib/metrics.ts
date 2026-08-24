@@ -1,8 +1,9 @@
 import { fetchGas } from "@/lib/gas-client";
 import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
-import { getTeams } from "@/lib/teams";
+import { getTeams, isExcludedFromBacklogAging } from "@/lib/teams";
 import { resolvePeriodToDateRange, monthsInRange } from "@/lib/period-range";
 import { getCompletedPeerReviewCycles, aggregateByReviewer } from "@/lib/peer-review";
+import { getLeadCycleTimeAverages } from "@/lib/lead-cycle-time";
 
 export type TicketMetrics = {
   team: string;
@@ -15,6 +16,12 @@ export type TicketMetrics = {
   escalationRate: number | null;
   backlogAgingRate: number | null;
   overdueCount: number;
+  /**
+   * Denominator behind backlogAgingRate — resolved-in-period MINUS the issue types excluded by
+   * isExcludedFromBacklogAging. Differs from ticketsResolvedInPeriod, and the card must print
+   * THIS one, or "N of M resolved overdue" would not divide out to the rate shown above it.
+   */
+  backlogAgingDenominator: number;
   fcrYesCount: number;
   escalationCount: number;
   ticketVolume: number;
@@ -60,7 +67,8 @@ export type CachedInsight = {
 const EMPTY_METRICS: TicketMetrics = {
   team: "", range: "month", period: "", issueType: null,
   leadTimeAvgMinutes: null, cycleTimeAvgMinutes: null, fcrRate: null,
-  escalationRate: null, backlogAgingRate: null, overdueCount: 0, fcrYesCount: 0, escalationCount: 0,
+  escalationRate: null, backlogAgingRate: null, overdueCount: 0, backlogAgingDenominator: 0,
+  fcrYesCount: 0, escalationCount: 0,
   ticketVolume: 0,
   ticketsCreated: 0, ticketsResolved: 0, ticketsResolvedInPeriod: 0, holdingReasonBreakdown: [],
   rejectionCategoryBreakdown: [], cancellationReasonBreakdown: [],
@@ -87,6 +95,7 @@ function countsToBreakdown<K extends string>(counts: Record<string, number>, key
 
 type MetricsDailyRow = {
   date: string;
+  issue_type: string | null;
   tickets_created_count: number;
   tickets_resolved_count: number;
   tickets_resolved_on_date: number;
@@ -178,6 +187,7 @@ function rollupDailyRows(
     fcrEligible: 0, fcrNotEscalated: 0, escalated: 0,
     fcrYesResolved: 0, escQualifyingResolved: 0,
     resolvedAfterDue: 0, totalForAging: 0,
+    agingOverdue: 0, agingDenominator: 0,
     assigned: 0,
     onHoldPickupSum: 0, onHoldPickupCount: 0,
     peerReviewWaitSum: 0, peerReviewWaitCount: 0,
@@ -209,6 +219,14 @@ function rollupDailyRows(
     totals.peerReviewWaitSum += Number(r.peer_review_wait_sum_minutes) || 0;
     totals.peerReviewWaitCount += Number(r.peer_review_wait_count) || 0;
 
+    // Backlog Aging alone runs on a narrowed population — metrics_daily is stored per issue type,
+    // so the exclusion is a skip here rather than a re-aggregation in GAS. Numerator and
+    // denominator must skip together or the rate silently inflates.
+    if (!isExcludedFromBacklogAging(r.issue_type)) {
+      totals.agingOverdue += Number(r.overdue_resolved_on_date) || 0;
+      totals.agingDenominator += Number(r.tickets_resolved_on_date) || 0;
+    }
+
     mergeJsonCounts(holdingReasonTotals, r.holding_reason_json);
     mergeJsonCounts(rejectionCategoryTotals, r.rejection_category_json);
     mergeJsonCounts(cancellationReasonTotals, r.cancellation_reason_json);
@@ -225,12 +243,15 @@ function rollupDailyRows(
 
   return {
     team, range, period, issueType: issueType ?? null,
+    // Both are OVERWRITTEN by getTicketMetrics with the live, end-date-bucketed figures — kept
+    // here only so this function stays a complete rollup of what metrics_daily actually holds.
     leadTimeAvgMinutes: totals.leadTimeCount ? round2(totals.leadTimeSum / totals.leadTimeCount) : null,
     cycleTimeAvgMinutes: totals.cycleTimeCount ? round2(totals.cycleTimeSum / totals.cycleTimeCount) : null,
     fcrRate: totals.resolvedInPeriod ? round4(totals.fcrYesResolved / totals.resolvedInPeriod) : null,
     escalationRate: totals.resolvedInPeriod ? round4(totals.escQualifyingResolved / totals.resolvedInPeriod) : null,
-    backlogAgingRate: totals.resolvedInPeriod ? round4(totals.overdueResolved / totals.resolvedInPeriod) : null,
-    overdueCount: totals.overdueResolved,
+    backlogAgingRate: totals.agingDenominator ? round4(totals.agingOverdue / totals.agingDenominator) : null,
+    overdueCount: totals.agingOverdue,
+    backlogAgingDenominator: totals.agingDenominator,
     fcrYesCount: totals.fcrYesResolved,
     escalationCount: totals.escQualifyingResolved,
     ticketVolume: totals.assigned,
@@ -255,8 +276,16 @@ export async function getTicketMetrics(team: string, range: string, period: stri
   try {
     const { startDate, endDate } = resolvePeriodToDateRange(range, period);
     const teamKeys = team === "ALL" ? (await getTeams()).map((t) => t.team_key) : [team];
-    const rows = await fetchMetricsDailyRows(teamKeys, startDate, endDate, issueType);
-    return rollupDailyRows(rows, team, range, period, issueType);
+    const [rows, liveAverages] = await Promise.all([
+      fetchMetricsDailyRows(teamKeys, startDate, endDate, issueType),
+      getLeadCycleTimeAverages(teamKeys, range, period, issueType),
+    ]);
+
+    // Lead and Cycle Time come from `tickets` via the drill-down's own basisFor(), NOT from the
+    // metrics_daily averages rollupDailyRows computes — those bucket by created date and read high
+    // against the very pages these cards link to. See getLeadCycleTimeAverages for the measured
+    // gap. Everything else on the card still comes from the precomputed daily rows.
+    return { ...rollupDailyRows(rows, team, range, period, issueType), ...liveAverages };
   } catch {
     return { ...EMPTY_METRICS, team, range, period, issueType: issueType ?? null };
   }

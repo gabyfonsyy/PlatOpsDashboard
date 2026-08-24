@@ -319,10 +319,12 @@ function extractHoldingCyclesWithReasons_(changelog) {
  *   reviewerAtEntry — the assignee at the moment the ticket moved INTO For Peer Review. This is
  *                     the person asked to review it: the doer picks a reviewer and hands off in
  *                     one action, so the assignee set on that transition IS the reviewer.
- *   reviewer        — the assignee as of the moment the cycle CLOSES. Retained unchanged because
- *                     PeerReviewApi.gs and src/lib/peer-review.ts already report on it; do not
- *                     repoint those at reviewerAtEntry without deciding that report's attribution
- *                     question on purpose.
+ *   reviewer        — the assignee as of the moment the cycle CLOSES. NO LONGER READ by any
+ *                     report: PeerReviewApi.gs and src/lib/peer-review.ts were repointed at
+ *                     reviewerAtEntry (2026-08-24) so Review Wait Time and the Incident Logs
+ *                     validator share one basis. It is still emitted because it is the honest
+ *                     answer to "who held this when review ended", and dropping it from stored
+ *                     rows would make already-synced JSON unreadable for that question.
  *
  * Worked example (ST-84873): Jasper Razo was assigned when it went to For Peer Review, then
  * Angelo Nico Ravilas was assigned when it moved on to For Checking. reviewerAtEntry is Jasper

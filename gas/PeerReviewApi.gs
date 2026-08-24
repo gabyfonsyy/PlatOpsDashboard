@@ -4,6 +4,14 @@
  * JiraSync.gs) and rolls completed cycles up by reviewer for the requested period.
  * Cycles are bucketed by when they STARTED (enteredAt), not the ticket's creation date,
  * since a review can start well after the ticket itself was created.
+ *
+ * Attribution is `reviewerAtEntry` ONLY, never `reviewer`, with no fallback — kept in step with
+ * src/lib/peer-review.ts (the live path) and with the Incident Logs validator
+ * (buildIncidentValidatorIndex_ in IncidentsApi.gs). See the long note on
+ * extractPeerReviewCyclesWithReviewer_ in JiraSync.gs for why the two snapshots differ; in short
+ * `reviewer` is the assignee at cycle CLOSE, usually whoever took the ticket at the next stage.
+ * A row synced before that field existed reports '(unassigned)' rather than silently naming the
+ * wrong person — run runStPeerReviewRebackfill (Backfill.gs) to re-derive the history.
  */
 function getPeerReviewWaitReport_(params) {
   const { startDate, endDate } = resolvePeriodToDateRange_(params.range, params.period, params.start, params.end);
@@ -28,7 +36,7 @@ function getPeerReviewWaitReport_(params) {
       if (enteredDate < startDate || enteredDate > endDate) return;
 
       if (!c.exitedAt) {
-        inReview.push({ issueKey: r.issue_key, reviewer: c.reviewer || '', enteredAt: c.enteredAt });
+        inReview.push({ issueKey: r.issue_key, reviewer: c.reviewerAtEntry || '', enteredAt: c.enteredAt });
         return;
       }
 
@@ -39,7 +47,7 @@ function getPeerReviewWaitReport_(params) {
       if (exitedToStatus !== 'on hold' && exitedToStatus !== 'for checking') return;
 
       const waitMinutes = round2_((new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000);
-      const reviewer = c.reviewer || '(unassigned)';
+      const reviewer = c.reviewerAtEntry || '(unassigned)';
 
       cycles.push({
         issueKey: r.issue_key,

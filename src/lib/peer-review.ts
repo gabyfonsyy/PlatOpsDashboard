@@ -47,6 +47,7 @@ type PeerReviewCycleRaw = {
   exitedAt?: string;
   exitedToStatus?: string;
   reviewer?: string;
+  reviewerAtEntry?: string;
 };
 
 type TicketRow = {
@@ -82,6 +83,20 @@ async function fetchPeerReviewTickets(startDate: string, endDate: string): Promi
  * getPeerReviewWaitReport (the dedicated drill-down) and lib/metrics.ts's getAssigneeMetrics
  * (the Performance Breakdown's per-reviewer Review Wait Time column) so both agree on exactly
  * which cycles count.
+ *
+ * Attribution is `reviewerAtEntry` ONLY, never `reviewer` — the same basis as the Incident Logs
+ * validator (buildIncidentValidatorIndex_ in gas/IncidentsApi.gs), and deliberately with no
+ * fallback so the two reports can never disagree about who reviewed a ticket. `reviewer` is the
+ * assignee when the cycle CLOSED, which is usually whoever picked the ticket up at the NEXT stage:
+ * on ST-84873 Jasper Razo reviewed it but `reviewer` names Angelo Nico Ravilas, who was never the
+ * reviewer at all. Falling back to `reviewer` when reviewerAtEntry is missing would reintroduce
+ * exactly that error, invisibly and for the majority of rows, so a cycle without the field is
+ * reported as "(unassigned)" instead.
+ *
+ * That means this metric depends on the field being populated. Only tickets re-synced since
+ * extractPeerReviewCyclesWithReviewer_ started emitting reviewerAtEntry carry it, and ordinary
+ * incremental sync only revisits tickets Jira has touched — run runStPeerReviewRebackfill
+ * (gas/Backfill.gs) to re-derive the history, which is what that function is there for.
  */
 export async function getCompletedPeerReviewCycles(
   range: string,
@@ -102,7 +117,7 @@ export async function getCompletedPeerReviewCycles(
       if (!enteredDate || enteredDate < startDate || enteredDate > endDate) continue;
 
       if (!c.exitedAt) {
-        inReview.push({ issueKey: r.issue_key, reviewer: c.reviewer || "", enteredAt: c.enteredAt });
+        inReview.push({ issueKey: r.issue_key, reviewer: c.reviewerAtEntry || "", enteredAt: c.enteredAt });
         continue;
       }
 
@@ -114,7 +129,7 @@ export async function getCompletedPeerReviewCycles(
 
       cycles.push({
         issueKey: r.issue_key,
-        reviewer: c.reviewer || "(unassigned)",
+        reviewer: c.reviewerAtEntry || "(unassigned)",
         enteredAt: c.enteredAt,
         exitedAt: c.exitedAt,
         exitedToStatus: c.exitedToStatus || "",

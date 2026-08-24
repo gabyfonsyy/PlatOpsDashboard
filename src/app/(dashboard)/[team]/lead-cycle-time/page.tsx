@@ -44,11 +44,7 @@ export default async function LeadCycleTimePage({
             Back to {teamLabel(team.team_name)}
           </Link>
           <h1>{teamLabel(team.team_name)} — {metricLabel} Deep-Dive</h1>
-          <p className="text-sm text-neutral-500 mt-1">
-            {metric === "cycle"
-              ? "Time from when a ticket moved out of Backlog/To Do to when it moved to Ready for Checking or Cancelled."
-              : "Time from ticket creation to when it moved to Ready for Checking or Cancelled."}
-          </p>
+          <p className="text-sm text-neutral-500 mt-1">{report.description}</p>
         </div>
         <FilterBar issueTypes={issueTypes} />
       </div>
@@ -58,7 +54,7 @@ export default async function LeadCycleTimePage({
           label={`Overall Avg ${metricLabel}`}
           value={formatMinutesDecimalValue(report.avgMinutes)}
           sublabel={`${formatDurationBreakdown(report.avgMinutes) ?? "—"} · ${formatNumber(report.count)} tickets`}
-          tooltip={`Average across every ticket resolved in the period. Shown in days/hours/minutes.`}
+          tooltip={`Average across every ticket counted in the period. ${report.description} Shown in days/hours/minutes.`}
         />
         <MetricCard
           label={`Highest by ${report.assigneeLabel}`}
@@ -84,6 +80,8 @@ export default async function LeadCycleTimePage({
         tickets={report.topTickets}
         metric={metric}
         assigneeLabel={report.assigneeLabel}
+        startColumnLabel={report.startColumnLabel}
+        endColumnLabel={report.endColumnLabel}
         jiraBaseUrl={process.env.JIRA_BASE_URL}
       />
 

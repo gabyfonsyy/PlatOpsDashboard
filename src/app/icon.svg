@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Platform Operations Dashboard">
+  <!--
+    Tab icon for the dashboard. Served automatically by Next's App Router because of the filename
+    (src/app/icon.svg) — no <link> tag and no metadata entry.
+
+    A solid accent badge rather than a bare glyph: the favicon sits on browser chrome we don't
+    control, so a filled tile keeps the same contrast on a light and a dark tab strip, where a
+    plain purple mark would disappear into one of them. Colours are hardcoded, not var(--a-600):
+    the file is fetched standalone by the browser, so globals.css is not in scope.
+
+    Three ascending bars on a baseline — legible at 16px, which is what actually has to work.
+    Deliberately no text; two letters at 16px is a smudge.
+  -->
+  <rect width="32" height="32" rx="8" fill="#7D4C8C"/>
+  <g fill="#FFFFFF">
+    <rect x="7"  y="18" width="5" height="7"  rx="1.6"/>
+    <rect x="13.5" y="13" width="5" height="12" rx="1.6"/>
+    <rect x="20" y="7"  width="5" height="18" rx="1.6"/>
+  </g>
+</svg>

@@ -16,6 +16,7 @@ export type LeadCycleTimeTicket = {
   createdAt: string;
   /** "" for Lead Time (not applicable — Lead Time starts at creation). */
   startedAt: string;
+  /** The end of the measured span — resolution, except for ST Cycle Time where it is the review entry. */
   resolvedAt: string;
 };
 
@@ -29,6 +30,14 @@ export type LeadCycleTimeReport = {
   issueType: string | null;
   /** Column header for ranked-by-assignee — "Assigned COD" or "Assigned SE", per the team's config. */
   assigneeLabel: string;
+  /**
+   * How this report's span is defined, for the page subtitle and the ticket table's two date
+   * columns. Derived here rather than in the page so the prose can never drift from the formula
+   * directly above it — ST Cycle Time measures something genuinely different (see basisFor).
+   */
+  description: string;
+  startColumnLabel: string;
+  endColumnLabel: string;
   count: number;
   avgMinutes: number | null;
   topTickets: LeadCycleTimeTicket[];
@@ -39,6 +48,7 @@ export type LeadCycleTimeReport = {
 
 const EMPTY_REPORT: LeadCycleTimeReport = {
   team: "", range: "month", period: "", metric: "lead", issueType: null, assigneeLabel: "Assignee",
+  description: "", startColumnLabel: "Started", endColumnLabel: "Ended",
   count: 0, avgMinutes: null, topTickets: [], byAssignee: [], byProduct: [], byLabel: [],
 };
 
@@ -51,15 +61,93 @@ type TicketRow = {
   issue_type: string | null;
   created: string;
   first_out_of_backlog_todo: string | null;
-  resolved_datetime: string;
+  resolved_datetime: string | null;
+  cycle_time_start: string | null;
+  cycle_time_end: string | null;
   product: string | null;
   labels: string | null;
   assigned_se: string | null;
   assigned_cod: string | null;
 };
 
+const SELECT_COLUMNS =
+  "issue_key,issue_type,created,first_out_of_backlog_todo,resolved_datetime,cycle_time_start,cycle_time_end,product,labels,assigned_se,assigned_cod";
+
+/**
+ * The three numbers this drill-down can be asked for, each defined exactly as gas/Aggregation.gs's
+ * computeDailyBucket_ defines the scorecard it hangs off — so clicking a card opens a page that
+ * measures the same thing, rather than a same-named number computed a different way.
+ *
+ *   lead (every team)        created -> resolved_datetime, gated on resolution.
+ *   cycle (no peer review)   first_out_of_backlog_todo -> resolved_datetime, gated on resolution.
+ *   cycle (peer-review team) cycle_time_start -> cycle_time_end, NOT gated on resolution.
+ *                            The START is the same moment as the line above — cycle_time_start is
+ *                            populated FROM first_out_of_backlog_todo (extractReviewCycleTimeRange_
+ *                            in gas/JiraSync.gs takes it as backlogExitFallback), so only the END
+ *                            differs. The end is the most recent transition into the ticket's
+ *                            hand-off statuses: For Peer Review for backend-change types, or For
+ *                            Checking / For Product Team for Investigations, plus Archived and
+ *                            Rejected for every type. That completes the moment the ticket reaches
+ *                            the stage, whether or not it is ever resolved.
+ *
+ * `dateColumn` is therefore also what the period filters on. Lead and non-peer-review cycle bucket
+ * by resolution; ST cycle buckets by cycle_time_end, because a span that closed inside the period
+ * is what the period is reporting on — filtering those by resolution date would both drop
+ * unresolved tickets that were reviewed and pull in spans that closed months earlier.
+ */
+function basisFor(metric: LeadCycleTimeMetric, hasPeerReviewTracking: boolean) {
+  if (metric === "lead") {
+    return {
+      dateColumn: "resolved_datetime" as const,
+      startColumnLabel: "Created",
+      endColumnLabel: "Resolved",
+      description: hasPeerReviewTracking
+        ? "Time from ticket creation to resolution, across tickets resolved in the period."
+        : "Time from ticket creation to when it moved to Ready for Checking or Cancelled.",
+      duration: (r: TicketRow) =>
+        r.created && r.resolved_datetime ? minutesBetween(r.created, r.resolved_datetime) : null,
+      startedAt: () => "",
+      endedAt: (r: TicketRow) => r.resolved_datetime || "",
+    };
+  }
+  if (hasPeerReviewTracking) {
+    return {
+      dateColumn: "cycle_time_end" as const,
+      // Same start column as every other team — cycle_time_start IS first_out_of_backlog_todo
+      // (extractReviewCycleTimeRange_ takes it as backlogExitFallback). Only the END differs.
+      startColumnLabel: "Moved Out of To Do",
+      endColumnLabel: "Reached Review",
+      description:
+        "Time from when a ticket moved out of Backlog/To Do to the most recent time it reached For Peer Review (For Checking or For Product Team for Investigations), Archived, or Rejected. Counted as soon as it reaches that stage, independent of resolution.",
+      duration: (r: TicketRow) =>
+        r.cycle_time_start && r.cycle_time_end ? minutesBetween(r.cycle_time_start, r.cycle_time_end) : null,
+      startedAt: (r: TicketRow) => r.cycle_time_start || "",
+      endedAt: (r: TicketRow) => r.cycle_time_end || "",
+    };
+  }
+  return {
+    dateColumn: "resolved_datetime" as const,
+    startColumnLabel: "Moved Out of To Do",
+    endColumnLabel: "Resolved",
+    description:
+      "Time from when a ticket moved out of Backlog/To Do to when it moved to Ready for Checking or Cancelled.",
+    duration: (r: TicketRow) =>
+      r.first_out_of_backlog_todo && r.resolved_datetime
+        ? minutesBetween(r.first_out_of_backlog_todo, r.resolved_datetime)
+        : null,
+    startedAt: (r: TicketRow) => r.first_out_of_backlog_todo || "",
+    endedAt: (r: TicketRow) => r.resolved_datetime || "",
+  };
+}
+
 /** Same coarse-UTC-prefilter + exact-Manila-day-check split as lib/backlog-aging.ts. */
-async function fetchResolvedTickets(teamKey: string, startDate: string, endDate: string, issueType?: string): Promise<TicketRow[]> {
+async function fetchTicketsInRange(
+  teamKey: string,
+  dateColumn: string,
+  startDate: string,
+  endDate: string,
+  issueType?: string
+): Promise<TicketRow[]> {
   const rangeStartUtc = new Date(`${startDate}T00:00:00Z`);
   rangeStartUtc.setUTCDate(rangeStartUtc.getUTCDate() - 1);
   const rangeEndUtc = new Date(`${endDate}T00:00:00Z`);
@@ -68,11 +156,11 @@ async function fetchResolvedTickets(teamKey: string, startDate: string, endDate:
   return fetchAllRows<TicketRow>((from, to) => {
     let query = getSupabaseClient()
       .from("tickets")
-      .select("issue_key,issue_type,created,first_out_of_backlog_todo,resolved_datetime,product,labels,assigned_se,assigned_cod")
+      .select(SELECT_COLUMNS)
       .eq("team_key", teamKey)
-      .not("resolved_datetime", "is", null)
-      .gte("resolved_datetime", rangeStartUtc.toISOString())
-      .lte("resolved_datetime", rangeEndUtc.toISOString());
+      .not(dateColumn, "is", null)
+      .gte(dateColumn, rangeStartUtc.toISOString())
+      .lte(dateColumn, rangeEndUtc.toISOString());
     if (issueType) query = query.eq("issue_type", issueType);
     return query.range(from, to);
   });
@@ -109,24 +197,15 @@ export async function getLeadCycleTimeReport(
     const teamConfig = (await getTeams()).find((t) => t.team_key === team);
     if (!teamConfig) throw new Error(`Unknown team: ${team}`);
 
-    const rows = await fetchResolvedTickets(team, startDate, endDate, issueType);
-
-    const durationMinutesFor = (r: TicketRow): number | null => {
-      if (!r.resolved_datetime) return null;
-      if (metric === "cycle") {
-        if (!r.first_out_of_backlog_todo) return null;
-        return minutesBetween(r.first_out_of_backlog_todo, r.resolved_datetime);
-      }
-      if (!r.created) return null;
-      return minutesBetween(r.created, r.resolved_datetime);
-    };
+    const basis = basisFor(metric, teamConfig.has_peer_review_tracking);
+    const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
 
     const withDuration = rows
       .filter((r) => {
-        const resolvedIso = toManilaDateString(r.resolved_datetime);
-        return resolvedIso && resolvedIso >= startDate && resolvedIso <= endDate;
+        const bucketIso = toManilaDateString(basis.endedAt(r));
+        return bucketIso && bucketIso >= startDate && bucketIso <= endDate;
       })
-      .map((r) => ({ row: r, minutes: durationMinutesFor(r) }))
+      .map((r) => ({ row: r, minutes: basis.duration(r) }))
       .filter((x): x is { row: TicketRow; minutes: number } => x.minutes !== null && isFinite(x.minutes));
 
     const topTickets: LeadCycleTimeTicket[] = withDuration
@@ -141,8 +220,8 @@ export async function getLeadCycleTimeReport(
         labels: x.row.labels || "",
         minutes: round2(x.minutes),
         createdAt: x.row.created,
-        startedAt: x.row.first_out_of_backlog_todo || "",
-        resolvedAt: x.row.resolved_datetime,
+        startedAt: basis.startedAt(x.row),
+        resolvedAt: basis.endedAt(x.row),
       }));
 
     const byAssignee = rankBy(withDuration, (r) => backlogAgingAssignee(teamConfig, r) || "(unassigned)");
@@ -168,6 +247,9 @@ export async function getLeadCycleTimeReport(
     return {
       team, range, period, metric, issueType: issueType ?? null,
       assigneeLabel: backlogAgingAssigneeLabel(teamConfig),
+      description: basis.description,
+      startColumnLabel: basis.startColumnLabel,
+      endColumnLabel: basis.endColumnLabel,
       count: withDuration.length,
       avgMinutes: withDuration.length
         ? round2(withDuration.reduce((sum, x) => sum + x.minutes, 0) / withDuration.length)
@@ -180,4 +262,66 @@ export async function getLeadCycleTimeReport(
   } catch {
     return { ...EMPTY_REPORT, team, range, period, metric, issueType: issueType ?? null };
   }
+}
+
+/**
+ * The Team Stats / overview scorecard's Lead Time and Cycle Time, computed from `tickets` through
+ * the SAME basisFor() the drill-down uses — so the card and the page it links to agree by
+ * construction rather than by two implementations being kept in sync by hand.
+ *
+ * Replaces reading avg_lead_time_minutes / avg_cycle_time_minutes off metrics_daily. Those are
+ * bucketed by the ticket's CREATED date (aggregateTeam_ keys its rowsByDate on `created`), which
+ * averaged the spans of tickets *created* in the period instead of those that *finished* in it.
+ * That inflated every card against its own drill-down — measured 2026-08-24 on Jul 2026: ST +5.0%,
+ * DE +12.2%, DEV +30.1% — because a ticket created in-period but still open contributes nothing
+ * while an older ticket that finished in-period is excluded. Everything else on the scorecard
+ * still comes from metrics_daily; only these two numbers are live.
+ *
+ * Cost is one Supabase query per (team, date column). For a team without peer-review tracking both
+ * metrics end at resolution, so the cache collapses them into a single query; ST needs two, since
+ * its cycle ends at cycle_time_end rather than at resolution.
+ */
+export async function getLeadCycleTimeAverages(
+  teamKeys: string[],
+  range: string,
+  period: string,
+  issueType?: string
+): Promise<{ leadTimeAvgMinutes: number | null; cycleTimeAvgMinutes: number | null }> {
+  const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+  const teams = (await getTeams()).filter((t) => teamKeys.includes(t.team_key));
+
+  // Populated synchronously before the first await below, so the concurrent map cannot race two
+  // identical fetches for the same key.
+  const cache = new Map<string, Promise<TicketRow[]>>();
+  const rowsFor = (teamKey: string, dateColumn: string) => {
+    const key = `${teamKey}|${dateColumn}`;
+    if (!cache.has(key)) {
+      cache.set(key, fetchTicketsInRange(teamKey, dateColumn, startDate, endDate, issueType));
+    }
+    return cache.get(key)!;
+  };
+
+  const totals = { lead: { sum: 0, count: 0 }, cycle: { sum: 0, count: 0 } };
+
+  await Promise.all(
+    teams.flatMap((teamConfig) =>
+      (["lead", "cycle"] as const).map(async (metric) => {
+        const basis = basisFor(metric, teamConfig.has_peer_review_tracking);
+        const rows = await rowsFor(teamConfig.team_key, basis.dateColumn);
+        for (const r of rows) {
+          const bucket = toManilaDateString(basis.endedAt(r));
+          if (!bucket || bucket < startDate || bucket > endDate) continue;
+          const minutes = basis.duration(r);
+          if (minutes === null || !isFinite(minutes)) continue;
+          totals[metric].sum += minutes;
+          totals[metric].count++;
+        }
+      })
+    )
+  );
+
+  return {
+    leadTimeAvgMinutes: totals.lead.count ? round2(totals.lead.sum / totals.lead.count) : null,
+    cycleTimeAvgMinutes: totals.cycle.count ? round2(totals.cycle.sum / totals.cycle.count) : null,
+  };
 }

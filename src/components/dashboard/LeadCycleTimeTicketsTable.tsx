@@ -5,11 +5,16 @@ export function LeadCycleTimeTicketsTable({
   tickets,
   metric,
   assigneeLabel,
+  startColumnLabel,
+  endColumnLabel,
   jiraBaseUrl,
 }: {
   tickets: LeadCycleTimeTicket[];
   metric: LeadCycleTimeMetric;
   assigneeLabel: string;
+  /** Both come from the report's basis — ST Cycle Time does not end at resolution. */
+  startColumnLabel: string;
+  endColumnLabel: string;
   jiraBaseUrl?: string;
 }) {
   return (
@@ -23,15 +28,15 @@ export function LeadCycleTimeTicketsTable({
             <th className="px-4 py-3">Ticket</th>
             <th className="px-4 py-3">{assigneeLabel}</th>
             <th className="px-4 py-3">Product</th>
-            <th className="px-4 py-3">{metric === "cycle" ? "Moved Out of To Do" : "Created"}</th>
-            <th className="px-4 py-3">Resolved</th>
+            <th className="px-4 py-3">{startColumnLabel}</th>
+            <th className="px-4 py-3">{endColumnLabel}</th>
             <th className="px-4 py-3">Duration</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-neutral-100">
           {tickets.length === 0 ? (
             <tr>
-              <td colSpan={6} className="px-4 py-6 text-center text-neutral-400">No resolved tickets for this period.</td>
+              <td colSpan={6} className="px-4 py-6 text-center text-neutral-400">No tickets for this period.</td>
             </tr>
           ) : (
             tickets.map((t) => (
