@@ -41,3 +41,34 @@ export function backlogAgingAssignee(team: TeamConfig, row: { assigned_se: strin
 export function backlogAgingAssigneeLabel(team: TeamConfig): string {
   return team.assignee_field_id === "customfield_10189" ? "Assigned SE" : "Assigned COD";
 }
+
+/**
+ * Issue types a team does not count in ANY metric — excluded from Ticket Volume, Lead Time, Cycle
+ * Time, Backlog Aging, FCR, Escalation and every drill-down, not merely filtered out of one card.
+ *
+ * "Technical Story" is SE/ST internal engineering work. It is not requester-facing delivery, and a
+ * due date on one is a planning marker the team sets for itself rather than a commitment to anyone
+ * — so counting it made every SE metric partly a measurement of the team's own sprint hygiene.
+ * Gaby asked for it out of the computations entirely on 2026-08-24 (it was scoped to Backlog Aging
+ * only earlier that day).
+ *
+ * Keyed by team so this cannot quietly change another team's numbers; SE/ST is the only team that
+ * uses the type today.
+ */
+const EXCLUDED_ISSUE_TYPES_BY_TEAM: Record<string, string[]> = {
+  ST: ["Technical Story"],
+};
+
+/** The excluded types for one team, or [] — safe to spread into a query builder unconditionally. */
+export function excludedIssueTypes(teamKey: string): string[] {
+  return EXCLUDED_ISSUE_TYPES_BY_TEAM[teamKey] ?? [];
+}
+
+/**
+ * Case/whitespace-insensitive so a Jira rename to "technical story" doesn't silently re-include
+ * it. `teamKey` matters: the same issue-type name on another team is not excluded.
+ */
+export function isExcludedIssueType(teamKey: string, issueType: string | null | undefined): boolean {
+  const normalized = (issueType || "").trim().toLowerCase();
+  return excludedIssueTypes(teamKey).some((t) => t.toLowerCase() === normalized);
+}

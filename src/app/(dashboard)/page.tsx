@@ -68,13 +68,13 @@ export default async function RollupPage({
           label="Cycle Time"
           value={formatDaysValue(rollupMetrics.cycleTimeAvgMinutes)}
           sublabel={formatDurationBreakdown(rollupMetrics.cycleTimeAvgMinutes)}
-          tooltip="Average time from when work started (ticket left Backlog/To Do) to resolution, across tickets resolved in the period. Shown in days."
+          tooltip="Average time from when work started (ticket left Backlog/To Do) to the end of that team's cycle — reaching review for SE, resolution for DBA and DevOps — across cycles that finished in the period. Shown in days."
         />
         <MetricCard
           label="Backlog Aging"
           value={formatPercent(rollupMetrics.backlogAgingRate)}
           sublabel={`${formatNumber(rollupMetrics.overdueCount)} of ${formatNumber(rollupMetrics.ticketsResolvedInPeriod)} resolved overdue`}
-          tooltip="Overdue tickets ÷ total tickets resolved in the period. Overdue = resolved after the due date (resolved date > due date)."
+          tooltip="Overdue tickets ÷ total tickets resolved in the period, excluding Technical Story (internal engineering work, whose due dates are self-imposed). Overdue = resolved after the due date (resolved date > due date)."
         />
       </div>
 

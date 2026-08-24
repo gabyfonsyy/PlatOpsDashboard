@@ -31,7 +31,7 @@ export default async function TeamDashboardPage({
     ? team.issue_types_csv.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
 
-  // Carried onto the Backlog Aging drill-down so it opens on the same period the card was read on.
+  // Carried onto every scorecard drill-down so each opens on the same period the card was read on.
   const filterQuery = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}) }).toString();
 
   return (
@@ -68,10 +68,10 @@ export default async function TeamDashboardPage({
           sublabel={formatDurationBreakdown(metrics.leadTimeAvgMinutes)}
           tooltip={
             team.has_peer_review_tracking
-              ? "Average time from ticket creation to resolution, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes."
+              ? "Average time from ticket creation to resolution, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes. Click through for the deep-dive (top assignee/product/label, longest tickets)."
               : "Average time from ticket creation until it moved to Ready for Checking or Cancelled, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes. Click through for the deep-dive (top assignee/product/label, longest tickets)."
           }
-          href={!team.has_peer_review_tracking ? `/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=lead` : undefined}
+          href={`/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=lead`}
         />
         <MetricCard
           label="Cycle Time"
@@ -79,18 +79,18 @@ export default async function TeamDashboardPage({
           sublabel={formatDurationBreakdown(metrics.cycleTimeAvgMinutes)}
           tooltip={
             team.has_peer_review_tracking
-              ? "Average time from when the ticket moved out of Backlog/To Do to the most recent time it reached review — For Peer Review for most issue types, or For Checking for Data Generation/Investigation (which skip dev review) — counted as soon as a ticket reaches that stage, independent of resolution. If a ticket bounces back through review again, only the latest review entry moves, not the start. Shown in days."
+              ? "Average time from when a ticket left Backlog/To Do to the most recent time it reached review, counted independent of resolution. Shown in days. Click through for the deep-dive."
               : "Average time from when the ticket moved out of Backlog/To Do until it moved to Ready for Checking or Cancelled, across tickets resolved in the period. Shown in days. Click through for the deep-dive (top assignee/product/label, longest tickets)."
           }
-          href={!team.has_peer_review_tracking ? `/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=cycle` : undefined}
+          href={`/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=cycle`}
         />
         {team.has_peer_review_tracking && (
           <MetricCard
             label="Review Wait Time"
             value={formatMinutesDecimalValue(metrics.peerReviewWaitAvgMinutes)}
             sublabel={formatDurationBreakdown(metrics.peerReviewWaitAvgMinutes)}
-            tooltip="Average time a ticket spends in For Peer Review before moving on to On Hold or For Checking, across review cycles that finished during the period. Click through for the by-reviewer breakdown."
-            href={`/monitoring/peer-review-wait?${filterQuery}`}
+            tooltip="Average time a ticket spends in For Peer Review before moving on to On Hold or For Checking, across review cycles that finished during the period. Attributed to the reviewer it was handed to on entry. Click through for the breakdown."
+            href={`/${team.team_key.toLowerCase()}/review-wait?${filterQuery}`}
           />
         )}
         <MetricCard
@@ -99,7 +99,7 @@ export default async function TeamDashboardPage({
           sublabel={`${formatNumber(metrics.overdueCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved overdue`}
           tooltip={
             team.has_peer_review_tracking
-              ? "Overdue tickets ÷ total tickets resolved in the period. Overdue = resolved after the due date (resolved date > due date). Click through for the ticket-by-ticket list."
+              ? "Overdue tickets ÷ total tickets resolved in the period, excluding Technical Story (internal engineering work, whose due dates are self-imposed). Overdue = resolved after the due date (resolved date > due date). Click through for the ticket-by-ticket list."
               : "Overdue tickets ÷ total tickets resolved (moved to Ready for Checking or Cancelled) in the period. Overdue = resolved after the due date (resolved date > due date). Click through for the ticket-by-ticket list."
           }
           href={`/${team.team_key.toLowerCase()}/backlog-aging?${filterQuery}`}
@@ -110,13 +110,15 @@ export default async function TeamDashboardPage({
               label="FCR Rate"
               value={formatPercent(metrics.fcrRate)}
               sublabel={`${formatNumber(metrics.fcrYesCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved FCR = Yes`}
-              tooltip="Tickets marked FCR = Yes ÷ total tickets resolved in the period (by resolved date)."
+              tooltip="Tickets marked FCR = Yes ÷ total tickets resolved in the period (by resolved date). Click through for what the team resolved without handing off, by product and label."
+              href={`/${team.team_key.toLowerCase()}/fcr?${filterQuery}`}
             />
             <MetricCard
               label="Escalation Rate"
               value={formatPercent(metrics.escalationRate)}
               sublabel={`${formatNumber(metrics.escalationCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved escalated`}
-              tooltip="Tickets whose Ticket Escalation is set to something other than N/A, CA, SE, or blank ÷ total tickets resolved in the period."
+              tooltip="Tickets whose Ticket Escalation is set to something other than N/A, CA, SE, or blank ÷ total tickets resolved in the period. Click through for where the work went, counted per receiving team."
+              href={`/${team.team_key.toLowerCase()}/escalation?${filterQuery}`}
             />
           </>
         )}
@@ -125,7 +127,8 @@ export default async function TeamDashboardPage({
             label="Avg. On-Hold Pickup Time"
             value={formatMinutesDecimalValue(metrics.onHoldAvgPickupMinutes)}
             sublabel={formatDurationBreakdown(metrics.onHoldAvgPickupMinutes)}
-            tooltip="Average total time tickets spent On Hold, across tickets placed on hold at least once."
+            tooltip="Average total time tickets spent On Hold, across tickets placed on hold at least once. Click through for holding reasons and the longest holds."
+            href={`/${team.team_key.toLowerCase()}/on-hold?${filterQuery}`}
           />
         )}
       </div>

@@ -1,8 +1,9 @@
 import { fetchGas } from "@/lib/gas-client";
 import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
-import { getTeams } from "@/lib/teams";
+import { getTeams, isExcludedIssueType } from "@/lib/teams";
 import { resolvePeriodToDateRange, monthsInRange } from "@/lib/period-range";
 import { getCompletedPeerReviewCycles, aggregateByReviewer } from "@/lib/peer-review";
+import { getLeadCycleTimeAverages } from "@/lib/lead-cycle-time";
 
 export type TicketMetrics = {
   team: string;
@@ -87,6 +88,8 @@ function countsToBreakdown<K extends string>(counts: Record<string, number>, key
 
 type MetricsDailyRow = {
   date: string;
+  team_key: string;
+  issue_type: string | null;
   tickets_created_count: number;
   tickets_resolved_count: number;
   tickets_resolved_on_date: number;
@@ -188,6 +191,11 @@ function rollupDailyRows(
   const byDate: Record<string, { created: number; resolved: number; leadTimeSum: number; leadTimeCount: number }> = {};
 
   for (const r of rows) {
+    // One skip covers every metric below. metrics_daily is stored per issue type, so a team's
+    // excluded types (SE: Technical Story) drop out of Ticket Volume, Lead/Cycle Time, Backlog
+    // Aging, FCR and Escalation together, rather than being filtered per card.
+    if (isExcludedIssueType(r.team_key, r.issue_type)) continue;
+
     totals.ticketsCreated += Number(r.tickets_created_count) || 0;
     totals.ticketsResolved += Number(r.tickets_resolved_count) || 0;
     totals.resolvedInPeriod += Number(r.tickets_resolved_on_date) || 0;
@@ -225,6 +233,8 @@ function rollupDailyRows(
 
   return {
     team, range, period, issueType: issueType ?? null,
+    // Both are OVERWRITTEN by getTicketMetrics with the live, end-date-bucketed figures — kept
+    // here only so this function stays a complete rollup of what metrics_daily actually holds.
     leadTimeAvgMinutes: totals.leadTimeCount ? round2(totals.leadTimeSum / totals.leadTimeCount) : null,
     cycleTimeAvgMinutes: totals.cycleTimeCount ? round2(totals.cycleTimeSum / totals.cycleTimeCount) : null,
     fcrRate: totals.resolvedInPeriod ? round4(totals.fcrYesResolved / totals.resolvedInPeriod) : null,
@@ -255,8 +265,16 @@ export async function getTicketMetrics(team: string, range: string, period: stri
   try {
     const { startDate, endDate } = resolvePeriodToDateRange(range, period);
     const teamKeys = team === "ALL" ? (await getTeams()).map((t) => t.team_key) : [team];
-    const rows = await fetchMetricsDailyRows(teamKeys, startDate, endDate, issueType);
-    return rollupDailyRows(rows, team, range, period, issueType);
+    const [rows, liveAverages] = await Promise.all([
+      fetchMetricsDailyRows(teamKeys, startDate, endDate, issueType),
+      getLeadCycleTimeAverages(teamKeys, range, period, issueType),
+    ]);
+
+    // Lead and Cycle Time come from `tickets` via the drill-down's own basisFor(), NOT from the
+    // metrics_daily averages rollupDailyRows computes — those bucket by created date and read high
+    // against the very pages these cards link to. See getLeadCycleTimeAverages for the measured
+    // gap. Everything else on the card still comes from the precomputed daily rows.
+    return { ...rollupDailyRows(rows, team, range, period, issueType), ...liveAverages };
   } catch {
     return { ...EMPTY_METRICS, team, range, period, issueType: issueType ?? null };
   }
