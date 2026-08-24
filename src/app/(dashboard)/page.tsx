@@ -73,7 +73,7 @@ export default async function RollupPage({
         <MetricCard
           label="Backlog Aging"
           value={formatPercent(rollupMetrics.backlogAgingRate)}
-          sublabel={`${formatNumber(rollupMetrics.overdueCount)} of ${formatNumber(rollupMetrics.backlogAgingDenominator)} resolved overdue`}
+          sublabel={`${formatNumber(rollupMetrics.overdueCount)} of ${formatNumber(rollupMetrics.ticketsResolvedInPeriod)} resolved overdue`}
           tooltip="Overdue tickets ÷ total tickets resolved in the period, excluding Technical Story (internal engineering work, whose due dates are self-imposed). Overdue = resolved after the due date (resolved date > due date)."
         />
       </div>

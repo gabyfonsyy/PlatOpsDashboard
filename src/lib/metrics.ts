@@ -1,6 +1,6 @@
 import { fetchGas } from "@/lib/gas-client";
 import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
-import { getTeams, isExcludedFromBacklogAging } from "@/lib/teams";
+import { getTeams, isExcludedIssueType } from "@/lib/teams";
 import { resolvePeriodToDateRange, monthsInRange } from "@/lib/period-range";
 import { getCompletedPeerReviewCycles, aggregateByReviewer } from "@/lib/peer-review";
 import { getLeadCycleTimeAverages } from "@/lib/lead-cycle-time";
@@ -16,12 +16,6 @@ export type TicketMetrics = {
   escalationRate: number | null;
   backlogAgingRate: number | null;
   overdueCount: number;
-  /**
-   * Denominator behind backlogAgingRate — resolved-in-period MINUS the issue types excluded by
-   * isExcludedFromBacklogAging. Differs from ticketsResolvedInPeriod, and the card must print
-   * THIS one, or "N of M resolved overdue" would not divide out to the rate shown above it.
-   */
-  backlogAgingDenominator: number;
   fcrYesCount: number;
   escalationCount: number;
   ticketVolume: number;
@@ -67,8 +61,7 @@ export type CachedInsight = {
 const EMPTY_METRICS: TicketMetrics = {
   team: "", range: "month", period: "", issueType: null,
   leadTimeAvgMinutes: null, cycleTimeAvgMinutes: null, fcrRate: null,
-  escalationRate: null, backlogAgingRate: null, overdueCount: 0, backlogAgingDenominator: 0,
-  fcrYesCount: 0, escalationCount: 0,
+  escalationRate: null, backlogAgingRate: null, overdueCount: 0, fcrYesCount: 0, escalationCount: 0,
   ticketVolume: 0,
   ticketsCreated: 0, ticketsResolved: 0, ticketsResolvedInPeriod: 0, holdingReasonBreakdown: [],
   rejectionCategoryBreakdown: [], cancellationReasonBreakdown: [],
@@ -95,6 +88,7 @@ function countsToBreakdown<K extends string>(counts: Record<string, number>, key
 
 type MetricsDailyRow = {
   date: string;
+  team_key: string;
   issue_type: string | null;
   tickets_created_count: number;
   tickets_resolved_count: number;
@@ -187,7 +181,6 @@ function rollupDailyRows(
     fcrEligible: 0, fcrNotEscalated: 0, escalated: 0,
     fcrYesResolved: 0, escQualifyingResolved: 0,
     resolvedAfterDue: 0, totalForAging: 0,
-    agingOverdue: 0, agingDenominator: 0,
     assigned: 0,
     onHoldPickupSum: 0, onHoldPickupCount: 0,
     peerReviewWaitSum: 0, peerReviewWaitCount: 0,
@@ -198,6 +191,11 @@ function rollupDailyRows(
   const byDate: Record<string, { created: number; resolved: number; leadTimeSum: number; leadTimeCount: number }> = {};
 
   for (const r of rows) {
+    // One skip covers every metric below. metrics_daily is stored per issue type, so a team's
+    // excluded types (SE: Technical Story) drop out of Ticket Volume, Lead/Cycle Time, Backlog
+    // Aging, FCR and Escalation together, rather than being filtered per card.
+    if (isExcludedIssueType(r.team_key, r.issue_type)) continue;
+
     totals.ticketsCreated += Number(r.tickets_created_count) || 0;
     totals.ticketsResolved += Number(r.tickets_resolved_count) || 0;
     totals.resolvedInPeriod += Number(r.tickets_resolved_on_date) || 0;
@@ -218,14 +216,6 @@ function rollupDailyRows(
     totals.onHoldPickupCount += Number(r.on_hold_pickup_count) || 0;
     totals.peerReviewWaitSum += Number(r.peer_review_wait_sum_minutes) || 0;
     totals.peerReviewWaitCount += Number(r.peer_review_wait_count) || 0;
-
-    // Backlog Aging alone runs on a narrowed population — metrics_daily is stored per issue type,
-    // so the exclusion is a skip here rather than a re-aggregation in GAS. Numerator and
-    // denominator must skip together or the rate silently inflates.
-    if (!isExcludedFromBacklogAging(r.issue_type)) {
-      totals.agingOverdue += Number(r.overdue_resolved_on_date) || 0;
-      totals.agingDenominator += Number(r.tickets_resolved_on_date) || 0;
-    }
 
     mergeJsonCounts(holdingReasonTotals, r.holding_reason_json);
     mergeJsonCounts(rejectionCategoryTotals, r.rejection_category_json);
@@ -249,9 +239,8 @@ function rollupDailyRows(
     cycleTimeAvgMinutes: totals.cycleTimeCount ? round2(totals.cycleTimeSum / totals.cycleTimeCount) : null,
     fcrRate: totals.resolvedInPeriod ? round4(totals.fcrYesResolved / totals.resolvedInPeriod) : null,
     escalationRate: totals.resolvedInPeriod ? round4(totals.escQualifyingResolved / totals.resolvedInPeriod) : null,
-    backlogAgingRate: totals.agingDenominator ? round4(totals.agingOverdue / totals.agingDenominator) : null,
-    overdueCount: totals.agingOverdue,
-    backlogAgingDenominator: totals.agingDenominator,
+    backlogAgingRate: totals.resolvedInPeriod ? round4(totals.overdueResolved / totals.resolvedInPeriod) : null,
+    overdueCount: totals.overdueResolved,
     fcrYesCount: totals.fcrYesResolved,
     escalationCount: totals.escQualifyingResolved,
     ticketVolume: totals.assigned,

@@ -1,5 +1,5 @@
 import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
-import { getTeams, backlogAgingAssignee, backlogAgingAssigneeLabel, isExcludedFromBacklogAging } from "@/lib/teams";
+import { getTeams, backlogAgingAssignee, backlogAgingAssigneeLabel, isExcludedIssueType } from "@/lib/teams";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString, isoDateDiffDays } from "@/lib/manila-date";
 
@@ -83,8 +83,8 @@ async function fetchResolvedTickets(
  * character the same (resolved calendar day strictly later than the due date) so this
  * reconciles with the "N of M resolved overdue" the metrics scorecard reports.
  *
- * Issue types in BACKLOG_AGING_EXCLUDED_ISSUE_TYPES are dropped from BOTH the numerator and the
- * denominator here and in lib/metrics.ts; see that constant for why.
+ * A team's excluded issue types (see excludedIssueTypes in lib/teams.ts) are dropped from BOTH the
+ * numerator and the denominator here and in lib/metrics.ts.
  */
 export async function getBacklogAgingReport(
   team: string,
@@ -105,10 +105,10 @@ export async function getBacklogAgingReport(
     let resolvedInPeriod = 0;
 
     for (const r of rows) {
-      // Skipped before the denominator, exactly as lib/metrics.ts skips it before
-      // totals.agingDenominator — the two have to narrow the population identically or the
-      // scorecard's "N of M resolved overdue" stops reconciling with this list.
-      if (isExcludedFromBacklogAging(r.issue_type)) continue;
+      // Skipped before the denominator, exactly as lib/metrics.ts skips its metrics_daily rows —
+      // the two must narrow the population identically or the scorecard's "N of M resolved
+      // overdue" stops reconciling with this list.
+      if (isExcludedIssueType(r.team_key, r.issue_type)) continue;
 
       const resolvedIso = toManilaDateString(r.resolved_datetime);
       if (!resolvedIso || resolvedIso < startDate || resolvedIso > endDate) continue;

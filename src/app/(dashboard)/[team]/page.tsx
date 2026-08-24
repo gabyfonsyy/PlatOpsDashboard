@@ -89,14 +89,14 @@ export default async function TeamDashboardPage({
             label="Review Wait Time"
             value={formatMinutesDecimalValue(metrics.peerReviewWaitAvgMinutes)}
             sublabel={formatDurationBreakdown(metrics.peerReviewWaitAvgMinutes)}
-            tooltip="Average time a ticket spends in For Peer Review before moving on to On Hold or For Checking, across review cycles that finished during the period. Click through for the by-reviewer breakdown."
-            href={`/monitoring/peer-review-wait?${filterQuery}`}
+            tooltip="Average time a ticket spends in For Peer Review before moving on to On Hold or For Checking, across review cycles that finished during the period. Attributed to the reviewer it was handed to on entry. Click through for the breakdown."
+            href={`/${team.team_key.toLowerCase()}/review-wait?${filterQuery}`}
           />
         )}
         <MetricCard
           label="Backlog Aging"
           value={formatPercent(metrics.backlogAgingRate, 2)}
-          sublabel={`${formatNumber(metrics.overdueCount)} of ${formatNumber(metrics.backlogAgingDenominator)} resolved overdue`}
+          sublabel={`${formatNumber(metrics.overdueCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved overdue`}
           tooltip={
             team.has_peer_review_tracking
               ? "Overdue tickets ÷ total tickets resolved in the period, excluding Technical Story (internal engineering work, whose due dates are self-imposed). Overdue = resolved after the due date (resolved date > due date). Click through for the ticket-by-ticket list."
@@ -110,13 +110,15 @@ export default async function TeamDashboardPage({
               label="FCR Rate"
               value={formatPercent(metrics.fcrRate)}
               sublabel={`${formatNumber(metrics.fcrYesCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved FCR = Yes`}
-              tooltip="Tickets marked FCR = Yes ÷ total tickets resolved in the period (by resolved date)."
+              tooltip="Tickets marked FCR = Yes ÷ total tickets resolved in the period (by resolved date). Click through for what the team resolved without handing off, by product and label."
+              href={`/${team.team_key.toLowerCase()}/fcr?${filterQuery}`}
             />
             <MetricCard
               label="Escalation Rate"
               value={formatPercent(metrics.escalationRate)}
               sublabel={`${formatNumber(metrics.escalationCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved escalated`}
-              tooltip="Tickets whose Ticket Escalation is set to something other than N/A, CA, SE, or blank ÷ total tickets resolved in the period."
+              tooltip="Tickets whose Ticket Escalation is set to something other than N/A, CA, SE, or blank ÷ total tickets resolved in the period. Click through for where the work went, counted per receiving team."
+              href={`/${team.team_key.toLowerCase()}/escalation?${filterQuery}`}
             />
           </>
         )}
@@ -125,7 +127,8 @@ export default async function TeamDashboardPage({
             label="Avg. On-Hold Pickup Time"
             value={formatMinutesDecimalValue(metrics.onHoldAvgPickupMinutes)}
             sublabel={formatDurationBreakdown(metrics.onHoldAvgPickupMinutes)}
-            tooltip="Average total time tickets spent On Hold, across tickets placed on hold at least once."
+            tooltip="Average total time tickets spent On Hold, across tickets placed on hold at least once. Click through for holding reasons and the longest holds."
+            href={`/${team.team_key.toLowerCase()}/on-hold?${filterQuery}`}
           />
         )}
       </div>

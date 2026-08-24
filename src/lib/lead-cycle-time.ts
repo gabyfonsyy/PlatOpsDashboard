@@ -1,5 +1,5 @@
 import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
-import { getTeams, backlogAgingAssignee, backlogAgingAssigneeLabel } from "@/lib/teams";
+import { getTeams, backlogAgingAssignee, backlogAgingAssigneeLabel, excludedIssueTypes, isExcludedIssueType } from "@/lib/teams";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
 
@@ -74,6 +74,81 @@ const SELECT_COLUMNS =
   "issue_key,issue_type,created,first_out_of_backlog_todo,resolved_datetime,cycle_time_start,cycle_time_end,product,labels,assigned_se,assigned_cod";
 
 /**
+ * Just the columns basisFor's duration()/endedAt() actually read. getLeadCycleTimeAverages runs on
+ * every team-page and overview render and only needs an average, so it must not drag the ranking
+ * columns (product, labels, assignee, issue_key) across the wire for thousands of rows — doing so
+ * cost ~2x on the overview's year range.
+ */
+const SPAN_ONLY_COLUMNS =
+  "issue_key,created,first_out_of_backlog_todo,resolved_datetime,cycle_time_start,cycle_time_end";
+
+/** PostgREST's per-response cap. Mirrors SUPABASE_MAX_ROWS_PER_REQUEST in lib/supabase.ts. */
+const PAGE_SIZE = 1000;
+
+/**
+ * fetchAllRows walks pages SEQUENTIALLY — it has to, since it discovers the end only by getting a
+ * short page. For the scorecard averages that meant ~50 round trips for the overview's year range
+ * (three teams x two date columns x ~12k rows each), which measured 9-12s of pure latency.
+ *
+ * Here the row count is asked for up front, so every page can be requested at once instead. An
+ * explicit .order("issue_key") is what makes that safe: PostgREST offsets are only stable under a
+ * deterministic sort, and without one concurrent pages can overlap or skip rows outright (the same
+ * hazard fetchAllRows' own docstring warns about). issue_key is unique, so the ordering is total.
+ */
+async function fetchSpanRowsParallel(
+  teamKey: string,
+  dateColumn: string,
+  startDate: string,
+  endDate: string,
+  issueType?: string
+): Promise<TicketRow[]> {
+  const rangeStartUtc = new Date(`${startDate}T00:00:00Z`);
+  rangeStartUtc.setUTCDate(rangeStartUtc.getUTCDate() - 1);
+  const rangeEndUtc = new Date(`${endDate}T00:00:00Z`);
+  rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
+
+  // Excluded types are filtered in SQL rather than in JS: SPAN_ONLY_COLUMNS deliberately omits
+  // issue_type, and this path exists to move as few bytes as possible.
+  const excluded = excludedIssueTypes(teamKey);
+
+  // `any` is deliberate and contained. Each conditional .eq()/.not() below widens supabase-js's
+  // builder generics again, and re-assigning through them trips TS2589 ("type instantiation is
+  // excessively deep"). The rows are cast to TicketRow at the end regardless, so the chain's own
+  // inferred type buys nothing here.
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const build = (head: boolean): any => {
+    let q: any = getSupabaseClient()
+      .from("tickets")
+      .select(SPAN_ONLY_COLUMNS, head ? { count: "exact", head: true } : undefined)
+      .eq("team_key", teamKey)
+      .not(dateColumn, "is", null)
+      .gte(dateColumn, rangeStartUtc.toISOString())
+      .lte(dateColumn, rangeEndUtc.toISOString());
+    if (issueType) q = q.eq("issue_type", issueType);
+    if (excluded.length) q = q.not("issue_type", "in", `(${excluded.map((t) => `"${t}"`).join(",")})`);
+    return q;
+  };
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  const { count, error } = await build(true);
+  if (error) throw new Error(`Supabase count failed: ${error.message}`);
+  const total = count ?? 0;
+  if (total === 0) return [];
+
+  const pages: { data: unknown; error: { message: string } | null }[] = await Promise.all(
+    Array.from({ length: Math.ceil(total / PAGE_SIZE) }, (_, i) =>
+      build(false).order("issue_key").range(i * PAGE_SIZE, i * PAGE_SIZE + PAGE_SIZE - 1)
+    )
+  );
+  const rows: TicketRow[] = [];
+  for (const page of pages) {
+    if (page.error) throw new Error(`Supabase query failed: ${page.error.message}`);
+    rows.push(...((page.data ?? []) as TicketRow[]));
+  }
+  return rows;
+}
+
+/**
  * The three numbers this drill-down can be asked for, each defined exactly as gas/Aggregation.gs's
  * computeDailyBucket_ defines the scorecard it hangs off — so clicking a card opens a page that
  * measures the same thing, rather than a same-named number computed a different way.
@@ -146,7 +221,8 @@ async function fetchTicketsInRange(
   dateColumn: string,
   startDate: string,
   endDate: string,
-  issueType?: string
+  issueType?: string,
+  columns: string = SELECT_COLUMNS
 ): Promise<TicketRow[]> {
   const rangeStartUtc = new Date(`${startDate}T00:00:00Z`);
   rangeStartUtc.setUTCDate(rangeStartUtc.getUTCDate() - 1);
@@ -156,13 +232,20 @@ async function fetchTicketsInRange(
   return fetchAllRows<TicketRow>((from, to) => {
     let query = getSupabaseClient()
       .from("tickets")
-      .select(SELECT_COLUMNS)
+      .select(columns)
       .eq("team_key", teamKey)
       .not(dateColumn, "is", null)
       .gte(dateColumn, rangeStartUtc.toISOString())
       .lte(dateColumn, rangeEndUtc.toISOString());
     if (issueType) query = query.eq("issue_type", issueType);
-    return query.range(from, to);
+    // supabase-js infers the row shape from a LITERAL select string; `columns` is a parameter, so
+    // it falls back to GenericStringError[] and the generic no longer lines up. Both call sites
+    // pass one of the two constants above, every field of which is on TicketRow (SPAN_ONLY_COLUMNS
+    // is a strict subset), so the cast is asserting something the constants already guarantee.
+    return query.range(from, to) as unknown as PromiseLike<{
+      data: TicketRow[] | null;
+      error: { message: string } | null;
+    }>;
   });
 }
 
@@ -201,6 +284,7 @@ export async function getLeadCycleTimeReport(
     const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
 
     const withDuration = rows
+      .filter((r) => !isExcludedIssueType(team, r.issue_type))
       .filter((r) => {
         const bucketIso = toManilaDateString(basis.endedAt(r));
         return bucketIso && bucketIso >= startDate && bucketIso <= endDate;
@@ -296,12 +380,43 @@ export async function getLeadCycleTimeAverages(
   const rowsFor = (teamKey: string, dateColumn: string) => {
     const key = `${teamKey}|${dateColumn}`;
     if (!cache.has(key)) {
-      cache.set(key, fetchTicketsInRange(teamKey, dateColumn, startDate, endDate, issueType));
+      cache.set(key, fetchSpanRowsParallel(teamKey, dateColumn, startDate, endDate, issueType));
     }
     return cache.get(key)!;
   };
 
   const totals = { lead: { sum: 0, count: 0 }, cycle: { sum: 0, count: 0 } };
+
+  // Fast path: Postgres does the arithmetic and returns four numbers per team (see
+  // supabase/lead-cycle-time-rpc.sql). Falls back to the row-walk below if the function is not
+  // installed yet, so the app keeps working — correctly, just slowly — until that migration is run.
+  const viaRpc = await Promise.all(
+    teams.map(async (teamConfig) => {
+      const { data, error } = await getSupabaseClient().rpc("lead_cycle_time_spans", {
+        p_team_key: teamConfig.team_key,
+        p_start: startDate,
+        p_end: endDate,
+        p_has_peer_review: teamConfig.has_peer_review_tracking,
+        p_issue_type: issueType ?? null,
+        p_excluded_issue_types: excludedIssueTypes(teamConfig.team_key),
+      });
+      if (error || !data) return null;
+      return Array.isArray(data) ? data[0] : data;
+    })
+  );
+
+  if (viaRpc.every((r) => r)) {
+    for (const r of viaRpc as { lead_sum: number; lead_count: number; cycle_sum: number; cycle_count: number }[]) {
+      totals.lead.sum += Number(r.lead_sum) || 0;
+      totals.lead.count += Number(r.lead_count) || 0;
+      totals.cycle.sum += Number(r.cycle_sum) || 0;
+      totals.cycle.count += Number(r.cycle_count) || 0;
+    }
+    return {
+      leadTimeAvgMinutes: totals.lead.count ? round2(totals.lead.sum / totals.lead.count) : null,
+      cycleTimeAvgMinutes: totals.cycle.count ? round2(totals.cycle.sum / totals.cycle.count) : null,
+    };
+  }
 
   await Promise.all(
     teams.flatMap((teamConfig) =>
