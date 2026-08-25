@@ -38,6 +38,12 @@ export function voiceForView(view: OverviewView): VoiceMode {
   return view === "gaby" ? "gaby" : "normal";
 }
 
+/** Both halves of the answer from a theme cookie, for callers that need each exactly once. */
+export function viewForView(themeCookie: string | undefined): { view: OverviewView; voice: VoiceMode } {
+  const view = viewForTheme(themeCookie);
+  return { view, voice: voiceForView(view) };
+}
+
 type SectionCopy = {
   title: string;
   subtitle?: string;

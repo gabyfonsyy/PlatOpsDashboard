@@ -12,6 +12,7 @@ import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { celebrate } from "@/lib/celebrate";
 import { PAGE_NAMES } from "@/lib/nav";
 import { Copy } from "@/components/ui/Copy";
+import { OverviewQuickPanel } from "@/components/overview/OverviewQuickPanel";
 
 /**
  * Rendered BEFORE the Teams dropdown, so it is literally the first tab. It's the page the day
@@ -20,8 +21,16 @@ import { Copy } from "@/components/ui/Copy";
  */
 const PRIMARY_NAV = { href: "/my-work", page: "home" } as const;
 
-/** Labels come from lib/nav.ts, which carries both names for every page. */
+/**
+ * Labels come from lib/nav.ts, which carries both names for every page.
+ *
+ * Overview sits first, straight after My Work. It used to live inside the Teams dropdown as the
+ * "cross-team rollup", which stopped being true when it became the command centre: it is no longer
+ * about teams, it is the page you check to find out what needs you. Two clicks and a mental
+ * detour through the wrong menu was the wrong home for it.
+ */
 const NAV_ITEMS = [
+  { href: "/", page: "overview" },
   { href: "/leave", page: "leave" },
   { href: "/rto", page: "rto" },
   { href: "/projects", page: "projects" },
@@ -38,17 +47,13 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   // attached to a decorative element that does nothing else, so there's no workflow to disrupt.
   const logoClicks = useRef(0);
 
-  // Teams menu = the cross-team Overview plus one entry per configured team. Only the Overview
-  // entry is renamed by theme; team names are real team names.
-  const teamMenu = [
-    { label: PAGE_NAMES.overview.nav.serious, playful: PAGE_NAMES.overview.nav.playful, href: "/" },
-    ...teamTabs.map((t) => ({ label: t.label, playful: t.label, href: `/${t.key}` })),
-  ];
+  // Teams menu = one entry per configured team. The Overview moved out to its own pill when it
+  // stopped being a cross-team rollup — see NAV_ITEMS.
+  const teamMenu = teamTabs.map((t) => ({ label: t.label, playful: t.label, href: `/${t.key}` }));
 
-  // Highlight the Teams pill on the overview or any team route (incl. /<team>/performance).
+  // Highlight the Teams pill on any team route (incl. /<team>/performance), no longer on "/".
   const teamKeys = teamTabs.map((t) => t.key);
-  const isTeamsActive =
-    pathname === "/" || teamKeys.some((k) => pathname === `/${k}` || pathname.startsWith(`/${k}/`));
+  const isTeamsActive = teamKeys.some((k) => pathname === `/${k}` || pathname.startsWith(`/${k}/`));
 
   // Close on outside click and on navigation.
   useEffect(() => {
@@ -110,6 +115,8 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
           </Link>
 
           <div className="flex items-center gap-4 shrink-0">
+            {/* Today's overview, without leaving the page you're on. Hides itself on "/". */}
+            <OverviewQuickPanel />
             <ThemeToggle />
             <RefreshDataButton />
             {session?.user && (
@@ -179,7 +186,9 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
           </div>
 
           {NAV_ITEMS.map((item) => {
-            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            // "/" is a prefix of every path, so it has to match exactly or every page lights it up.
+            const active =
+              item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`);
             const name = PAGE_NAMES[item.page].nav;
             return (
               <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>
