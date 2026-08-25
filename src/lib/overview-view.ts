@@ -182,10 +182,15 @@ export type SectionKey =
   | "focus"
   | "operations";
 
-/** "Good morning" / "Good afternoon" / "Good evening", Manila time. */
+/**
+ * "Good morning" / "Good afternoon" / "Good evening", Manila time.
+ *
+ * hourCycle h23 rather than hour12:false: the latter renders midnight as "24" in some runtimes,
+ * which would greet the small hours with "Good evening". Same trap as formatManilaDateTime.
+ */
 export function greeting(now: Date = new Date()): string {
   const hour = Number(
-    now.toLocaleString("en-US", { timeZone: "Asia/Manila", hour: "2-digit", hour12: false })
+    now.toLocaleString("en-US", { timeZone: "Asia/Manila", hour: "2-digit", hourCycle: "h23" })
   );
   if (hour < 12) return "Good morning";
   if (hour < 18) return "Good afternoon";

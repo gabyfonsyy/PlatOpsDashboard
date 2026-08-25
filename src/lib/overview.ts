@@ -207,27 +207,53 @@ export async function getOverview(email: string): Promise<OverviewData> {
   const thisMonth = MONTH(0);
   const lastMonth = MONTH(-1);
 
-  const [work, teams, leave, rto] = await Promise.all([
-    getMyWork(email).catch(() => null),
-    getTeams().catch(() => []),
-    fetchGas<{ records: LeaveRecord[] }>("leave", { startDate: today, endDate: today }, { cache: "no-store" })
-      .then((r) => r.records ?? [])
-      .catch(() => null),
-    fetchGas<{ records: RtoRecord[] }>("rto", { startDate: today, endDate: today }, { cache: "no-store" })
-      .then((r) => r.records ?? [])
-      .catch(() => null),
-  ]);
+  // Leave and RTO are Apps Script calls, which are the slowest thing on this page by an order of
+  // magnitude. They are cached for five minutes rather than fetched no-store: both answer "who is
+  // out TODAY", a day-granularity fact that does not change between two page loads a minute apart.
+  // Uncached, every Overview render AND every press of the header compass paid two fresh GAS round
+  // trips, which is most of what made a glance expensive.
+  const leavePromise = fetchGas<{ records: LeaveRecord[] }>(
+    "leave",
+    { startDate: today, endDate: today },
+    { next: { revalidate: 300 } }
+  )
+    .then((r) => r.records ?? [])
+    .catch(() => null);
 
-  const perTeam = await Promise.all(
-    teams.map(async (t) => {
-      const [current, previous, insight] = await Promise.all([
-        getTicketMetrics(t.team_key, "month", thisMonth).catch(() => null),
-        getTicketMetrics(t.team_key, "month", lastMonth).catch(() => null),
-        getInsight(`TEAM:${t.team_key}`).catch(() => null),
-      ]);
-      return { team: t, current, previous, insight };
-    })
-  );
+  const rtoPromise = fetchGas<{ records: RtoRecord[] }>(
+    "rto",
+    { startDate: today, endDate: today },
+    { next: { revalidate: 300 } }
+  )
+    .then((r) => r.records ?? [])
+    .catch(() => null);
+
+  const workPromise = getMyWork(email).catch(() => null);
+
+  // The per-team reads only need `teams`, NOT leave or RTO. Awaiting one combined Promise.all first
+  // meant they sat behind the two slow GAS calls for no reason; chaining off getTeams lets both
+  // halves run at once.
+  const perTeamPromise = getTeams()
+    .catch(() => [] as Awaited<ReturnType<typeof getTeams>>)
+    .then((teams) =>
+      Promise.all(
+        teams.map(async (t) => {
+          const [current, previous, insight] = await Promise.all([
+            getTicketMetrics(t.team_key, "month", thisMonth).catch(() => null),
+            getTicketMetrics(t.team_key, "month", lastMonth).catch(() => null),
+            getInsight(`TEAM:${t.team_key}`).catch(() => null),
+          ]);
+          return { team: t, current, previous, insight };
+        })
+      )
+    );
+
+  const [work, leave, rto, perTeam] = await Promise.all([
+    workPromise,
+    leavePromise,
+    rtoPromise,
+    perTeamPromise,
+  ]);
 
   const myDay = summariseMyDay(work);
   const pulse = summarisePulse(perTeam, leave, rto, today);

@@ -24,15 +24,15 @@ import { OverviewQuickPanel } from "@/components/overview/OverviewQuickPanel";
 const PRIMARY_NAV = { href: "/my-work", page: "home" } as const;
 
 /**
- * The two pills before the Teams dropdown. Overview leads: it is the page that answers "what needs
- * me today", so it is the first thing on the bar and the first thing read. It used to live INSIDE
- * the Teams dropdown as the "cross-team rollup", which stopped being true when it became the
- * command centre — it is not about teams at all any more.
+ * The Overview is deliberately NOT on this bar.
+ *
+ * It briefly was, and before that it was buried in the Teams dropdown. Neither fitted: the bar is
+ * for places you go and work, and the Overview is something you consult — usually in the middle of
+ * doing something else, which is exactly when navigating away from it is worst. So its entry point
+ * is the compass in the header (OverviewQuickPanel), available on every page, with the full page
+ * one click from inside the panel. Removing the pill also gives the bar its width back.
  */
-const LEADING_NAV = [
-  { href: "/", page: "overview" },
-  { href: PRIMARY_NAV.href, page: PRIMARY_NAV.page },
-] as const;
+const LEADING_NAV = [{ href: PRIMARY_NAV.href, page: PRIMARY_NAV.page }] as const;
 
 /** Labels come from lib/nav.ts, which carries both names for every page. */
 const NAV_ITEMS = [
@@ -145,19 +145,17 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
         </div>
       </header>
 
-      {/* Floating pill nav, centered under the header.
-          It used to be pulled UP by -mt-5 to straddle the header's bottom edge, which looked good
-          at six pills and broke at eight: the bar grew wide enough to reach the header's own
-          controls and sat on top of the theme switcher. A nav that covers a control is worse than
-          a nav that doesn't straddle, so it now sits cleanly below the boundary. */}
-      <div className="relative z-30 mt-3 flex justify-center px-6 pointer-events-none">
+      {/* Floating pill nav — lives outside the header, centered, straddling the boundary.
+          The straddle broke at eight pills, when the bar grew wide enough to cover the theme
+          switcher. It is back because the Overview pill is gone and the bar is seven again, which
+          is the width it was designed at. If a pill is ever added, check this overlap first. */}
+      <div className="relative z-30 -mt-5 flex justify-center px-6 pointer-events-none">
         {/* No overflow-x here, deliberately: the Teams dropdown is absolutely positioned INSIDE
             this nav, and a scroll container would clip it shut. Narrow windows overflow the bar
             horizontally, which they did before this too. */}
         <nav className="pill-nav pointer-events-auto">
           {LEADING_NAV.map((item) => {
-            // "/" is a prefix of every path, so it has to match exactly or it lights up everywhere.
-            const active = item.href === "/" ? pathname === "/" : pathname === item.href;
+            const active = pathname === item.href;
             const name = PAGE_NAMES[item.page].nav;
             return (
               <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>

@@ -48,6 +48,11 @@ export function AssessmentHeader({
   // Survives re-renders but not a remount, which is what we want: one attempt per page visit, and
   // the server does the real deduplication.
   const asked = useRef(false);
+  // The theme/register correction is attempted at most once per mount. If writing the cookie fails
+  // (blocked cookies), the server keeps rendering the old register and the condition stays true
+  // forever — a guard here means that degrades to "the wrong register once" rather than a page
+  // that refreshes itself in a loop.
+  const healed = useRef(false);
 
   async function generate(force: boolean) {
     if (busy) return;
@@ -84,9 +89,10 @@ export function AssessmentHeader({
    * acting sooner would bounce every Gaby's View load through a needless refresh.
    */
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || healed.current) return;
     const actual = viewForTheme(theme);
     if (actual === view) return;
+    healed.current = true;
     persistThemeCookie(theme);
     router.refresh();
   }, [ready, theme, view, router]);

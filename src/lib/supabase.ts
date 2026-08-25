@@ -10,12 +10,27 @@ export class SupabaseConfigError extends Error {}
  * supabase/schema.sql has RLS enabled with no policies, so this is deliberately the only
  * way in — never expose SUPABASE_SERVICE_ROLE_KEY to the browser or create an anon-key client.
  */
-export function getSupabaseClient() {
+function buildClient() {
   if (!SUPABASE_URL) throw new SupabaseConfigError("SUPABASE_URL is not configured");
   if (!SUPABASE_SERVICE_ROLE_KEY) throw new SupabaseConfigError("SUPABASE_SERVICE_ROLE_KEY is not configured");
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
   });
+}
+
+/**
+ * Typed off buildClient rather than annotated as ReturnType<typeof createClient>: spelling that
+ * annotation out drops createClient's generic defaults, and every caller's row types collapse to
+ * `never` — which type-checks as a cascade of unrelated errors in the report libs.
+ */
+let client: ReturnType<typeof buildClient> | null = null;
+
+export function getSupabaseClient() {
+  // Built once per process rather than per call. It is stateless here — persistSession is off and
+  // there is no per-user auth on it — so nothing leaks between requests, and one Overview render
+  // alone was constructing dozens of these.
+  if (!client) client = buildClient();
+  return client;
 }
 
 const SUPABASE_MAX_ROWS_PER_REQUEST = 1000;
