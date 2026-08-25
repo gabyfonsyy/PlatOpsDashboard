@@ -15,22 +15,27 @@ import { Copy } from "@/components/ui/Copy";
 import { OverviewQuickPanel } from "@/components/overview/OverviewQuickPanel";
 
 /**
- * Rendered BEFORE the Teams dropdown, so it is literally the first tab. It's the page the day
- * starts on, it's where signing in lands (see login/page.tsx), and it's where the brand mark in
- * the header goes back to — three routes to the same place, because it's the home of the app.
+ * Where signing in lands (see login/page.tsx) and where the brand mark goes back to.
+ *
+ * It is no longer the FIRST pill — Overview took that spot — but it is still the app's home in
+ * every other sense: the page the day is actually run from. The two are deliberately different
+ * questions ("what needs me" vs "what am I doing"), which is why both sit at the front of the bar.
  */
 const PRIMARY_NAV = { href: "/my-work", page: "home" } as const;
 
 /**
- * Labels come from lib/nav.ts, which carries both names for every page.
- *
- * Overview sits first, straight after My Work. It used to live inside the Teams dropdown as the
- * "cross-team rollup", which stopped being true when it became the command centre: it is no longer
- * about teams, it is the page you check to find out what needs you. Two clicks and a mental
- * detour through the wrong menu was the wrong home for it.
+ * The two pills before the Teams dropdown. Overview leads: it is the page that answers "what needs
+ * me today", so it is the first thing on the bar and the first thing read. It used to live INSIDE
+ * the Teams dropdown as the "cross-team rollup", which stopped being true when it became the
+ * command centre — it is not about teams at all any more.
  */
-const NAV_ITEMS = [
+const LEADING_NAV = [
   { href: "/", page: "overview" },
+  { href: PRIMARY_NAV.href, page: PRIMARY_NAV.page },
+] as const;
+
+/** Labels come from lib/nav.ts, which carries both names for every page. */
+const NAV_ITEMS = [
   { href: "/leave", page: "leave" },
   { href: "/rto", page: "rto" },
   { href: "/projects", page: "projects" },
@@ -140,18 +145,26 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
         </div>
       </header>
 
-      {/* Floating pill nav — lives outside the header, centered, straddling the boundary */}
-      <div className="relative z-30 -mt-5 flex justify-center px-6 pointer-events-none">
+      {/* Floating pill nav, centered under the header.
+          It used to be pulled UP by -mt-5 to straddle the header's bottom edge, which looked good
+          at six pills and broke at eight: the bar grew wide enough to reach the header's own
+          controls and sat on top of the theme switcher. A nav that covers a control is worse than
+          a nav that doesn't straddle, so it now sits cleanly below the boundary. */}
+      <div className="relative z-30 mt-3 flex justify-center px-6 pointer-events-none">
+        {/* No overflow-x here, deliberately: the Teams dropdown is absolutely positioned INSIDE
+            this nav, and a scroll container would clip it shut. Narrow windows overflow the bar
+            horizontally, which they did before this too. */}
         <nav className="pill-nav pointer-events-auto">
-          <Link
-            href={PRIMARY_NAV.href}
-            className={cn("pill", pathname === PRIMARY_NAV.href && "pill-active")}
-          >
-            <Copy
-              serious={PAGE_NAMES[PRIMARY_NAV.page].nav.serious}
-              playful={PAGE_NAMES[PRIMARY_NAV.page].nav.playful}
-            />
-          </Link>
+          {LEADING_NAV.map((item) => {
+            // "/" is a prefix of every path, so it has to match exactly or it lights up everywhere.
+            const active = item.href === "/" ? pathname === "/" : pathname === item.href;
+            const name = PAGE_NAMES[item.page].nav;
+            return (
+              <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>
+                <Copy serious={name.serious} playful={name.playful} />
+              </Link>
+            );
+          })}
 
           <div className="relative" ref={dropdownRef}>
             <button
@@ -186,9 +199,7 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
           </div>
 
           {NAV_ITEMS.map((item) => {
-            // "/" is a prefix of every path, so it has to match exactly or every page lights it up.
-            const active =
-              item.href === "/" ? pathname === "/" : pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
             const name = PAGE_NAMES[item.page].nav;
             return (
               <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>

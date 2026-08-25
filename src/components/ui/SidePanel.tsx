@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +14,17 @@ import { cn } from "@/lib/utils";
  * a plain overlay with the three behaviours that actually matter for a dialog — Escape closes,
  * focus moves inside on open and returns to the trigger on close, and the page behind stops
  * scrolling.
+ *
+ * ── It MUST be portalled, and this is not a style preference ───────────────────────────────────
+ * `backdrop-filter` on an ancestor makes that ancestor a CONTAINING BLOCK for `position: fixed`
+ * descendants — the fixed element stops being positioned against the viewport and is trapped
+ * inside the ancestor's box, at the ancestor's place in the stacking order. The app header uses
+ * `backdrop-blur-xl`, so a panel opened from a header button rendered INSIDE the header, clipped
+ * to it, with the page content drawing straight over the top. `inset-0` and `z-50` are both
+ * powerless against it; the only fix is to render outside that subtree.
+ *
+ * `transform` and `filter` on an ancestor do exactly the same thing. If this ever appears to be
+ * "behind the page" again, look for one of those three on a parent before touching z-index.
  */
 export function SidePanel({
   open,
@@ -27,6 +39,10 @@ export function SidePanel({
   description?: string;
   children: ReactNode;
 }) {
+  // Portals need a DOM target, which does not exist during SSR.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   const panelRef = useRef<HTMLDivElement>(null);
   // Where focus was before the panel opened, so closing puts it back on the button that opened it
   // rather than dumping the caret at the top of the document.
@@ -55,7 +71,9 @@ export function SidePanel({
     };
   }, [open, onClose]);
 
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <div
       className={cn(
         "fixed inset-0 z-50 transition-opacity duration-200",
@@ -97,6 +115,7 @@ export function SidePanel({
         {/* The panel scrolls, not the page behind it. */}
         <div className="flex-1 overflow-y-auto p-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
