@@ -5,16 +5,15 @@ import { getOverview, type OverviewData } from "@/lib/overview";
 import { getBriefing, type OverviewBriefing } from "@/lib/overview-ai";
 import {
   SECTION_ORDER,
-  VIEW_COOKIE,
   VIEW_COPY,
   greeting,
-  isOverviewView,
+  viewForTheme,
   voiceForView,
   type OverviewView,
   type SectionKey,
 } from "@/lib/overview-view";
+import { THEME_COOKIE } from "@/lib/theme";
 import { AssessmentHeader } from "@/components/overview/AssessmentHeader";
-import { ViewToggle } from "@/components/overview/ViewToggle";
 import { SectionCard } from "@/components/overview/SectionCard";
 import {
   FocusList,
@@ -40,27 +39,23 @@ import {
  * Only labels, section order and the AI's voice layer differ — see lib/overview-view.ts. Both are
  * assembled below from one `sections` map so the two orders cannot drift into two pages.
  *
+ * Which register you get FOLLOWS THE THEME: Gaby's View reads the Gaby register, Light and Dark
+ * read Professional. There is no separate toggle.
+ *
  * ── Live data, daily interpretation ────────────────────────────────────────────────────────────
  * The numbers are read on every request. The AI assessment is a once-a-day snapshot with its own
  * visible timestamp, so an old interpretation can never be mistaken for a live one.
  */
 
-export default async function OverviewPage({
-  searchParams,
-}: {
-  searchParams: Record<string, string | string[] | undefined>;
-}) {
+export default async function OverviewPage() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
   if (!email) return <p className="text-sm text-neutral-500">Sign in to see your overview.</p>;
 
-  // Param wins over cookie so a shared link opens in the register it was shared in.
-  const fromCookie = cookies().get(VIEW_COOKIE)?.value;
-  const view: OverviewView = isOverviewView(searchParams.view)
-    ? searchParams.view
-    : isOverviewView(fromCookie)
-      ? fromCookie
-      : "professional";
+  // The register follows the THEME. The cookie is a server-readable mirror of localStorage and can
+  // be one request stale after a theme change, which AssessmentHeader corrects.
+  const themeCookie = cookies().get(THEME_COOKIE)?.value;
+  const view: OverviewView = viewForTheme(themeCookie);
 
   const copy = VIEW_COPY[view];
   const firstName = session.user?.name?.split(" ")[0] ?? "there";
@@ -81,22 +76,15 @@ export default async function OverviewPage({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div className="min-w-0 flex-1">
-          <AssessmentHeader
-            view={view}
-            greeting={greeting()}
-            firstName={firstName}
-            dateLabel={dateLabel}
-            headline={briefing?.headline ?? ""}
-            generatedAt={briefing?.generatedAt ?? null}
-            hasBriefing={Boolean(briefing)}
-          />
-        </div>
-        <div className="pt-1">
-          <ViewToggle view={view} />
-        </div>
-      </div>
+      <AssessmentHeader
+        view={view}
+        greeting={greeting()}
+        firstName={firstName}
+        dateLabel={dateLabel}
+        headline={briefing?.headline ?? ""}
+        generatedAt={briefing?.generatedAt ?? null}
+        hasBriefing={Boolean(briefing)}
+      />
 
       {SECTION_ORDER[view].map((key) => sections[key])}
     </div>

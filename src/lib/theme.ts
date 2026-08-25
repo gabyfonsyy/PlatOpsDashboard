@@ -17,6 +17,30 @@ export const DEFAULT_THEME: Theme = "light";
 export const THEME_STORAGE_KEY = "platops-theme";
 
 /**
+ * The theme is ALSO mirrored into a cookie under this same name.
+ *
+ * localStorage is the source of truth and always will be — it is what the pre-hydration script
+ * reads, and it is what keeps the theme from flashing. The cookie exists for one reason: the
+ * SERVER needs to know the theme. The Overview picks which register of its daily AI assessment to
+ * fetch from the theme, and that fetch happens during the server render, long before any client
+ * code could tell it what localStorage says.
+ *
+ * Treat it as a cache of localStorage, never as the truth: it can be stale by exactly one request
+ * after a theme change, which is why ThemeProvider writes it eagerly and the Overview self-heals
+ * when it disagrees.
+ */
+export const THEME_COOKIE = THEME_STORAGE_KEY;
+
+/** Mirrors the theme into the cookie. Client-side only; safe to call repeatedly. */
+export function persistThemeCookie(theme: Theme): void {
+  try {
+    document.cookie = `${THEME_COOKIE}=${theme}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
+  } catch {
+    // Cookies blocked: the server falls back to the default register. Not worth failing over.
+  }
+}
+
+/**
  * Explicit opt-in to motion despite an OS `prefers-reduced-motion: reduce` setting.
  *
  * Respecting that preference is the correct default, but it must not be a prison: someone who

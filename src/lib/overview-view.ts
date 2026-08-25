@@ -8,23 +8,29 @@ import type { VoiceMode } from "@/lib/ai-voice";
  * modes call the same `getOverview`, read the same modules, compute the same numbers and link to
  * the same pages — so a figure can never say one thing in Professional and another in Gaby.
  *
- * ── Why a URL param and not the theme ──────────────────────────────────────────────────────────
- * There is already a "Gaby's View" THEME (lib/theme.ts), and it already drives the AI register
- * elsewhere via voiceForTheme. This is deliberately separate: the theme is how the whole app
- * looks, and this is which briefing you are reading on one page. Tying them would mean you could
- * not read the plain assessment without also changing the colour of every other page.
+ * ── The register follows the THEME ─────────────────────────────────────────────────────────────
+ * Gaby's View theme (`adhd`) reads the Gaby register; Light and Dark read Professional. There is
+ * no separate control, deliberately: the app already ties the AI's voice to the theme everywhere
+ * else through voiceForTheme, and a second switch that could disagree with the theme picker is one
+ * more thing to reason about for no gain.
  *
- * It lives in the URL rather than in client state because the briefing is fetched on the server:
- * the page has to know which register to read BEFORE it renders, or the first paint shows the
- * wrong one and snaps. A cookie carries the preference between visits; the param always wins.
+ * The theme lives in localStorage, which the server cannot read — and this page picks which cached
+ * assessment to fetch during the SERVER render. That is what THEME_COOKIE exists for: the theme is
+ * mirrored into a cookie so the server can see it. The cookie can be stale by exactly one request
+ * after a theme change, so the page also self-heals (see AssessmentHeader).
  */
 export const OVERVIEW_VIEWS = ["professional", "gaby"] as const;
 export type OverviewView = (typeof OVERVIEW_VIEWS)[number];
 
-export const VIEW_COOKIE = "platops-overview-view";
-
-export function isOverviewView(value: unknown): value is OverviewView {
-  return typeof value === "string" && (OVERVIEW_VIEWS as readonly string[]).includes(value);
+/**
+ * The register a theme implies. `adhd` is the stored key for Gaby's View — see the note on THEMES
+ * in lib/theme.ts for why that key was never renamed.
+ *
+ * Mirrors voiceForTheme in lib/ai-voice.ts exactly, and must keep doing so: they answer the same
+ * question ("is this Gaby's register?") for two different layers.
+ */
+export function viewForTheme(theme: string | undefined): OverviewView {
+  return theme === "adhd" ? "gaby" : "professional";
 }
 
 /** The AI register each view reads. Snapshots are cached per register — see lib/overview-ai.ts. */

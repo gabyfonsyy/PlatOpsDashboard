@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, RefreshCw, Sparkles } from "lucide-react";
 import { formatManilaDateTime } from "@/lib/format";
-import { voiceForView, type OverviewView } from "@/lib/overview-view";
+import { useTheme } from "@/components/theme/ThemeProvider";
+import { persistThemeCookie } from "@/lib/theme";
+import { viewForTheme, voiceForView, type OverviewView } from "@/lib/overview-view";
 
 /**
  * The greeting, the AI headline, and the controls for the daily snapshot.
@@ -39,6 +41,7 @@ export function AssessmentHeader({
   hasBriefing: boolean;
 }) {
   const router = useRouter();
+  const { theme, ready } = useTheme();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -68,13 +71,35 @@ export function AssessmentHeader({
     }
   }
 
+  /**
+   * Keeps the server's idea of the register in step with the actual theme.
+   *
+   * The register follows the theme, but the theme lives in localStorage and the page was rendered
+   * on the SERVER from a cookie mirror of it. That cookie is right almost always and wrong in two
+   * cases: the very first load after this shipped (no cookie yet), and the moment the theme is
+   * changed while sitting on this page. Both are corrected here — rewrite the cookie, refresh, and
+   * the server re-renders in the right register.
+   *
+   * Guarded on `ready` because `theme` is the default until ThemeProvider has adopted the real one;
+   * acting sooner would bounce every Gaby's View load through a needless refresh.
+   */
   useEffect(() => {
+    if (!ready) return;
+    const actual = viewForTheme(theme);
+    if (actual === view) return;
+    persistThemeCookie(theme);
+    router.refresh();
+  }, [ready, theme, view, router]);
+
+  useEffect(() => {
+    // Only ask once the rendered register is the right one — otherwise a mismatched first paint
+    // would spend a request generating a snapshot for the register we are about to leave.
+    if (ready && viewForTheme(theme) !== view) return;
     if (hasBriefing || asked.current) return;
     asked.current = true;
     void generate(false);
-    // Intentionally keyed on the register too: switching view needs its own day-one snapshot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasBriefing, view]);
+  }, [hasBriefing, view, ready, theme]);
 
   return (
     <div className="flex flex-col gap-3">
