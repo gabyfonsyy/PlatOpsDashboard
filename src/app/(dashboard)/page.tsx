@@ -1,116 +1,208 @@
-import Link from "next/link";
-import { getTeams } from "@/lib/teams";
-import { teamLabel } from "@/lib/utils";
-import { getTicketMetrics, getInsight } from "@/lib/metrics";
-import { resolveFilters } from "@/lib/date-ranges";
-import { formatDaysValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
-import { FilterBar } from "@/components/filters/FilterBar";
-import { MetricCard } from "@/components/dashboard/MetricCard";
-import { InsightPanel } from "@/components/dashboard/InsightPanel";
-import { PageTitle } from "@/components/ui/PageTitle";
+import { cookies } from "next/headers";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { getOverview, type OverviewData } from "@/lib/overview";
+import { getBriefing, type OverviewBriefing } from "@/lib/overview-ai";
+import {
+  SECTION_ORDER,
+  VIEW_COOKIE,
+  VIEW_COPY,
+  greeting,
+  isOverviewView,
+  voiceForView,
+  type OverviewView,
+  type SectionKey,
+} from "@/lib/overview-view";
+import { AssessmentHeader } from "@/components/overview/AssessmentHeader";
+import { ViewToggle } from "@/components/overview/ViewToggle";
+import { SectionCard } from "@/components/overview/SectionCard";
+import {
+  FocusList,
+  MyDayPanel,
+  OperationsPanel,
+  PriorityList,
+  ProsePanel,
+  StableList,
+  TeamPulsePanel,
+  WatchList,
+} from "@/components/overview/Panels";
 
-export default async function RollupPage({
+/**
+ * The Overview — a management command centre for an Engineering Lead, not a metrics page.
+ *
+ * ── What this page is ──────────────────────────────────────────────────────────────────────────
+ * An AGGREGATION LAYER. It owns no data and duplicates no module's functionality: every figure is
+ * read from the module that already computes it (see lib/overview.ts) and every card links back
+ * there. That is what stops it drifting out of agreement with the pages it summarises.
+ *
+ * ── Two registers ──────────────────────────────────────────────────────────────────────────────
+ * Professional and Gaby View render from the SAME OverviewData and the same briefing structure.
+ * Only labels, section order and the AI's voice layer differ — see lib/overview-view.ts. Both are
+ * assembled below from one `sections` map so the two orders cannot drift into two pages.
+ *
+ * ── Live data, daily interpretation ────────────────────────────────────────────────────────────
+ * The numbers are read on every request. The AI assessment is a once-a-day snapshot with its own
+ * visible timestamp, so an old interpretation can never be mistaken for a live one.
+ */
+
+export default async function OverviewPage({
   searchParams,
 }: {
   searchParams: Record<string, string | string[] | undefined>;
 }) {
-  const teams = await getTeams().catch(() => []);
+  const session = await getServerSession(authOptions);
+  const email = session?.user?.email;
+  if (!email) return <p className="text-sm text-neutral-500">Sign in to see your overview.</p>;
 
-  if (teams.length === 0) {
-    return (
-      <div className="flex flex-col gap-6">
-        <div>
-          <PageTitle page="overview" />
-          <p className="text-sm text-neutral-500 mt-1">Cross-team rollup — Jira metrics, insights, and capacity.</p>
-        </div>
-        <div className="card p-6 text-sm text-neutral-500">
-          No teams configured yet. Once the Apps Script backend is deployed and{" "}
-          <code className="text-xs bg-neutral-100 px-1 py-0.5 rounded">TEAMS_CONFIG</code> is populated, team
-          dashboards will appear here automatically.
-        </div>
-      </div>
-    );
-  }
+  // Param wins over cookie so a shared link opens in the register it was shared in.
+  const fromCookie = cookies().get(VIEW_COOKIE)?.value;
+  const view: OverviewView = isOverviewView(searchParams.view)
+    ? searchParams.view
+    : isOverviewView(fromCookie)
+      ? fromCookie
+      : "professional";
 
-  const { range, period } = resolveFilters(searchParams);
-  // One insight per team rather than one blended paragraph over all three. A sentence that has to
-  // be true of SE, DBA and DevOps at once ends up saying nothing about any of them, and the
-  // recommendations especially only mean something scoped to a team that can act on them.
-  const [rollupMetrics, insights, perTeamMetrics] = await Promise.all([
-    getTicketMetrics("ALL", range, period),
-    Promise.all(teams.map((t) => getInsight(`TEAM:${t.team_key}`))),
-    Promise.all(teams.map((t) => getTicketMetrics(t.team_key, range, period))),
-  ]);
+  const copy = VIEW_COPY[view];
+  const firstName = session.user?.name?.split(" ")[0] ?? "there";
+
+  const data = await getOverview(email);
+  // Never generates — that is the snapshot route's job, triggered by AssessmentHeader.
+  const briefing = await getBriefing(email, data.today, voiceForView(view));
+
+  const dateLabel = new Date().toLocaleDateString("en-US", {
+    timeZone: "Asia/Manila",
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+
+  const sections = buildSections(data, briefing, copy);
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
-          <PageTitle page="overview" />
-          <p className="text-sm text-neutral-500 mt-1">Cross-team rollup — Jira metrics, insights, and capacity.</p>
-        </div>
-        <FilterBar />
-      </div>
-
-      <div className="flex flex-col gap-3">
-        {teams.map((team, i) => (
-          <InsightPanel
-            key={team.team_key}
-            insight={insights[i]}
-            scope={`TEAM:${team.team_key}`}
-            label={teamLabel(team.team_name)}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <AssessmentHeader
+            view={view}
+            greeting={greeting()}
+            firstName={firstName}
+            dateLabel={dateLabel}
+            headline={briefing?.headline ?? ""}
+            generatedAt={briefing?.generatedAt ?? null}
+            hasBriefing={Boolean(briefing)}
           />
-        ))}
+        </div>
+        <div className="pt-1">
+          <ViewToggle view={view} />
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <MetricCard
-          label="Ticket Volume"
-          value={formatNumber(rollupMetrics.ticketsCreated)}
-          sublabel={`${formatNumber(rollupMetrics.ticketsResolvedInPeriod)} resolved`}
-          tooltip="Total tickets created across all teams during the selected period. The sublabel shows how many tickets were resolved during the period (by resolved date)."
-        />
-        <MetricCard
-          label="Lead Time"
-          value={formatDaysValue(rollupMetrics.leadTimeAvgMinutes)}
-          sublabel={formatDurationBreakdown(rollupMetrics.leadTimeAvgMinutes)}
-          tooltip="Average time from ticket creation to resolution, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes."
-        />
-        <MetricCard
-          label="Cycle Time"
-          value={formatDaysValue(rollupMetrics.cycleTimeAvgMinutes)}
-          sublabel={formatDurationBreakdown(rollupMetrics.cycleTimeAvgMinutes)}
-          tooltip="Average time from when work started (ticket left Backlog/To Do) to the end of that team's cycle — reaching review for SE, resolution for DBA and DevOps — across cycles that finished in the period. Shown in days."
-        />
-        <MetricCard
-          label="Backlog Aging"
-          value={formatPercent(rollupMetrics.backlogAgingRate)}
-          sublabel={`${formatNumber(rollupMetrics.overdueCount)} of ${formatNumber(rollupMetrics.ticketsResolvedInPeriod)} resolved overdue`}
-          tooltip="Overdue tickets ÷ total tickets resolved in the period, excluding Technical Story (internal engineering work, whose due dates are self-imposed). Overdue = resolved after the due date (resolved date > due date)."
-        />
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {teams.map((t, i) => {
-          const m = perTeamMetrics[i];
-          return (
-            <Link key={t.team_key} href={`/${t.team_key.toLowerCase()}`} className="card card-interactive p-5">
-              <p className="text-sm font-medium text-neutral-900">{teamLabel(t.team_name)}</p>
-              <p className="text-xs text-neutral-400 mt-0.5">{t.jira_project_key}</p>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
-                <div>
-                  <p className="text-xs text-neutral-400">Volume</p>
-                  <p className="font-medium text-neutral-900">{formatNumber(m.ticketsCreated)}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-neutral-400">Backlog Aging</p>
-                  <p className="font-medium text-neutral-900">{formatPercent(m.backlogAgingRate)}</p>
-                </div>
-              </div>
-            </Link>
-          );
-        })}
-      </div>
+      {SECTION_ORDER[view].map((key) => sections[key])}
     </div>
   );
+}
+
+type Copy = (typeof VIEW_COPY)[OverviewView];
+
+/**
+ * Every section, built once and rendered in whichever order the register asks for.
+ *
+ * Keyed rather than inlined so the two orders in SECTION_ORDER are the ONLY difference between the
+ * modes — if a section were written twice, the two copies would eventually disagree, which is
+ * exactly the "two dashboards" outcome the brief rules out.
+ */
+function buildSections(
+  data: OverviewData,
+  briefing: OverviewBriefing | null,
+  copy: Copy
+): Record<SectionKey, React.ReactNode> {
+  return {
+    priority: (
+      <SectionCard
+        key="priority"
+        title={copy.priority.title}
+        subtitle={copy.priority.subtitle}
+        tone={data.attention.some((a) => a.priority === "high") || briefing?.priorityAttention.some((p) => p.urgency === "urgent") ? "attention" : "default"}
+      >
+        <PriorityList
+          items={data.attention}
+          aiItems={briefing?.priorityAttention ?? []}
+          emptyMessage={copy.empty.priority}
+        />
+      </SectionCard>
+    ),
+
+    myDay: (
+      <SectionCard
+        key="myDay"
+        title={copy.myDay.title}
+        subtitle={copy.myDay.subtitle}
+        action={{ label: "My Work", href: "/my-work" }}
+      >
+        <MyDayPanel day={data.myDay} note={briefing?.myDay ?? ""} />
+      </SectionCard>
+    ),
+
+    teamPulse: (
+      <SectionCard
+        key="teamPulse"
+        title={copy.teamPulse.title}
+        subtitle={copy.teamPulse.subtitle}
+        action={{ label: "Team Stats", href: "/teams" }}
+      >
+        <TeamPulsePanel pulse={data.pulse} metrics={data.metrics} note={briefing?.teamPulse ?? ""} />
+      </SectionCard>
+    ),
+
+    systemPulse: (
+      <SectionCard key="systemPulse" title={copy.systemPulse.title} subtitle={copy.systemPulse.subtitle}>
+        <ProsePanel
+          text={briefing?.systemPulse ?? ""}
+          fallback="No system-level pattern identified in the available data."
+        />
+      </SectionCard>
+    ),
+
+    momentum: (
+      <SectionCard key="momentum" title={copy.momentum.title} subtitle={copy.momentum.subtitle}>
+        <ProsePanel
+          text={briefing?.sustainableMomentum ?? ""}
+          fallback="Not enough data to assess sustainability — this dashboard holds no hours or after-hours data for the team."
+        />
+      </SectionCard>
+    ),
+
+    watch: (
+      <SectionCard key="watch" title={copy.watch.title} subtitle={copy.watch.subtitle}>
+        <WatchList notes={briefing?.keepAnEyeOn ?? []} emptyMessage={copy.empty.watch} />
+      </SectionCard>
+    ),
+
+    stable: (
+      <SectionCard key="stable" title={copy.stable.title} subtitle={copy.stable.subtitle}>
+        <StableList
+          statements={data.stable}
+          aiStatements={briefing?.noIntervention ?? []}
+          emptyMessage={copy.empty.stable}
+        />
+      </SectionCard>
+    ),
+
+    focus: (
+      <SectionCard key="focus" title={copy.focus.title} subtitle={copy.focus.subtitle}>
+        <FocusList moves={briefing?.recommendedFocus ?? []} emptyMessage={copy.empty.focus} />
+      </SectionCard>
+    ),
+
+    operations: (
+      <SectionCard key="operations" title={copy.operations.title} subtitle={copy.operations.subtitle}>
+        <OperationsPanel
+          rows={data.operations}
+          planned={data.planned}
+          emptyMessage="No active projects on your board."
+        />
+      </SectionCard>
+    ),
+  };
 }
