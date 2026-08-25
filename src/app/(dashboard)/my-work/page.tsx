@@ -115,8 +115,13 @@ export default async function MyWorkPage() {
       {/* A. Workday, with the scorecards filling the other half of the same row.
           The card was full-width and mostly empty; halving it puts the day's numbers on the same
           line of sight as the Start/End button instead of a scroll below it. Card order is Gaby's:
-          Open Today and In Focus on top, Ahead and Yesterday under them. */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+          Open Today and In Focus on top, Ahead and Yesterday under them.
+
+          No `items-start`: the two columns stretch to the same height, so the workday card is
+          exactly as tall as a scorecard column (Open Today + Ahead stacked). The card fills that
+          height itself — a line of the PlatOps philosophy while the review is closed, the
+          scrollable last-7-days once it is open. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <WorkdayBar
           openSession={openSession}
           todaySessions={todaySessions}

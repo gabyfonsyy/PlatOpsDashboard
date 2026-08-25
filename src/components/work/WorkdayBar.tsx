@@ -98,9 +98,10 @@ export function WorkdayBar({
     );
 
   const needsAttention = recentDays.filter((d) => d.flags.length > 0).length;
+  const line = philosophyLine(today);
 
   return (
-    <div className="card p-5 flex flex-col gap-3">
+    <div className="card p-5 flex flex-col gap-3 h-full">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <span
@@ -150,12 +151,35 @@ export function WorkdayBar({
 
       {error && <p className="text-xs text-red-600">{error}</p>}
 
-      {/* Collapsed by default. The attention count is on the closed state deliberately — a
-          forgotten End Work is exactly the thing you won't go looking for. */}
+      {/* The middle of the card, sized by whatever is left after the status row and the footer.
+          Closed, it holds a line of the philosophy rather than dead space — the card is now as
+          tall as two scorecards and would otherwise be mostly empty. Open, the same box becomes
+          the scrollable review, so expanding never changes the card's height and never pushes the
+          scorecards beside it out of alignment. */}
+      <div className="flex-1 min-h-0 border-t border-line/70 pt-3">
+        {reviewOpen ? (
+          <div className="h-full overflow-y-auto divide-y divide-neutral-100 pr-1">
+            {recentDays.map((day) => (
+              <DayRow key={day.work_date} day={day} today={today} onError={setError} />
+            ))}
+          </div>
+        ) : (
+          <div className="h-full flex items-center">
+            <blockquote className="text-sm text-neutral-500 leading-relaxed">
+              <p className="text-neutral-700">{line.text}</p>
+              {line.note && <p className="text-xs text-neutral-400 mt-1">{line.note}</p>}
+            </blockquote>
+          </div>
+        )}
+      </div>
+
+      {/* Footer, not a header: closed, the thing above it is a quote, and "Last 7 days" sitting
+          over a quote reads as a label for it. The attention count stays visible on the closed
+          state deliberately — a forgotten End Work is exactly what you never go looking for. */}
       <button
         onClick={() => setReviewOpen((v) => !v)}
         aria-expanded={reviewOpen}
-        className="flex items-center justify-between gap-2 w-full border-t border-line/70 pt-3 text-left group"
+        className="flex items-center justify-between gap-2 w-full border-t border-line/70 pt-3 text-left group shrink-0"
       >
         <span className="text-xs font-medium text-neutral-500 uppercase tracking-wide group-hover:text-neutral-700 transition-colors">
           Last 7 days
@@ -175,16 +199,62 @@ export function WorkdayBar({
           />
         </span>
       </button>
-
-      {reviewOpen && (
-        <div className="divide-y divide-neutral-100 -mt-1">
-          {recentDays.map((day) => (
-            <DayRow key={day.work_date} day={day} today={today} onError={setError} />
-          ))}
-        </div>
-      )}
     </div>
   );
+}
+
+/**
+ * The lines shown in the closed card, drawn from the PlatOps operating philosophy Gaby wrote for
+ * the Overview's daily assessment — the same principles the model is briefed on in
+ * lib/overview-ai.ts, in her words rather than paraphrased.
+ *
+ * Deliberately NOT motivational filler. The card had dead space and the honest thing to put in it
+ * is the standard the work is actually held to; "you've got this" in an operations tool is noise,
+ * and noise in a place you look every morning stops being read within a week.
+ *
+ * `note` is optional and carries the consequence, so a line can state a principle without the
+ * principle having to carry its own explanation.
+ */
+const PHILOSOPHY: { text: string; note?: string }[] = [
+  {
+    text: "Optimise the system, not the person.",
+    note: "When the same issue keeps needing someone to catch it, the catching isn't the fix.",
+  },
+  {
+    text: "Work has to get done — but the system shouldn't depend on unsustainable effort.",
+  },
+  {
+    text: "Passion and determination keep a team going.",
+    note: "The leadership question is how to help them sustain it without individual heroics.",
+  },
+  {
+    text: "Someone failing in a healthy system and someone compensating for an unhealthy one look identical in the numbers.",
+    note: "They need opposite responses.",
+  },
+  {
+    text: "High workload isn't poor performance, and high output isn't automatically healthy.",
+    note: "Ask whether it can be maintained, not whether it happened.",
+  },
+  {
+    text: "How do we make this easier, more reliable, or more sustainable next time?",
+  },
+  {
+    text: "Monitoring is sometimes the whole intervention.",
+    note: "Not everything that moved needs you to do something about it.",
+  },
+];
+
+/**
+ * One line per day, chosen from the date rather than at random.
+ *
+ * Math.random() here would differ between the server render and hydration and React would warn
+ * about the mismatch — and beyond that, a line that changes on every refresh is wallpaper. Keyed
+ * on the Manila date, it is the same all day and different tomorrow.
+ */
+function philosophyLine(isoDate: string): { text: string; note?: string } {
+  let hash = 0;
+  for (let i = 0; i < isoDate.length; i++) hash = (hash * 31 + isoDate.charCodeAt(i)) >>> 0;
+  return PHILOSOPHY[hash % PHILOSOPHY.length];
 }
 
 /**
