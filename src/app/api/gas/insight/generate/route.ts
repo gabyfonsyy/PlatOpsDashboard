@@ -10,7 +10,10 @@ import { isVoiceMode } from "@/lib/ai-voice";
  * insight. Exists because the daily 06:00 trigger was removed: insights are now generated when
  * somebody asks for one, and served from cache on every page view after that.
  *
- * Body: { scope: "ROLLUP:ALL" | "TEAM:<key>", force?: boolean }
+ * Body: { scope: "TEAM:<key>" | "ALL", force?: boolean }
+ *
+ * Scopes are per-team. "ALL" generates every team in one pass (one AI request each); the old
+ * "ROLLUP:ALL" blended-paragraph scope is gone and now resolves to the same thing.
  *
  * Without `force`, GAS compares a fingerprint of the metrics it's about to send against the one
  * stored with the cached insight, and skips the model call entirely if nothing moved. So this

@@ -49,11 +49,29 @@ export type AssigneeMetric = {
 
 export type InsightFlag = { employee: string; metric: string; severity: string; detail: string; code?: string };
 
+/**
+ * One entry in an insight's "What to improve" list.
+ *
+ * `evidence` is written by detectOpportunities_ in GAS, not by the model — it is the sentence a
+ * reader is meant to trust, so it comes from the code that measured it. `title` and `action` are
+ * the model's, constrained to the signal that produced them.
+ */
+export type InsightRecommendation = {
+  /** The deterministic signal code this traces back to, e.g. HOLD_REASON_CONCENTRATION. */
+  signal: string;
+  title: string;
+  category: "automation" | "process" | "systems" | "documentation";
+  evidence: string;
+  action: string;
+};
+
 export type CachedInsight = {
   scope: string;
   period: string;
   narrative: string;
   flags: InsightFlag[];
+  /** Empty for insights generated before recommendations shipped, and for a team with no signals. */
+  recommendations: InsightRecommendation[];
   generatedAt: string;
   status: "SUCCESS" | "FAILED";
 } | null;

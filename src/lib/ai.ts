@@ -25,8 +25,10 @@ const AI_API_URL = "https://api.groq.com/openai/v1/chat/completions";
  * decides whether a feature is affordable, so it's explicit per call site rather than global.
  */
 export const AI_MODELS = {
-  fast: "llama-3.1-8b-instant",
-  deep: "llama-3.3-70b-versatile",
+  // Repointed 2026-08-25: Groq retired both Llama ids and they 404 as model_not_found. See the
+  // note in gas/AiClient.gs — these two must stay in step with it.
+  fast: "openai/gpt-oss-20b",
+  deep: "openai/gpt-oss-120b",
 } as const;
 
 export type AiTier = keyof typeof AI_MODELS;
