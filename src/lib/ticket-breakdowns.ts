@@ -11,12 +11,17 @@ import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString } from "@/lib/manila-date";
 
 /**
- * Labels stripped out of every Product+Label analysis on these pages.
+ * Labels stripped out of every Product+Label analysis AND every ticket list on these pages.
  *
- * All eight are workflow/automation bookkeeping — they record what a process did to a ticket, not
- * what the ticket was about. Left in, they dominate the rankings (they are applied broadly and
+ * All of them are workflow/automation bookkeeping — they record what a process did to a ticket,
+ * not what the ticket was about. Left in, they dominate the rankings (they are applied broadly and
  * near-randomly with respect to subject matter) and bury the labels that actually classify work.
- * Requested by Gaby 2026-08-24.
+ * Requested by Gaby 2026-08-24, extended 2026-08-25.
+ *
+ * This one list is the single source of truth: `meaningfulLabels` is applied both to the ranking
+ * tables and to the Labels column of every ticket table (via toTicket), and ComboTable's caption
+ * renders from it — so adding a label here takes effect everywhere at once and the prose cannot
+ * drift from the behaviour.
  *
  * Distinct from the "-ops" department-tag filter in lib/lead-cycle-time.ts, which drops team tags
  * (se-ops, hr-ops). Both exclusions answer "is this label a classification of the work?" — they
@@ -31,7 +36,21 @@ export const ANALYSIS_EXCLUDED_LABELS = [
   "jira_escalated",
   "update-companypolicy",
   "expedite",
+  // Added 2026-08-25 — same rationale: alerting, routing and triage bookkeeping.
+  "p1-alerted",
+  "acc-d1se",
+  "decode",
+  "routed-secops",
+  "triage-complete",
 ];
+
+/**
+ * How many tickets a drill-down list carries. Was 25, raised 2026-08-25 when the ticket tables
+ * became filterable: a filter over the 25 most recent rows searches almost nothing, and the point
+ * of the filter is finding a specific ticket in the month. The tables say "showing N of M" when
+ * this cap actually bites, so a truncated list never reads as a complete one.
+ */
+export const BREAKDOWN_TICKET_LIMIT = 500;
 
 const EXCLUDED_LABEL_SET = new Set(ANALYSIS_EXCLUDED_LABELS.map((l) => l.toLowerCase()));
 
@@ -300,7 +319,7 @@ export async function getEscalationReport(
       tickets: escalated
         .slice()
         .sort(byResolvedDesc)
-        .slice(0, 25)
+        .slice(0, BREAKDOWN_TICKET_LIMIT)
         .map((r) => toTicket(r, teamConfig, escalationTargets(r.escalation_value).join(", "), null)),
     };
   } catch {
@@ -325,6 +344,12 @@ export type FcrReport = {
   resolvedBySeRate: number | null;
   /** In the SE-resolved set only because FCR=Yes, despite having been escalated. */
   escalatedButFcrYes: number;
+  /**
+   * The actual tickets behind that count, so the inconsistency can be corrected in Jira rather
+   * than just measured. Escalation targets are kept in `detail` — that is the field that has to
+   * be reconciled against FCR = Yes, so it belongs in front of whoever is doing the correcting.
+   */
+  escalatedButFcrYesTickets: BreakdownTicket[];
   byProductLabel: ComboRow[];
   byProduct: CountRow[];
   byAssignee: CountRow[];
@@ -334,7 +359,8 @@ export type FcrReport = {
 
 const EMPTY_FCR: Omit<FcrReport, "team" | "range" | "period" | "issueType"> = {
   assigneeLabel: "Assignee", resolvedInPeriod: 0, fcrYesTickets: 0, fcrRate: null,
-  resolvedBySeTickets: 0, resolvedBySeRate: null, escalatedButFcrYes: 0, byProductLabel: [],
+  resolvedBySeTickets: 0, resolvedBySeRate: null, escalatedButFcrYes: 0,
+  escalatedButFcrYesTickets: [], byProductLabel: [],
   byProduct: [], byAssignee: [], byIssueType: [], tickets: [],
 };
 
@@ -351,7 +377,7 @@ export async function getFcrReport(
     const fcrYes = rows.filter(isFcrYes);
     // "Resolved by SE" per Gaby: it never left the team, OR it was first-contact resolved anyway.
     const resolvedBySe = rows.filter((r) => !isRealEscalation(r.escalation_value) || isFcrYes(r));
-    const escalatedButFcrYes = rows.filter((r) => isRealEscalation(r.escalation_value) && isFcrYes(r)).length;
+    const escalatedButFcrYesRows = rows.filter((r) => isRealEscalation(r.escalation_value) && isFcrYes(r));
 
     return {
       team, range, period, issueType: issueType ?? null,
@@ -361,7 +387,12 @@ export async function getFcrReport(
       fcrRate: rows.length ? round4(fcrYes.length / rows.length) : null,
       resolvedBySeTickets: resolvedBySe.length,
       resolvedBySeRate: rows.length ? round4(resolvedBySe.length / rows.length) : null,
-      escalatedButFcrYes,
+      escalatedButFcrYes: escalatedButFcrYesRows.length,
+      escalatedButFcrYesTickets: escalatedButFcrYesRows
+        .slice()
+        .sort(byResolvedDesc)
+        .slice(0, BREAKDOWN_TICKET_LIMIT)
+        .map((r) => toTicket(r, teamConfig, escalationTargets(r.escalation_value).join(", "), null)),
       byProductLabel: productLabelCombos(resolvedBySe).slice(0, 15),
       byProduct: toCountRows(groupCounts(resolvedBySe, (r) => r.product || "(none)"), resolvedBySe.length).slice(0, 10),
       byAssignee: toCountRows(assigneeCounts(resolvedBySe, teamConfig), resolvedBySe.length).slice(0, 10),
@@ -369,7 +400,7 @@ export async function getFcrReport(
       tickets: resolvedBySe
         .slice()
         .sort(byResolvedDesc)
-        .slice(0, 25)
+        .slice(0, BREAKDOWN_TICKET_LIMIT)
         .map((r) => toTicket(r, teamConfig, isFcrYes(r) ? "FCR = Yes" : "Not escalated", null)),
     };
   } catch {

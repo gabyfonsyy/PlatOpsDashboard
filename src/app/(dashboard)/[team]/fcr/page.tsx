@@ -61,11 +61,16 @@ export default async function FcrPage({
           sublabel={`${formatNumber(report.resolvedBySeTickets)} of ${formatNumber(report.resolvedInPeriod)} resolved`}
           tooltip="Tickets the team finished itself: Ticket Escalation is CA, SE, N/A or blank, OR First Contact Resolution = Yes. Broader than FCR Rate, which counts only the FCR = Yes flag."
         />
+        {/* Anchors to the table further down rather than opening a separate page: the job here is
+            correcting these tickets in Jira, and the surrounding rates are the context for deciding
+            which ones are actually wrong. The link is dropped when the count is zero so the card
+            never invites a click that goes nowhere. */}
         <MetricCard
           label="Escalated but FCR = Yes"
           value={formatNumber(report.escalatedButFcrYes)}
-          sublabel="counted by the OR clause"
-          tooltip="Tickets that were escalated yet still flagged First Contact Resolution = Yes. They only reach the Resolved-by-SE set through the FCR half of the rule, so a large number here usually means the two fields are being filled in inconsistently."
+          sublabel={report.escalatedButFcrYes ? "click to review and correct" : "none in this period"}
+          href={report.escalatedButFcrYes ? "#escalated-but-fcr-yes" : undefined}
+          tooltip="Tickets that were escalated yet still flagged First Contact Resolution = Yes. They only reach the Resolved-by-SE set through the FCR half of the rule, so a large number here usually means the two fields are being filled in inconsistently. Click to list them and correct them in Jira. Measured 2026-08-25: this last occurred in Sep 2025 — since then FCR = No matches the escalated set exactly, so recent periods read zero."
         />
         <MetricCard
           label="Top Product"
@@ -90,11 +95,27 @@ export default async function FcrPage({
         <CountRankTable title="By Issue Type" keyLabel="Issue Type" rows={report.byIssueType} />
       </div>
 
+      {report.escalatedButFcrYes > 0 && (
+        <BreakdownTicketsTable
+          id="escalated-but-fcr-yes"
+          title="Escalated but FCR = Yes — needs review"
+          description="These tickets are marked First Contact Resolution = Yes despite having been escalated, so the two fields disagree. Open a ticket key to correct it in Jira; the number above updates on the next sync."
+          tickets={report.escalatedButFcrYesTickets}
+          totalCount={report.escalatedButFcrYes}
+          assigneeLabel={report.assigneeLabel}
+          detailLabel="Escalated To"
+          jiraBaseUrl={process.env.JIRA_BASE_URL}
+        />
+      )}
+
       <BreakdownTicketsTable
         title="Most Recently Resolved by SE"
+        description="Filter any column to find a specific ticket. Workflow labels are excluded from the Labels column, same as the ranking tables above."
         tickets={report.tickets}
+        totalCount={report.resolvedBySeTickets}
         assigneeLabel={report.assigneeLabel}
         detailLabel="Why It Counts"
+        emptyMessage="Nothing resolved in-team this period."
         jiraBaseUrl={process.env.JIRA_BASE_URL}
       />
     </div>

@@ -1,5 +1,5 @@
-import type { CountRow, ComboRow, BreakdownTicket } from "@/lib/ticket-breakdowns";
-import { formatNumber, formatPercent, formatMinutesDecimalValue, formatDurationBreakdown, formatManilaDate } from "@/lib/format";
+import { ANALYSIS_EXCLUDED_LABELS, type CountRow, type ComboRow } from "@/lib/ticket-breakdowns";
+import { formatNumber, formatPercent } from "@/lib/format";
 
 /**
  * Count-ranked breakdown — the counting counterpart to LeadCycleTimeRankTable, which ranks by
@@ -77,8 +77,11 @@ export function ComboTable({ title, rows }: { title: string; rows: ComboRow[] })
       <div className="px-4 py-3 border-b border-neutral-200">
         <h3 className="text-sm font-semibold text-neutral-900">{title}</h3>
         <p className="text-xs text-neutral-400 mt-0.5">
-          Workflow labels (automation-done, ffup-1/2, autoclose-nonresponse, crf, jira_escalated,
-          update-companypolicy, expedite) are excluded — they tag process, not subject matter.
+          {/* Rendered from ANALYSIS_EXCLUDED_LABELS rather than retyped: this caption drifted out of
+              date the first time the list was extended, and a caption that lies about a filter is
+              worse than no caption. */}
+          Workflow labels ({ANALYSIS_EXCLUDED_LABELS.join(", ")}) are excluded — they tag process,
+          not subject matter.
         </p>
       </div>
       <table className="w-full text-sm">
@@ -119,87 +122,8 @@ export function ComboTable({ title, rows }: { title: string; rows: ComboRow[] })
   );
 }
 
-/**
- * Ticket list shared by the escalation / FCR / on-hold drill-downs. `detailLabel` names whatever
- * the report put in `detail` (escalation targets, why a ticket counted as SE-resolved); passing
- * null drops the column entirely rather than rendering an empty one.
- */
-export function BreakdownTicketsTable({
-  title,
-  tickets,
-  assigneeLabel,
-  detailLabel,
-  showMinutes = false,
-  jiraBaseUrl,
-}: {
-  title: string;
-  tickets: BreakdownTicket[];
-  assigneeLabel: string;
-  detailLabel: string | null;
-  showMinutes?: boolean;
-  jiraBaseUrl?: string;
-}) {
-  const columns = 5 + (detailLabel ? 1 : 0) + (showMinutes ? 1 : 0);
-  return (
-    <div className="card overflow-x-auto">
-      <div className="px-4 py-3 border-b border-neutral-200">
-        <h3 className="text-sm font-semibold text-neutral-900">{title}</h3>
-      </div>
-      <table className="w-full text-sm">
-        <thead className="bg-neutral-50 border-b border-neutral-200">
-          <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
-            <th className="px-4 py-3">Ticket</th>
-            <th className="px-4 py-3">{assigneeLabel}</th>
-            <th className="px-4 py-3">Product</th>
-            <th className="px-4 py-3">Labels</th>
-            {detailLabel && <th className="px-4 py-3">{detailLabel}</th>}
-            {showMinutes && <th className="px-4 py-3">On Hold</th>}
-            <th className="px-4 py-3">Resolved</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-neutral-100">
-          {tickets.length === 0 ? (
-            <tr>
-              <td colSpan={columns} className="px-4 py-6 text-center text-neutral-400">
-                No tickets for this period.
-              </td>
-            </tr>
-          ) : (
-            tickets.map((t) => (
-              <tr key={t.issueKey}>
-                <td className="px-4 py-3 font-medium text-neutral-900 whitespace-nowrap">
-                  {jiraBaseUrl ? (
-                    <a
-                      href={`${jiraBaseUrl.replace(/\/$/, "")}/browse/${t.issueKey}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-sprout-700 hover:underline"
-                    >
-                      {t.issueKey}
-                    </a>
-                  ) : (
-                    t.issueKey
-                  )}
-                  {t.issueType && <span className="block text-xs text-neutral-400 font-normal">{t.issueType}</span>}
-                </td>
-                <td className="px-4 py-3 whitespace-nowrap">{t.assignee}</td>
-                <td className="px-4 py-3 whitespace-nowrap">{t.product}</td>
-                <td className="px-4 py-3 text-xs text-neutral-500">{t.labels || "—"}</td>
-                {detailLabel && <td className="px-4 py-3 whitespace-nowrap">{t.detail || "—"}</td>}
-                {showMinutes && (
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    {t.minutes === null ? "—" : formatMinutesDecimalValue(t.minutes)}{" "}
-                    {t.minutes !== null && (
-                      <span className="text-neutral-400">({formatDurationBreakdown(t.minutes)})</span>
-                    )}
-                  </td>
-                )}
-                <td className="px-4 py-3 whitespace-nowrap">{formatManilaDate(t.resolvedAt)}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+// BreakdownTicketsTable moved to ./BreakdownTicketsTable.tsx when it gained per-column filters:
+// filtering needs client state, and marking this whole module "use client" would have dragged
+// CountRankTable and ComboTable across the boundary for no reason. Re-exported so the drill-down
+// pages keep importing all three from one place.
+export { BreakdownTicketsTable } from "@/components/dashboard/BreakdownTicketsTable";
