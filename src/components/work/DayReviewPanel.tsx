@@ -15,9 +15,13 @@ import { cn } from "@/lib/utils";
  * two-column band on a page whose job is answering "what needs me now?" every morning. Behind a
  * button they cost nothing until wanted, and the board gets its space back.
  *
- * Two triggers, one panel, because they are genuinely two tasks — but they share a panel rather
- * than getting one each, since looking at the mirror right after rating the day is the natural
- * order and forcing a close-then-open between them would be busywork.
+ * ONE trigger, two tabs inside. The tabs live in the panel rather than on the page because the
+ * page header is not where a once-a-day task earns two buttons — but the check-in still has to be
+ * reachable, and a tab is the cheapest way to say "this is also here".
+ *
+ * The button carries a dot when today's check-in is unanswered. Without it, collapsing to a single
+ * Work Mirror button would remove the only thing on the page that ever mentions the check-in, and
+ * a prompt nobody is reminded of is a prompt nobody answers.
  */
 export function DayReviewPanel({
   checkin,
@@ -26,27 +30,32 @@ export function DayReviewPanel({
   checkin: WorkCheckin | null;
   daysAvailable: number;
 }) {
-  const [tab, setTab] = useState<"checkin" | "mirror" | null>(null);
+  const [open, setOpen] = useState(false);
+  // Opens on the tab the button names. Landing on the check-in after clicking "Work Mirror" would
+  // read as the wrong panel having opened.
+  const [tab, setTab] = useState<"checkin" | "mirror">("mirror");
   const mood = checkin ? moodByCode(checkin.mood) : null;
 
   return (
     <>
-      <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={() => setTab("checkin")} className="btn-secondary py-1.5 px-3 text-xs">
-          <HeartPulse className="w-3.5 h-3.5" />
-          {/* Showing today's answer on the button is what stops the check-in being forgotten:
-              otherwise there is no signal anywhere on the page that it is still unanswered. */}
-          {checkin ? `Today: ${mood?.emoji ?? ""} ${mood?.label ?? checkin.mood}` : "How was work today?"}
-        </button>
-        <button onClick={() => setTab("mirror")} className="btn-secondary py-1.5 px-3 text-xs">
-          <Sparkles className="w-3.5 h-3.5" />
-          Work Mirror
-        </button>
-      </div>
+      <button
+        onClick={() => setOpen(true)}
+        className="btn-secondary py-1.5 px-3 text-xs relative"
+        title={checkin ? `Today's check-in: ${mood?.label ?? checkin.mood}` : "Today's check-in is still unanswered"}
+      >
+        <Sparkles className="w-3.5 h-3.5" />
+        Work Mirror
+        {!checkin && (
+          <span
+            className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-500"
+            aria-label="Check-in not answered yet"
+          />
+        )}
+      </button>
 
       <SidePanel
-        open={tab !== null}
-        onClose={() => setTab(null)}
+        open={open}
+        onClose={() => setOpen(false)}
         title={tab === "mirror" ? "Work Mirror" : "How was work today?"}
         description={
           tab === "mirror"
@@ -60,7 +69,9 @@ export function DayReviewPanel({
               onClick={() => setTab("checkin")}
               className={cn("pill", tab === "checkin" && "pill-active")}
             >
+              <HeartPulse className="w-3.5 h-3.5" />
               Check-in
+              {!checkin && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />}
             </button>
             <button
               onClick={() => setTab("mirror")}

@@ -112,52 +112,55 @@ export default async function MyWorkPage() {
         <DayReviewPanel checkin={checkin} daysAvailable={history.length} />
       </div>
 
-      {/* A. Workday */}
-      <WorkdayBar
-        openSession={openSession}
-        todaySessions={todaySessions}
-        recentDays={recentDays}
-        today={today}
-      />
+      {/* A. Workday, with the scorecards filling the other half of the same row.
+          The card was full-width and mostly empty; halving it puts the day's numbers on the same
+          line of sight as the Start/End button instead of a scroll below it. Card order is Gaby's:
+          Open Today and In Focus on top, Ahead and Yesterday under them. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        <WorkdayBar
+          openSession={openSession}
+          todaySessions={todaySessions}
+          recentDays={recentDays}
+          today={today}
+        />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard
-          label="In Focus"
-          value={String(focusOpen.length)}
-          sublabel={focusOpen.length ? focusOpen[0].title : "nothing claimed yet"}
-          tooltip="Open tasks in the Focus lane — the 1–2 things that actually deserve today."
-          className={focusOpen.length > 0 && focusOpen.length <= 3 ? "adhd-happy" : undefined}
-        />
-        <MetricCard
-          label="Open Today"
-          value={String(openTasks.length)}
-          sublabel={`${doneToday} done`}
-          tooltip="Everything not yet finished or deferred on today's board."
-        />
-        {/* Replaces the old Waiting card: what's planned is the question this page couldn't answer
-            before, and Waiting is already visible as its own lane on the board below. */}
-        <MetricCard
-          label="Ahead"
-          value={String(upcoming.length)}
-          sublabel={
-            overdue.length
-              ? `${overdue.length} unfinished from earlier`
-              : nextDay
-                ? `next: ${dayLabel(nextDay, today)}`
-                : "nothing planned yet"
-          }
-          tooltip="Open tasks dated after today, plus anything still open from an earlier day. Neither is on today's board until you move it there."
-        />
-        <MetricCard
-          label="Yesterday"
-          value={yesterday ? formatDuration(yesterday.durationMinutes) : "—"}
-          sublabel={
-            yesterday
-              ? `${yesterday.tasksCompleted} done${yesterday.mood ? ` · ${moodByCode(yesterday.mood)?.emoji ?? ""}` : ""}`
-              : "no history yet"
-          }
-          tooltip="Your previous tracked day — duration, tasks completed, and how you rated it."
-        />
+        <div className="grid grid-cols-2 gap-4">
+          <MetricCard
+            label="Open Today"
+            value={String(openTasks.length)}
+            sublabel={`${doneToday} done`}
+            tooltip="Everything not yet finished or deferred on today's board."
+          />
+          <MetricCard
+            label="In Focus"
+            value={String(focusOpen.length)}
+            sublabel={focusOpen.length ? focusOpen[0].title : "nothing claimed yet"}
+            tooltip="Open tasks in the Focus lane — the 1–2 things that actually deserve today."
+            className={focusOpen.length > 0 && focusOpen.length <= 3 ? "adhd-happy" : undefined}
+          />
+          <MetricCard
+            label="Ahead"
+            value={String(upcoming.length)}
+            sublabel={
+              overdue.length
+                ? `${overdue.length} unfinished from earlier`
+                : nextDay
+                  ? `next: ${dayLabel(nextDay, today)}`
+                  : "nothing planned yet"
+            }
+            tooltip="Open tasks dated after today, plus anything still open from an earlier day. Neither is on today's board until you move it there."
+          />
+          <MetricCard
+            label="Yesterday"
+            value={yesterday ? formatDuration(yesterday.durationMinutes) : "—"}
+            sublabel={
+              yesterday
+                ? `${yesterday.tasksCompleted} done${yesterday.mood ? ` · ${moodByCode(yesterday.mood)?.emoji ?? ""}` : ""}`
+                : "no history yet"
+            }
+            tooltip="Your previous tracked day — duration, tasks completed, and how you rated it."
+          />
+        </div>
       </div>
 
       {/* B + C + D. Today's board with Projects alongside it, then what's coming. */}

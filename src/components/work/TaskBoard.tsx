@@ -630,6 +630,23 @@ export function ProjectStrip({
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Add sits ABOVE the list, mirroring QuickAdd above the task board: the input you reach for
+          shouldn't move down the page every time you use it, and with a long project list it was
+          scrolling out of reach entirely. */}
+      <form onSubmit={add} className="flex items-center gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Add a project…"
+          className="form-input flex-1 min-w-0"
+          aria-label="New project"
+        />
+        <button type="submit" disabled={busy || !name.trim()} className="btn-secondary shrink-0">
+          <Plus className="w-4 h-4" />
+          Add
+        </button>
+      </form>
+
       {/* One column from xl up, NOT three. This strip renders inside MyWorkView's right-hand
           column, which is one third of an xl:grid-cols-3 page grid — so xl:grid-cols-3 here made
           each card a ninth of the page, squeezing the name against the status dropdown until they
@@ -690,19 +707,6 @@ export function ProjectStrip({
         })}
       </div>
 
-      <form onSubmit={add} className="flex items-center gap-2">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Add a project…"
-          className="form-input max-w-xs"
-          aria-label="New project"
-        />
-        <button type="submit" disabled={busy || !name.trim()} className="btn-secondary">
-          <Plus className="w-4 h-4" />
-          Add
-        </button>
-      </form>
     </div>
   );
 }
