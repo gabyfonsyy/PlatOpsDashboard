@@ -7,14 +7,17 @@ import { Copy } from "@/components/ui/Copy";
 import { PageTitle } from "@/components/ui/PageTitle";
 import { WorkdayBar } from "@/components/work/WorkdayBar";
 import { MyWorkView } from "@/components/work/MyWorkView";
-import { CheckInCard } from "@/components/work/CheckInCard";
-import { WorkMirror } from "@/components/work/WorkMirror";
+import { DayReviewPanel } from "@/components/work/DayReviewPanel";
 
 /**
  * The personal command centre, and the page the app opens on — "My Work" in Light and Dark,
  * "Mission Control" in Gaby's View (see lib/nav.ts). One page, in the order an actual workday runs:
  * start work, see what needs doing today, glance at projects, look at what's coming, end work,
  * check in, and (later) look in the mirror.
+ *
+ * The check-in and Work Mirror moved into a slide-over (DayReviewPanel) on 2026-08-25: both are
+ * once-a-day, end-of-day surfaces, and they were taking a full band on a page whose job is
+ * answering "what needs me now?" every morning.
  *
  * Reads Supabase directly on the server, so the first paint already has today's board — no
  * client-side fetch waterfall on a page opened first thing every morning.
@@ -28,6 +31,7 @@ const EMPTY: MyWorkData = {
   projects: [],
   checkin: null,
   history: [],
+  recentDays: [],
   upcoming: [],
   overdue: [],
   recurrences: [],
@@ -56,6 +60,7 @@ export default async function MyWorkPage() {
     overdue,
     recurrences,
     recurrencesReady,
+    recentDays,
     needsSetup,
   } = data;
 
@@ -93,18 +98,27 @@ export default async function MyWorkPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <PageTitle page="home" />
-        <p className="text-sm text-neutral-500 mt-1">
-          <Copy
-            serious={`What needs your attention today, ${firstName}.`}
-            playful={`Right then, ${firstName}. What are we actually doing today?`}
-          />
-        </p>
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <PageTitle page="home" />
+          <p className="text-sm text-neutral-500 mt-1">
+            <Copy
+              serious={`What needs your attention today, ${firstName}.`}
+              playful={`Right then, ${firstName}. What are we actually doing today?`}
+            />
+          </p>
+        </div>
+        {/* End-of-day surfaces live behind these, not on the board — see DayReviewPanel. */}
+        <DayReviewPanel checkin={checkin} daysAvailable={history.length} />
       </div>
 
       {/* A. Workday */}
-      <WorkdayBar openSession={openSession} todaySessions={todaySessions} />
+      <WorkdayBar
+        openSession={openSession}
+        todaySessions={todaySessions}
+        recentDays={recentDays}
+        today={today}
+      />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
@@ -156,12 +170,6 @@ export default async function MyWorkPage() {
         recurrences={recurrences}
         recurrencesReady={recurrencesReady}
       />
-
-      {/* E + F. Winding down, then the long view. */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-        <CheckInCard checkin={checkin} />
-        <WorkMirror daysAvailable={history.length} />
-      </div>
     </div>
   );
 }
