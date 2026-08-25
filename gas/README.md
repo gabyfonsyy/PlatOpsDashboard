@@ -178,7 +178,7 @@ sync — the report reads raw rows live, the scorecard reads `METRICS_DAILY`.
 3. Read the narratives for hallucination/accuracy before trusting them for a real
    MBR/QBR — the prompt only receives aggregated numbers (never raw tickets), but LLM
    output should still be spot-checked, especially early on.
-4. Confirm `llama-3.3-70b-versatile` (`AI_DEFAULT_MODEL` in `AiClient.gs`) is still served
+4. Confirm `openai/gpt-oss-20b` (`AI_DEFAULT_MODEL` in `AiClient.gs`) is still served
    on [Groq's model list](https://console.groq.com/docs/models) — providers retire model ids,
    and a retired id fails with a non-retryable HTTP 404 rather than falling back. Set an
    `AI_MODEL` Script Property to re-point it without editing code.

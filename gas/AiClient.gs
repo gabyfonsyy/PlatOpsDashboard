@@ -18,18 +18,27 @@ const AI_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 /**
  * Two tiers, because most of what this backend asks for is easy.
  *
- *   fast — Llama 3.1 8B. Writing prose around numbers that are already computed, rewriting a
+ *   fast — gpt-oss 20B. Writing prose around numbers that are already computed, rewriting a
  *          sentence, picking labels from a fixed list. Cheaper and quicker, and on a free tier
  *          that difference is the difference between having the feature and rationing it.
- *   deep — Llama 3.3 70B. Reserved for genuine multi-variable reasoning.
+ *   deep — gpt-oss 120B. Reserved for genuine multi-variable reasoning. Measured 2026-08-25: on a
+ *          bare prompt the 120B invented an escalation percentage that was not in the data and the
+ *          20B did not, so 'deep' buys reasoning, not obedience — keep the no-invented-numbers rule
+ *          in the prompt regardless of tier.
  *
  * Reaching for the big model by default is the expensive habit; pick the tier per task instead.
  * Confirm both ids are still served before relying on them — Groq retires model ids periodically,
- * and a retired id fails with a non-retryable HTTP 404 rather than silently falling back.
+ * and a retired id fails with a non-retryable HTTP 404 rather than silently falling back. *
+ * RETIRED 2026-08-25: Groq dropped both Llama ids (`llama-3.1-8b-instant`, `llama-3.3-70b-versatile`)
+ * and they now 404 as model_not_found, which is non-retryable — every AI feature was dead until this
+ * was repointed. Replaced with OpenAI's open-weight gpt-oss pair, verified served to this key on
+ * 2026-08-25 and verified to honour response_format json_object. Note gpt-oss returns its chain of
+ * thought in a separate `reasoning` field and the answer in `content`, so reading `message.content`
+ * stays correct — do not start concatenating `reasoning` into the result.
  */
 const AI_MODELS = {
-  fast: 'llama-3.1-8b-instant',
-  deep: 'llama-3.3-70b-versatile',
+  fast: 'openai/gpt-oss-20b',
+  deep: 'openai/gpt-oss-120b',
 };
 
 const AI_DEFAULT_MODEL = AI_MODELS.fast;

@@ -33,9 +33,12 @@ export default async function RollupPage({
   }
 
   const { range, period } = resolveFilters(searchParams);
-  const [rollupMetrics, insight, perTeamMetrics] = await Promise.all([
+  // One insight per team rather than one blended paragraph over all three. A sentence that has to
+  // be true of SE, DBA and DevOps at once ends up saying nothing about any of them, and the
+  // recommendations especially only mean something scoped to a team that can act on them.
+  const [rollupMetrics, insights, perTeamMetrics] = await Promise.all([
     getTicketMetrics("ALL", range, period),
-    getInsight("ROLLUP:ALL"),
+    Promise.all(teams.map((t) => getInsight(`TEAM:${t.team_key}`))),
     Promise.all(teams.map((t) => getTicketMetrics(t.team_key, range, period))),
   ]);
 
@@ -49,7 +52,16 @@ export default async function RollupPage({
         <FilterBar />
       </div>
 
-      <InsightPanel insight={insight} scope="ROLLUP:ALL" />
+      <div className="flex flex-col gap-3">
+        {teams.map((team, i) => (
+          <InsightPanel
+            key={team.team_key}
+            insight={insights[i]}
+            scope={`TEAM:${team.team_key}`}
+            label={teamLabel(team.team_name)}
+          />
+        ))}
+      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <MetricCard

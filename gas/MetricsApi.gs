@@ -104,9 +104,14 @@ function getCachedInsight_(scope) {
   const latest = rows[0];
   return {
     scope: latest.scope_key,
-    period: latest.period_label,
+    // Sheets stores '2026-08' back as a Date, and the raw value serialises to an ISO timestamp the
+    // insight card was rendering verbatim. formatMonthCell_ returns it to 'YYYY-MM'.
+    period: formatMonthCell_(latest.period_label),
     narrative: latest.narrative_text,
     flags: latest.flags_json ? JSON.parse(latest.flags_json) : [],
+    // Absent on every row generated before recommendations existed, so this reads as an empty
+    // section rather than failing the whole card for insights that are otherwise still valid.
+    recommendations: latest.recommendations_json ? JSON.parse(latest.recommendations_json) : [],
     generatedAt: latest.generated_at,
     status: latest.generation_status,
   };

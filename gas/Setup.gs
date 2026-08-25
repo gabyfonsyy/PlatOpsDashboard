@@ -309,9 +309,13 @@ function setupManagerDataSpreadsheet_() {
 
   // source_version fingerprints the data the insight was generated FROM, so a regeneration
   // request with unchanged metrics can be answered from cache instead of spending an AI call.
+  // recommendations_json holds the "What to improve" list — model prose written around the
+  // deterministic signals from detectOpportunities_, filtered back down to those signals before
+  // it is stored (see sanitizeRecommendations_).
   ensureTab_(ss, 'INSIGHTS_CACHE', [
-    'scope_key', 'period_label', 'narrative_text', 'flags_json', 'generated_at',
-    'model_used', 'prompt_tokens_est', 'generation_status', 'error_message', 'source_version',
+    'scope_key', 'period_label', 'narrative_text', 'flags_json', 'recommendations_json',
+    'generated_at', 'model_used', 'prompt_tokens_est', 'generation_status', 'error_message',
+    'source_version',
   ]);
 
   // Incident Logs, two tabs on purpose (see IncidentsApi.gs): INCIDENT_TICKETS is overwritten from
