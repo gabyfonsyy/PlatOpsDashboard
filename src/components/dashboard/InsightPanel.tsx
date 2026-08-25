@@ -1,5 +1,6 @@
 import { Sparkles, Wrench, GitBranch, Boxes, BookOpen } from "lucide-react";
 import type { CachedInsight, InsightRecommendation } from "@/lib/metrics";
+import { formatManilaDateTime } from "@/lib/format";
 import { GenerateInsightButton } from "@/components/dashboard/GenerateInsightButton";
 
 /**
@@ -58,7 +59,13 @@ export function InsightPanel({
           <p className="text-sm font-medium text-neutral-900">
             AI Insight{label ? ` — ${label}` : ""} · {formatPeriod(insight!.period)}
           </p>
-          <span className="text-xs text-neutral-400">{relativeTime(insight!.generatedAt)}</span>
+          {/* Exact Manila timestamp, plus the coarse relative age. The relative age is what makes
+              "this is cached and possibly stale" obvious at a glance; the exact time is what you
+              quote when comparing two cards or checking whether a regeneration actually landed. */}
+          <span className="text-xs text-neutral-400 whitespace-nowrap">
+            {formatManilaDateTime(insight!.generatedAt)}
+            {relativeTime(insight!.generatedAt) && ` · ${relativeTime(insight!.generatedAt)}`}
+          </span>
         </div>
         <GenerateInsightButton scope={scope} hasInsight />
       </div>

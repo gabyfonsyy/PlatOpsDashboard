@@ -12,13 +12,27 @@ import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { celebrate } from "@/lib/celebrate";
 import { PAGE_NAMES } from "@/lib/nav";
 import { Copy } from "@/components/ui/Copy";
+import { OverviewQuickPanel } from "@/components/overview/OverviewQuickPanel";
 
 /**
- * Rendered BEFORE the Teams dropdown, so it is literally the first tab. It's the page the day
- * starts on, it's where signing in lands (see login/page.tsx), and it's where the brand mark in
- * the header goes back to — three routes to the same place, because it's the home of the app.
+ * Where signing in lands (see login/page.tsx) and where the brand mark goes back to.
+ *
+ * It is no longer the FIRST pill — Overview took that spot — but it is still the app's home in
+ * every other sense: the page the day is actually run from. The two are deliberately different
+ * questions ("what needs me" vs "what am I doing"), which is why both sit at the front of the bar.
  */
 const PRIMARY_NAV = { href: "/my-work", page: "home" } as const;
+
+/**
+ * The Overview is deliberately NOT on this bar.
+ *
+ * It briefly was, and before that it was buried in the Teams dropdown. Neither fitted: the bar is
+ * for places you go and work, and the Overview is something you consult — usually in the middle of
+ * doing something else, which is exactly when navigating away from it is worst. So its entry point
+ * is the compass in the header (OverviewQuickPanel), available on every page, with the full page
+ * one click from inside the panel. Removing the pill also gives the bar its width back.
+ */
+const LEADING_NAV = [{ href: PRIMARY_NAV.href, page: PRIMARY_NAV.page }] as const;
 
 /** Labels come from lib/nav.ts, which carries both names for every page. */
 const NAV_ITEMS = [
@@ -38,17 +52,13 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   // attached to a decorative element that does nothing else, so there's no workflow to disrupt.
   const logoClicks = useRef(0);
 
-  // Teams menu = the cross-team Overview plus one entry per configured team. Only the Overview
-  // entry is renamed by theme; team names are real team names.
-  const teamMenu = [
-    { label: PAGE_NAMES.overview.nav.serious, playful: PAGE_NAMES.overview.nav.playful, href: "/" },
-    ...teamTabs.map((t) => ({ label: t.label, playful: t.label, href: `/${t.key}` })),
-  ];
+  // Teams menu = one entry per configured team. The Overview moved out to its own pill when it
+  // stopped being a cross-team rollup — see NAV_ITEMS.
+  const teamMenu = teamTabs.map((t) => ({ label: t.label, playful: t.label, href: `/${t.key}` }));
 
-  // Highlight the Teams pill on the overview or any team route (incl. /<team>/performance).
+  // Highlight the Teams pill on any team route (incl. /<team>/performance), no longer on "/".
   const teamKeys = teamTabs.map((t) => t.key);
-  const isTeamsActive =
-    pathname === "/" || teamKeys.some((k) => pathname === `/${k}` || pathname.startsWith(`/${k}/`));
+  const isTeamsActive = teamKeys.some((k) => pathname === `/${k}` || pathname.startsWith(`/${k}/`));
 
   // Close on outside click and on navigation.
   useEffect(() => {
@@ -110,6 +120,8 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
           </Link>
 
           <div className="flex items-center gap-4 shrink-0">
+            {/* Today's overview, without leaving the page you're on. Hides itself on "/". */}
+            <OverviewQuickPanel />
             <ThemeToggle />
             <RefreshDataButton />
             {session?.user && (
@@ -133,18 +145,24 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
         </div>
       </header>
 
-      {/* Floating pill nav — lives outside the header, centered, straddling the boundary */}
+      {/* Floating pill nav — lives outside the header, centered, straddling the boundary.
+          The straddle broke at eight pills, when the bar grew wide enough to cover the theme
+          switcher. It is back because the Overview pill is gone and the bar is seven again, which
+          is the width it was designed at. If a pill is ever added, check this overlap first. */}
       <div className="relative z-30 -mt-5 flex justify-center px-6 pointer-events-none">
+        {/* No overflow-x here, deliberately: the Teams dropdown is absolutely positioned INSIDE
+            this nav, and a scroll container would clip it shut. Narrow windows overflow the bar
+            horizontally, which they did before this too. */}
         <nav className="pill-nav pointer-events-auto">
-          <Link
-            href={PRIMARY_NAV.href}
-            className={cn("pill", pathname === PRIMARY_NAV.href && "pill-active")}
-          >
-            <Copy
-              serious={PAGE_NAMES[PRIMARY_NAV.page].nav.serious}
-              playful={PAGE_NAMES[PRIMARY_NAV.page].nav.playful}
-            />
-          </Link>
+          {LEADING_NAV.map((item) => {
+            const active = pathname === item.href;
+            const name = PAGE_NAMES[item.page].nav;
+            return (
+              <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>
+                <Copy serious={name.serious} playful={name.playful} />
+              </Link>
+            );
+          })}
 
           <div className="relative" ref={dropdownRef}>
             <button

@@ -230,6 +230,31 @@ create index if not exists ai_insight_cache_lookup_idx
   on ai_insight_cache (user_email, context, entity_id, generated_at desc);
 
 -- ----------------------------------------------------------------------------
+-- Day marks: "this weekday had no session because it was a holiday / I was on leave".
+--
+-- Exists so an empty weekday can be told apart from a FORGOTTEN one. Without it the only
+-- honest reading of a Monday with no session is "unknown", and every average over "days
+-- worked" silently includes leave as a zero — which drags the mean down and makes a
+-- well-rested fortnight look like a productivity collapse. Marking the day removes it from
+-- the denominator instead of scoring it.
+--
+-- Deliberately NOT a column on work_sessions: the whole point is a day with no session row.
+-- One mark per person per date; re-marking updates rather than stacking.
+-- ----------------------------------------------------------------------------
+create table if not exists work_day_marks (
+  mark_id uuid primary key default gen_random_uuid(),
+  user_email text not null,
+  work_date date not null,
+  day_type text not null check (day_type in ('Holiday', 'Leave')),
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists work_day_marks_user_date_idx
+  on work_day_marks (user_email, work_date);
+
+-- ----------------------------------------------------------------------------
 -- Same lock-down as every other table: RLS on, no policies, service_role only.
 -- ----------------------------------------------------------------------------
 do $$
@@ -240,7 +265,7 @@ begin
     select tablename from pg_tables
     where schemaname = 'public'
       and tablename in ('work_projects', 'work_sessions', 'work_tasks', 'work_checkins',
-                        'ai_insight_cache')
+                        'work_day_marks', 'ai_insight_cache')
   loop
     execute format('alter table %I enable row level security;', t);
   end loop;

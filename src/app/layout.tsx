@@ -16,7 +16,7 @@ export const metadata: Metadata = {
  * Kept deliberately tiny and wrapped in try/catch — if localStorage is blocked it falls through
  * to the CSS default rather than throwing before the app boots.
  */
-const THEME_INIT = `(function(){try{var t=localStorage.getItem("platops-theme");if(t==="light"||t==="dark"||t==="adhd"){document.documentElement.dataset.theme=t}}catch(e){}})()`;
+const THEME_INIT = `(function(){try{var t=localStorage.getItem("platops-theme");if(t==="light"||t==="dark"||t==="adhd"){document.documentElement.dataset.theme=t;document.cookie="platops-theme="+t+";path=/;max-age=31536000;samesite=lax"}}catch(e){}})()`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

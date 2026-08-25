@@ -98,9 +98,12 @@ export default async function EscalationPage({
 
       <BreakdownTicketsTable
         title="Most Recent Escalations"
+        description="Filter any column to find a specific ticket. Workflow labels are excluded from the Labels column, same as the ranking tables above."
         tickets={report.tickets}
+        totalCount={report.escalatedTickets}
         assigneeLabel={report.assigneeLabel}
         detailLabel="Escalated To"
+        emptyMessage="No escalations in this period."
         jiraBaseUrl={process.env.JIRA_BASE_URL}
       />
     </div>

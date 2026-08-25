@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Plus, Trash2, ChevronRight, Repeat } from "lucide-react";
+import { Check, Plus, Trash2, ChevronRight, Repeat, StickyNote } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { celebrate } from "@/lib/celebrate";
@@ -23,6 +23,7 @@ import {
   statusTone,
   type RecurFreq,
   type TaskLane,
+  type TaskPriority,
   type WorkProject,
   type WorkTask,
 } from "@/lib/work";
@@ -197,6 +198,20 @@ export function TaskRow({
   const done = task.status === "Done";
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [notes, setNotes] = useState(task.notes ?? "");
+  const hasNotes = Boolean((task.notes ?? "").trim());
+
+  /**
+   * Notes save on blur rather than on every keystroke: a note is written in one go, and a PATCH
+   * per character would put a paragraph's worth of writes through the optimistic store. An
+   * emptied box is stored as null, so "no notes" is one value rather than sometimes "".
+   */
+  function commitNotes() {
+    const next = notes.trim();
+    if (next === (task.notes ?? "").trim()) return;
+    onPatch(task, { notes: next || null });
+  }
 
   function commitTitle() {
     setEditing(false);
@@ -209,6 +224,7 @@ export function TaskRow({
   }
 
   return (
+    <div>
     <div className="flex items-center gap-3 px-4 py-2.5 group">
       {/* One click to complete. The checkbox is the primary affordance on the row. */}
       <button
@@ -298,7 +314,7 @@ export function TaskRow({
             aria-label="Lane"
           >
             {TASK_LANES.map((l) => (
-              <option key={l} value={l}>{l}</option>
+              <option key={l} value={l}>{LANE_META[l].label}</option>
             ))}
           </select>
           <select
@@ -329,7 +345,47 @@ export function TaskRow({
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
+
+        {/* Outside the hover-hidden group: a task that HAS a note must advertise it even at rest,
+            or the note is invisible until you happen to hover the row it belongs to. */}
+        <button
+          onClick={() => setNotesOpen((v) => !v)}
+          className={cn(
+            "p-1 transition-colors",
+            hasNotes
+              ? "text-sprout-600 hover:text-sprout-700"
+              : "text-neutral-300 hover:text-neutral-600 opacity-0 group-hover:opacity-100 focus:opacity-100"
+          )}
+          aria-label={hasNotes ? `Notes for ${task.title}` : `Add notes to ${task.title}`}
+          aria-expanded={notesOpen}
+          title={hasNotes ? (task.notes ?? "") : "Add notes"}
+        >
+          <StickyNote className="w-3.5 h-3.5" />
+        </button>
       </div>
+    </div>
+
+    {notesOpen && (
+      <div className="px-4 pb-3 pl-12">
+        <textarea
+          autoFocus
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          onBlur={commitNotes}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setNotes(task.notes ?? "");
+              setNotesOpen(false);
+            }
+          }}
+          rows={3}
+          placeholder="Notes, links, context…"
+          className="form-input text-sm w-full"
+          aria-label={`Notes for ${task.title}`}
+        />
+        <p className="text-[11px] text-neutral-400 mt-1">Saves when you click away · Esc to discard</p>
+      </div>
+    )}
     </div>
   );
 }
@@ -403,6 +459,7 @@ function QuickAdd({
   const inputRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState("");
   const [lane, setLane] = useState<TaskLane>("Today");
+  const [priority, setPriority] = useState<TaskPriority>("Normal");
   const [when, setWhen] = useState<string>(today);
   const [repeat, setRepeat] = useState<RecurFreq | "">("");
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
@@ -430,8 +487,8 @@ function QuickAdd({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           recurring
-            ? { title: value, lane, project_id: projectId || null, freq: repeat, start_date: when }
-            : { title: value, lane, project_id: projectId || null, work_date: when }
+            ? { title: value, lane, priority, project_id: projectId || null, freq: repeat, start_date: when }
+            : { title: value, lane, priority, project_id: projectId || null, work_date: when }
         ),
       });
       const body = await res.json().catch(() => ({}));
@@ -469,14 +526,27 @@ function QuickAdd({
           <option key={f} value={f}>{RECUR_LABELS[f]}</option>
         ))}
       </select>
+      {/* Priority at logging time: setting it later means opening the row's hover controls, and a
+          task typed as urgent is most reliably marked urgent in the same breath. */}
+      <select
+        value={priority}
+        onChange={(e) => setPriority(e.target.value as TaskPriority)}
+        className="form-input w-auto text-sm"
+        aria-label="Priority for new task"
+      >
+        {TASK_PRIORITIES.map((pr) => (
+          <option key={pr} value={pr}>{pr}</option>
+        ))}
+      </select>
       <select
         value={lane}
         onChange={(e) => setLane(e.target.value as TaskLane)}
         className="form-input w-auto text-sm"
         aria-label="Lane for new task"
       >
+        {/* Value is the stored lane, text is the label — see LANE_META: 'Today' displays as 'To Do'. */}
         {TASK_LANES.map((l) => (
-          <option key={l} value={l}>{l}</option>
+          <option key={l} value={l}>{LANE_META[l].label}</option>
         ))}
       </select>
       <select
@@ -560,9 +630,30 @@ export function ProjectStrip({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+      {/* Add sits ABOVE the list, mirroring QuickAdd above the task board: the input you reach for
+          shouldn't move down the page every time you use it, and with a long project list it was
+          scrolling out of reach entirely. */}
+      <form onSubmit={add} className="flex items-center gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Add a project…"
+          className="form-input flex-1 min-w-0"
+          aria-label="New project"
+        />
+        <button type="submit" disabled={busy || !name.trim()} className="btn-secondary shrink-0">
+          <Plus className="w-4 h-4" />
+          Add
+        </button>
+      </form>
+
+      {/* One column from xl up, NOT three. This strip renders inside MyWorkView's right-hand
+          column, which is one third of an xl:grid-cols-3 page grid — so xl:grid-cols-3 here made
+          each card a ninth of the page, squeezing the name against the status dropdown until they
+          overlapped. The breakpoints have to describe THIS container, not the viewport. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-3">
         {projects.length === 0 && (
-          <div className="card p-4 sm:col-span-2 xl:col-span-3">
+          <div className="card p-4 sm:col-span-2 xl:col-span-1">
             <p className="text-sm text-neutral-500">
               <Copy
                 serious="No projects yet — add one below to group your tasks."
@@ -582,10 +673,10 @@ export function ProjectStrip({
                 active && "ring-2 ring-sprout-400/50"
               )}
             >
-              <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start justify-between gap-3">
                 <button
                   onClick={() => onSelect(active ? null : p.project_id)}
-                  className="text-left min-w-0 group"
+                  className="text-left min-w-0 flex-1 group"
                 >
                   <p className="text-sm font-semibold text-neutral-900 truncate group-hover:text-sprout-700 transition-colors">
                     {p.name}
@@ -616,19 +707,6 @@ export function ProjectStrip({
         })}
       </div>
 
-      <form onSubmit={add} className="flex items-center gap-2">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Add a project…"
-          className="form-input max-w-xs"
-          aria-label="New project"
-        />
-        <button type="submit" disabled={busy || !name.trim()} className="btn-secondary">
-          <Plus className="w-4 h-4" />
-          Add
-        </button>
-      </form>
     </div>
   );
 }

@@ -7,6 +7,11 @@ import {
   type WorkProject,
   type WorkRecurrence,
   type WorkSession,
+  type WorkDayMark,
+  type WorkdayRecap,
+  workdayFlags,
+  isWeekendIso,
+  type DayType,
   type WorkTask,
   addIsoDays,
   isoDayOfWeek,
@@ -23,6 +28,16 @@ import {
 
 /** How much history the page loads. Enough for Work Mirror to see a fortnight-plus of pattern. */
 const HISTORY_DAYS = 30;
+
+/**
+ * How many days back the workday card offers for review and correction.
+ *
+ * Seven, not the "2-3" originally asked for, because the flag that matters most — a weekday with
+ * nothing logged — only makes sense against a full week: on a Monday, three days back is Friday,
+ * Saturday and Sunday, and two of those are weekends that can never be flagged. A week always
+ * contains five weekdays no matter which day you look on.
+ */
+const REVIEW_DAYS = 7;
 
 /**
  * How far ahead the Upcoming panel looks. Planning is for the next couple of weeks, not the next
@@ -110,7 +125,7 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
   const until = isoDaysAhead(PLANNING_DAYS);
   const supabase = getSupabaseClient();
 
-  const [sessionsRes, tasksRes, projectsRes, checkinsRes, recurrencesRes] = await Promise.all([
+  const [sessionsRes, tasksRes, projectsRes, checkinsRes, recurrencesRes, dayMarksRes] = await Promise.all([
     supabase
       .from("work_sessions")
       .select("session_id,started_at,ended_at,work_date")
@@ -143,6 +158,14 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
       .select("*")
       .eq("user_email", email)
       .order("created_at", { ascending: true }),
+    // Last, and tolerated when absent: work_day_marks arrives with a migration that may not have
+    // been run yet. Same reasoning as recurrences — a named table that doesn't exist fails only
+    // its own query here, and the board still renders without the review flags.
+    supabase
+      .from("work_day_marks")
+      .select("work_date,day_type,note")
+      .eq("user_email", email)
+      .gte("work_date", since),
   ]);
 
   // Any one of these failing with "no such table" means the migration hasn't been run.
@@ -156,6 +179,7 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
         projects: [],
         checkin: null,
         history: [],
+        recentDays: [],
         upcoming: [],
         overdue: [],
         recurrences: [],
@@ -217,9 +241,14 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
   // parked is not outstanding work, and listing it would make both sections nag about nothing.
   const openOnly = (t: WorkTask) => t.status !== "Done" && t.status !== "Deferred";
 
+  const dayMarks = isMissingTable(dayMarksRes.error)
+    ? []
+    : ((dayMarksRes.data ?? []) as WorkDayMark[]);
+
   return {
     today,
     openSession: sessions.find((s) => !s.ended_at) ?? null,
+    recentDays: buildRecentDays(sessions, dayMarks, today),
     todaySessions: sessions.filter((s) => s.work_date === today),
     tasks: allTasks.filter((t) => t.work_date === today),
     projects,
@@ -654,6 +683,201 @@ export async function saveMirror(
 function assertSetup(error: { code?: string; message?: string } | null): void {
   if (isMissingTable(error)) {
     throw new Error("My Work isn't set up yet — run supabase/my-work.sql in the Supabase SQL editor.");
+  }
+}
+
+/**
+ * The last REVIEW_DAYS calendar days, newest first, whether or not anything was logged on them.
+ *
+ * Every day is emitted — including the empty ones — which is the opposite of buildHistory, and
+ * deliberately so: buildHistory answers "what happened", and padding it with zeros would invent
+ * findings for Work Mirror. This answers "what needs fixing", and there the empty weekday IS the
+ * finding. A day with no row is the single most likely thing to be wrong.
+ */
+function buildRecentDays(
+  sessions: WorkSession[],
+  marks: WorkDayMark[],
+  today: string
+): WorkdayRecap[] {
+  const markByDate = new Map(marks.map((m) => [m.work_date, m]));
+  const days: WorkdayRecap[] = [];
+
+  for (let back = 0; back < REVIEW_DAYS; back++) {
+    const workDate = isoDaysAgo(back);
+    const onDay = sessions
+      .filter((s) => s.work_date === workDate)
+      .sort((a, b) => a.started_at.localeCompare(b.started_at));
+    const mark = markByDate.get(workDate) ?? null;
+
+    days.push({
+      work_date: workDate,
+      sessions: onDay,
+      // Open sessions contribute zero rather than counting up to now. A forgotten End Work is
+      // exactly the case this card exists to fix, and letting it accrue is what produced the
+      // 26-hour yesterday in the first place.
+      closedMinutes: onDay.reduce(
+        (sum, x) =>
+          x.ended_at
+            ? sum + (new Date(x.ended_at).getTime() - new Date(x.started_at).getTime()) / 60000
+            : sum,
+        0
+      ),
+      hasOpenSession: onDay.some((x) => !x.ended_at),
+      mark,
+      flags: workdayFlags(workDate, onDay, mark, today),
+      isWeekend: isWeekendIso(workDate),
+    });
+  }
+
+  return days;
+}
+
+/**
+ * Manila calendar day for a timestamp. A session edited to start at 00:30 belongs to that Manila
+ * day, not to whatever day it is in UTC — work_date is the grouping key for every duration
+ * statistic on this page, so letting it drift by a timezone would silently move hours between days.
+ */
+function manilaDateOf(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
+}
+
+/**
+ * Edits one session's start and/or end.
+ *
+ * Rejects an end before its start rather than storing it: every duration downstream is
+ * `ended_at - started_at`, and a negative one does not surface as an error, it surfaces as a
+ * quietly wrong average weeks later. Passing ended_at: null deliberately re-opens a session.
+ */
+export async function updateSession(
+  email: string,
+  sessionId: string,
+  patch: { started_at?: string; ended_at?: string | null }
+): Promise<WorkSession> {
+  const supabase = getSupabaseClient();
+  const current = await supabase
+    .from("work_sessions")
+    .select("session_id,started_at,ended_at,work_date")
+    .eq("session_id", sessionId)
+    .eq("user_email", email)
+    .maybeSingle();
+  if (!current.data) throw new Error("That work session no longer exists.");
+
+  const startedAt = patch.started_at ?? (current.data.started_at as string);
+  const endedAt = patch.ended_at === undefined ? (current.data.ended_at as string | null) : patch.ended_at;
+  if (endedAt && new Date(endedAt).getTime() < new Date(startedAt).getTime()) {
+    throw new Error("A workday can't end before it starts.");
+  }
+
+  const { data, error } = await supabase
+    .from("work_sessions")
+    .update({
+      started_at: startedAt,
+      ended_at: endedAt,
+      // Moving the start across midnight moves the day the session belongs to.
+      work_date: manilaDateOf(startedAt),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("session_id", sessionId)
+    .eq("user_email", email)
+    .select("session_id,started_at,ended_at,work_date")
+    .single();
+  assertSetup(error);
+  if (error) throw new Error(`Could not update that session: ${error.message}`);
+  return data as WorkSession;
+}
+
+export async function deleteSession(email: string, sessionId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from("work_sessions")
+    .delete()
+    .eq("session_id", sessionId)
+    .eq("user_email", email);
+  assertSetup(error);
+  if (error) throw new Error(`Could not delete that session: ${error.message}`);
+}
+
+/**
+ * Adds a session after the fact — the fix for a day that was worked but never started.
+ *
+ * Always closed: an open session is a live state ("I am working now"), and the partial unique
+ * index allows only one of those per person. Backfilling an open one would collide with a genuine
+ * in-progress day, so this requires both ends.
+ */
+export async function createSession(
+  email: string,
+  input: { started_at: string; ended_at: string }
+): Promise<WorkSession> {
+  if (new Date(input.ended_at).getTime() < new Date(input.started_at).getTime()) {
+    throw new Error("A workday can't end before it starts.");
+  }
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("work_sessions")
+    .insert({
+      user_email: email,
+      started_at: input.started_at,
+      ended_at: input.ended_at,
+      work_date: manilaDateOf(input.started_at),
+    })
+    .select("session_id,started_at,ended_at,work_date")
+    .single();
+  assertSetup(error);
+  if (error) throw new Error(`Could not add that session: ${error.message}`);
+  return data as WorkSession;
+}
+
+/**
+ * Marks a day Holiday or Leave, or clears the mark when dayType is null.
+ *
+ * Upsert on (user_email, work_date) so re-marking a day corrects it instead of stacking a second
+ * row — the unique index would reject the insert anyway, and "you already marked that" is not a
+ * useful thing to tell someone who is fixing their own calendar.
+ */
+export async function setDayMark(
+  email: string,
+  workDate: string,
+  dayType: DayType | null,
+  note?: string | null
+): Promise<WorkDayMark | null> {
+  const supabase = getSupabaseClient();
+
+  if (!dayType) {
+    const { error } = await supabase
+      .from("work_day_marks")
+      .delete()
+      .eq("user_email", email)
+      .eq("work_date", workDate);
+    assertDayMarks(error);
+    if (error) throw new Error(`Could not clear that day: ${error.message}`);
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("work_day_marks")
+    .upsert(
+      {
+        user_email: email,
+        work_date: workDate,
+        day_type: dayType,
+        note: note ?? null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_email,work_date" }
+    )
+    .select("work_date,day_type,note")
+    .single();
+  assertDayMarks(error);
+  if (error) throw new Error(`Could not mark that day: ${error.message}`);
+  return data as WorkDayMark;
+}
+
+/** work_day_marks ships after the original my-work.sql, so its absence gets its own instruction. */
+function assertDayMarks(error: { code?: string; message?: string } | null): void {
+  if (isMissingTable(error)) {
+    throw new Error(
+      "Marking days as Holiday/Leave needs one more table — re-run supabase/my-work.sql in the Supabase SQL editor. It's idempotent."
+    );
   }
 }
 

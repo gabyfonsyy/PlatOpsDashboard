@@ -78,6 +78,35 @@ export function formatNumber(value: number | null | undefined): string {
 }
 
 /**
+ * "08/25/2026 19:58:24" — an exact Manila wall-clock timestamp, MM/DD/YYYY HH:MM:SS.
+ *
+ * Built from formatToParts rather than a locale string because en-US inserts a comma between the
+ * date and the time ("08/25/2026, 19:58:24") and there is no option to suppress it. hourCycle h23
+ * is deliberate: hour12:false renders midnight as 24 in some runtimes.
+ */
+export function formatManilaDateTime(value: string | null | undefined): string {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  })
+    .formatToParts(d)
+    .reduce<Record<string, string>>((acc, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+  return `${parts.month}/${parts.day}/${parts.year} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+
+/**
  * Normalises a date value to a plain `YYYY-MM-DD` string in Manila time. Sheets round-trips
  * a stored date as a UTC ISO timestamp (e.g. "2026-07-09T16:00:00.000Z" = 2026-07-10 in
  * Manila), so we anchor to Asia/Manila to avoid the off-by-one and drop the time portion.

@@ -18,12 +18,25 @@ import { isoDateDiffDays } from "@/lib/manila-date";
 export const TASK_LANES = ["Focus", "Today", "Waiting", "Incoming"] as const;
 export type TaskLane = (typeof TASK_LANES)[number];
 
+/**
+ * LABELS ARE NOT THE STORED VALUES. The `Today` lane displays as "To Do" everywhere (renamed at
+ * Gaby's request 2026-08-25) but is still stored, validated and CHECK-constrained as 'Today' in
+ * work_tasks and work_recurrences. Renaming the value would mean altering two CHECK constraints
+ * and rewriting every existing row, on live data, to change a word on screen — not a trade worth
+ * making. So: render `LANE_META[lane].label`, never the raw lane, and expect 'Today' in the
+ * database and in the API.
+ */
 export const LANE_META: Record<TaskLane, { label: string; hint: string }> = {
   Focus: { label: "Focus", hint: "The 1–2 things that actually deserve today" },
-  Today: { label: "Today", hint: "Also intending to work on these" },
+  Today: { label: "To Do", hint: "Also intending to work on these" },
   Waiting: { label: "Waiting", hint: "Blocked on someone or something else" },
   Incoming: { label: "Incoming", hint: "New requests, not yet triaged" },
 };
+
+/** The label to show for a lane. Use this anywhere a lane reaches the screen. */
+export function laneLabel(lane: TaskLane): string {
+  return LANE_META[lane].label;
+}
 
 /**
  * Focus is a commitment, not a bucket — the whole point is that it stays small enough to mean
@@ -45,6 +58,96 @@ export function statusTone(status: TaskStatus): "neutral" | "warning" | "success
   if (status === "Deferred") return "neutral";
   return "neutral";
 }
+
+// ---------------------------------------------------------------------------- workday review
+
+/**
+ * Why a weekday has no work session. Both mean "do not count this day against me" — they are
+ * kept apart because a public holiday and personal leave are different facts about the same
+ * empty square, and any later analytics that wants to separate them cannot recover the
+ * distinction once it has been collapsed.
+ */
+export const DAY_TYPES = ["Holiday", "Leave"] as const;
+export type DayType = (typeof DAY_TYPES)[number];
+
+export type WorkDayMark = {
+  work_date: string;
+  day_type: DayType;
+  note: string | null;
+};
+
+/**
+ * What is wrong with a day, if anything. Deterministic — computed from the rows, never guessed.
+ *
+ *   open        — a session with no end on a day that is no longer today. This is the one that
+ *                 prompted the whole feature: an End Work never pressed turns into a session that
+ *                 keeps accruing, and yesterday reads 26 hours.
+ *   long        — a CLOSED session longer than LONG_SESSION_HOURS. Possible, but far more often
+ *                 an end pressed the next morning.
+ *   missing     — a past weekday with no session at all and no Holiday/Leave mark. Unknown, not
+ *                 zero: it is exactly the day that should be marked one way or the other.
+ *
+ * A day marked Holiday or Leave is never flagged — marking it IS the answer to the question the
+ * flag asks.
+ */
+export const LONG_SESSION_HOURS = 12;
+
+export type WorkdayFlag = "open" | "long" | "missing";
+
+export type WorkdayRecap = {
+  work_date: string;
+  sessions: WorkSession[];
+  /** Minutes across closed sessions. An open session contributes nothing — its end is unknown. */
+  closedMinutes: number;
+  /** True when a session on this day has no ended_at. */
+  hasOpenSession: boolean;
+  mark: WorkDayMark | null;
+  flags: WorkdayFlag[];
+  isWeekend: boolean;
+};
+
+/** Monday-Friday, read off the stored Manila calendar date rather than a Date in local time. */
+export function isWeekendIso(iso: string): boolean {
+  const [y, m, d] = iso.split("-").map(Number);
+  const day = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return day === 0 || day === 6;
+}
+
+/**
+ * Flags for one day. `today` is passed rather than read from the clock so this stays pure and the
+ * server and client cannot disagree about which day is still in progress — an open session TODAY
+ * is just work happening, and flagging it would mean the card nags all day, every day.
+ */
+export function workdayFlags(
+  workDate: string,
+  sessions: WorkSession[],
+  mark: WorkDayMark | null,
+  today: string
+): WorkdayFlag[] {
+  if (mark) return [];
+  const flags: WorkdayFlag[] = [];
+  const isToday = workDate === today;
+
+  if (!isToday && sessions.some((s) => !s.ended_at)) flags.push("open");
+
+  const tooLong = sessions.some(
+    (s) =>
+      s.ended_at &&
+      (new Date(s.ended_at).getTime() - new Date(s.started_at).getTime()) / 3_600_000 >
+        LONG_SESSION_HOURS
+  );
+  if (tooLong) flags.push("long");
+
+  if (!isToday && sessions.length === 0 && !isWeekendIso(workDate)) flags.push("missing");
+
+  return flags;
+}
+
+export const FLAG_MESSAGES: Record<WorkdayFlag, string> = {
+  open: "Never ended — this session is still running",
+  long: `Longer than ${LONG_SESSION_HOURS} hours — End Work may have been pressed the next day`,
+  missing: "Weekday with nothing logged",
+};
 
 // ---------------------------------------------------------------------------- projects
 
@@ -312,6 +415,12 @@ export type MyWorkData = {
   checkin: WorkCheckin | null;
   /** Recent history, newest first — powers the trend strip and Work Mirror. */
   history: WorkDayStat[];
+  /**
+   * The last few days as editable recaps, newest first — what the workday card reviews and fixes.
+   * Separate from `history`, which is a rolled-up statistic per day for Work Mirror; this carries
+   * the raw sessions because correcting one means editing the actual row.
+   */
+  recentDays: WorkdayRecap[];
   /**
    * Open tasks dated AFTER today, oldest date first. Planned work — deliberately kept out of
    * `tasks` so the board still answers exactly one question ("what needs me today?") and a week

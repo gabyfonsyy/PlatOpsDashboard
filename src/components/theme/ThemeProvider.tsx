@@ -7,6 +7,7 @@ import {
   MOTION_STORAGE_KEY,
   THEME_STORAGE_KEY,
   isTheme,
+  persistThemeCookie,
   type Theme,
 } from "@/lib/theme";
 
@@ -102,6 +103,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const fromDom = document.documentElement.dataset.theme;
     if (isTheme(fromDom)) {
       setThemeState(fromDom);
+      // Back-fills the cookie for anyone who chose a theme before it existed, so the server sees
+      // the right one without them having to re-pick.
+      persistThemeCookie(fromDom);
     } else {
       let stored: string | null = null;
       try {
@@ -109,7 +113,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       } catch {
         // Private-mode / blocked storage: fall through to the default rather than breaking.
       }
-      if (isTheme(stored)) setThemeState(stored);
+      if (isTheme(stored)) {
+        setThemeState(stored);
+        persistThemeCookie(stored);
+      }
     }
     setReady(true);
   }, []);
@@ -122,6 +129,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } catch {
       // Persisting is a nicety; the session still works without it.
     }
+    // Mirrored so the next SERVER render knows the theme — see THEME_COOKIE in lib/theme.ts.
+    persistThemeCookie(next);
   }, []);
 
   const motionAllowed = !osReducedMotion || motionOverride;

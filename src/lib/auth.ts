@@ -30,10 +30,21 @@ export const authOptions: NextAuthOptions = {
       : []),
   ],
   callbacks: {
-    async signIn({ user, account }) {
+    async signIn({ user, account, profile }) {
       // Dev bypass always allowed
       if (account?.provider === "dev-bypass") return true;
-      const email = user.email ?? "";
+
+      // Reject an address Google itself says is unverified. Deliberately `=== false` rather than
+      // falsy: a provider that simply omits the claim must not be turned away, so this can only
+      // ever reject an explicit "no", never an absent yes.
+      if ((profile as { email_verified?: boolean } | undefined)?.email_verified === false) {
+        return false;
+      }
+
+      // Lower-cased before the check: the domain is the whole authorisation decision here, and an
+      // address that arrives capitalised is the same account. Note this is an exact "@sprout.ph"
+      // suffix, so a lookalike domain (evil-sprout.ph) does not satisfy it.
+      const email = (user.email ?? "").toLowerCase();
       return email.endsWith("@sprout.ph");
     },
     async session({ session, token }) {
