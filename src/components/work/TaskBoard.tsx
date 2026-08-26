@@ -225,7 +225,14 @@ export function TaskRow({
 
   return (
     <div>
-    <div className="flex items-center gap-3 px-4 py-2.5 group">
+    {/*
+      Wraps rather than squeezes. The controls on the right are `shrink-0`, so in a one-line row
+      they take their width first and the title — the only thing on the row you actually read —
+      gets whatever is left, which in the board's 2/3 column was a couple of characters ("Q…").
+      `flex-wrap` plus a real flex-basis on the title means the cluster drops to a second line when
+      it can't fit beside a readable title, instead of eating it.
+    */}
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 group">
       {/* One click to complete. The checkbox is the primary affordance on the row. */}
       <button
         onClick={() => onToggleDone(task)}
@@ -249,7 +256,10 @@ export function TaskRow({
         />
       )}
 
-      <div className="min-w-0 flex-1">
+      {/* basis-56 is the floor: below ~14rem of room for the title the controls wrap away rather
+          than truncate it further. Editing claims the whole line — a rename you can't read back
+          is worse than a title you can't read. */}
+      <div className={cn("min-w-0 grow", editing ? "basis-full" : "basis-56")}>
         {editing ? (
           <input
             autoFocus
@@ -270,6 +280,7 @@ export function TaskRow({
           // into a dialog, and renaming a task is the most common edit by far.
           <button
             onClick={() => setEditing(true)}
+            title={task.title}
             className={cn(
               "text-left text-sm w-full truncate transition-colors",
               done ? "text-neutral-400 line-through" : "text-neutral-900 hover:text-sprout-700"
@@ -280,7 +291,7 @@ export function TaskRow({
         )}
       </div>
 
-      <div className="flex items-center gap-2 shrink-0">
+      <div className="flex items-center gap-2 shrink-0 ml-auto">
         {task.priority === "High" && !done && <Badge tone="danger">High</Badge>}
         {!done && task.status !== "To Do" && <Badge tone={statusTone(task.status)}>{task.status}</Badge>}
 
@@ -296,8 +307,12 @@ export function TaskRow({
           ))}
         </select>
 
-        {/* The less-used controls stay hidden until hover, so a row reads as one line of text. */}
-        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+        {/* The less-used controls stay hidden until hover, so a row reads as one line of text.
+            Hidden by WIDTH, not just opacity: opacity-0 still reserved ~450px of the row for four
+            controls nobody could see, which is what crushed the title. `w-0 overflow-hidden` gives
+            that space back and — unlike `hidden`/`invisible` — leaves the controls in the focus
+            order, so Tab still reaches them and focus-within opens the cluster. */}
+        <div className="flex items-center gap-1 w-0 overflow-hidden opacity-0 group-hover:w-auto group-hover:opacity-100 focus-within:w-auto focus-within:opacity-100 transition-opacity">
           {/* Rescheduling is one control, not a submenu: pick a day and the row moves there. */}
           <input
             type="date"
