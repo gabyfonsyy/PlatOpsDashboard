@@ -255,6 +255,49 @@ create unique index if not exists work_day_marks_user_date_idx
   on work_day_marks (user_email, work_date);
 
 -- ----------------------------------------------------------------------------
+-- Reschedule log: every time a task slips to a later day, and why.
+--
+-- An EVENT LOG, not a `reschedule_reason` column on work_tasks, and that is the whole design.
+-- A column keeps only the most recent answer, and the most recent answer is the least
+-- interesting thing here: the signal Work Mirror is after is that "Q2: Self Evals" moved five
+-- times across three weeks, each time for a different reason. Overwrite that and the pattern —
+-- which is the actual finding — is gone by the time anyone looks for it.
+--
+-- Only LATER moves are logged. Pulling a task forward (the "bring everything to today" button)
+-- is not a slip and recording it as one would dilute the reason counts with the opposite act.
+--
+-- `reason` is nullable because the move is logged the instant it happens and the reason is asked
+-- for afterwards — a modal between "push" and the task moving would mean the button stops being
+-- one click, and an optional field nobody fills in is worth more than a mandatory one that makes
+-- people stop pressing the button.
+--
+-- task_id is `on delete set null` and the title is denormalised alongside it, for the same
+-- reason work_tasks.recurrence_id is: deleting a task must not rewrite the history of the days it
+-- was pushed through. The title is stamped at push time so a deleted task still reads as
+-- something rather than as a bare uuid.
+-- ----------------------------------------------------------------------------
+create table if not exists work_task_reschedules (
+  reschedule_id uuid primary key default gen_random_uuid(),
+  user_email text not null,
+  task_id uuid references work_tasks (task_id) on delete set null,
+  task_title text not null,
+  from_date date not null,
+  to_date date not null,
+  -- A stable code from RESCHEDULE_REASONS in lib/work.ts, never the label — same discipline as
+  -- work_checkins.mood, so the wording can be retuned without orphaning historical rows.
+  reason text,
+  note text,
+  created_at timestamptz not null default now()
+);
+
+-- from_date desc: every read is "what slipped recently", bounded by the history window.
+create index if not exists work_task_reschedules_user_idx
+  on work_task_reschedules (user_email, from_date desc);
+-- Backs "attach a reason to the move I just made", which finds the newest row for one task.
+create index if not exists work_task_reschedules_task_idx
+  on work_task_reschedules (task_id, created_at desc);
+
+-- ----------------------------------------------------------------------------
 -- Same lock-down as every other table: RLS on, no policies, service_role only.
 -- ----------------------------------------------------------------------------
 do $$
@@ -265,7 +308,7 @@ begin
     select tablename from pg_tables
     where schemaname = 'public'
       and tablename in ('work_projects', 'work_sessions', 'work_tasks', 'work_checkins',
-                        'work_day_marks', 'ai_insight_cache')
+                        'work_day_marks', 'work_task_reschedules', 'ai_insight_cache')
   loop
     execute format('alter table %I enable row level security;', t);
   end loop;

@@ -320,6 +320,75 @@ export function factorLabel(code: string): string {
   return DAY_FACTORS.find((f) => f.code === code)?.label ?? code;
 }
 
+// ---------------------------------------------------------------------------- rescheduling
+
+/**
+ * Why a task slipped to a later day. Codes are stored, labels are not — same rule as MOODS and
+ * DAY_FACTORS, so the wording can be retuned without orphaning history.
+ *
+ * The list is deliberately short and deliberately blame-free. "Ran out of time" and "meetings ate
+ * the day" are facts about a day; a vocabulary that only offered variations of "didn't get to it"
+ * would collect nothing but self-criticism, and Work Mirror's whole premise is that the system is
+ * what's being examined, not the person. These are the reasons a day actually goes sideways.
+ */
+export const RESCHEDULE_REASONS = [
+  { code: "ran_out_of_time", label: "Ran out of time" },
+  { code: "urgent_came_up", label: "Something urgent came up" },
+  { code: "meetings", label: "Meetings ate the day" },
+  { code: "blocked", label: "Blocked on someone else" },
+  { code: "not_ready", label: "Not ready to start yet" },
+  { code: "no_energy", label: "Didn't have the energy" },
+  { code: "can_wait", label: "Decided it can wait" },
+  { code: "other", label: "Other" },
+] as const;
+
+export type RescheduleReasonCode = (typeof RESCHEDULE_REASONS)[number]["code"];
+
+export function rescheduleReasonLabel(code: string): string {
+  return RESCHEDULE_REASONS.find((r) => r.code === code)?.label ?? code;
+}
+
+/**
+ * One logged slip. `reason` is null between the move and the moment a reason is (optionally)
+ * given — see the note in my-work.sql on why the two are separate steps.
+ */
+export type WorkTaskReschedule = {
+  reschedule_id: string;
+  task_id: string | null;
+  task_title: string;
+  from_date: string;
+  to_date: string;
+  reason: string | null;
+  note: string | null;
+  created_at: string;
+};
+
+/**
+ * The first Monday-Friday strictly after `iso`.
+ *
+ * Weekends only. Public holidays are NOT skipped: the marks that would answer that
+ * (work_day_marks) are recorded for days that have already happened, so there is nothing to read
+ * for a day in the future, and guessing at a holiday calendar would move tasks to days the person
+ * never chose. A holiday landing on the target day is one visible click to move again.
+ */
+export function nextWorkingDay(iso: string): string {
+  let cursor = addIsoDays(iso, 1);
+  // Bounded rather than `while (true)` — at most two weekend days can ever be in the way.
+  for (let i = 0; i < 7 && isWeekendIso(cursor); i++) cursor = addIsoDays(cursor, 1);
+  return cursor;
+}
+
+/**
+ * Where the one-click push sends a task.
+ *
+ * Anchored to today when the task is already overdue. Pushing Friday-last-week's unfinished task
+ * "to the next working day" and landing it on Monday-last-week would be arithmetically correct and
+ * completely useless — the task would still be overdue, and the button would look broken.
+ */
+export function pushTargetDate(workDate: string, today: string): string {
+  return nextWorkingDay(workDate < today ? today : workDate);
+}
+
 // ---------------------------------------------------------------------------- records
 
 export type WorkSession = {
@@ -381,6 +450,14 @@ export type WorkDayStat = {
   waitingCount: number;
   /** Distinct projects touched — the context-switching proxy. */
   projectsTouched: number;
+  /**
+   * Tasks that slipped OFF this day to a later one. Counted against the day the work was supposed
+   * to happen, not the day it was moved to — "Tuesday sheds four tasks every week" is a fact about
+   * Tuesday.
+   */
+  tasksPushedOut: number;
+  /** Reason codes given for those slips, in no particular order. May be shorter than the count. */
+  pushReasons: string[];
   mood: string | null;
   moodWeight: number | null;
   factors: string[];
@@ -434,6 +511,11 @@ export type MyWorkData = {
   recurrences: WorkRecurrence[];
   /** False when work_recurrences hasn't been created yet, so the UI can explain instead of break. */
   recurrencesReady: boolean;
+  /**
+   * Logged slips within the history window, newest first. Feeds the day rollups above and, through
+   * them, Work Mirror. Empty (not an error) when the migration hasn't been run.
+   */
+  reschedules: WorkTaskReschedule[];
   /**
    * Open tasks dated BEFORE today, oldest first. Yesterday's unfinished work doesn't roll over on
    * its own — nothing should silently reassign itself to today — so it surfaces here to be pulled

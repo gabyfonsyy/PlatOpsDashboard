@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { handle } from "@/lib/work-route";
-import { createTask, deleteTask, updateTask, updateTasks } from "@/lib/work-store";
+import { copyTask, createTask, deleteTask, updateTask, updateTasks } from "@/lib/work-store";
 import { TASK_LANES, TASK_PRIORITIES, TASK_STATUSES } from "@/lib/work";
 
 /**
@@ -44,9 +44,27 @@ function validate(body: Record<string, unknown>): string | null {
   );
 }
 
+/**
+ * Creates a task, or copies an existing one onto another day when `copy_of` is present.
+ *
+ * One handler rather than a /copy route: both produce exactly one new task on a given date and
+ * revalidate the same page. What a copy inherits is the store's decision, not the client's — see
+ * copyTask — so the body carries an id and a date and nothing else worth spoofing.
+ */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
+    const copyOf = String(body.copy_of ?? "").trim();
+    if (copyOf) {
+      const bad = invalidDate(body.work_date);
+      if (bad) throw new Error(bad);
+      const workDate = String(body.work_date ?? "").trim();
+      if (!workDate) throw new Error("A copy needs a day to land on.");
+      const copy = await copyTask(email, copyOf, workDate);
+      revalidatePath("/my-work");
+      return copy;
+    }
+
     const title = String(body.title ?? "").trim();
     if (!title) throw new Error("A task needs a title.");
     const bad = validate(body);

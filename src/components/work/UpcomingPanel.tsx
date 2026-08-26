@@ -31,6 +31,8 @@ export function UpcomingPanel({
   onToggleDone,
   onPatch,
   onDelete,
+  onPush,
+  onCopy,
   onMoveMany,
 }: {
   today: string;
@@ -40,6 +42,8 @@ export function UpcomingPanel({
   onToggleDone: (t: WorkTask) => void;
   onPatch: (t: WorkTask, patch: Partial<WorkTask>) => void;
   onDelete: (t: WorkTask) => void;
+  onPush: (t: WorkTask) => void;
+  onCopy: (t: WorkTask, date: string) => void;
   onMoveMany: (tasks: WorkTask[], date: string) => void;
 }) {
   // Collapsed by default: the point of the section is that it ISN'T demanding attention. Opens
@@ -102,6 +106,8 @@ export function UpcomingPanel({
                   onToggleDone={onToggleDone}
                   onPatch={onPatch}
                   onDelete={onDelete}
+                  onPush={onPush}
+                  onCopy={onCopy}
                   onMoveMany={onMoveMany}
                 />
               ))}
@@ -128,6 +134,8 @@ export function UpcomingPanel({
                 onToggleDone={onToggleDone}
                 onPatch={onPatch}
                 onDelete={onDelete}
+                onPush={onPush}
+                onCopy={onCopy}
                 onMoveMany={onMoveMany}
               />
             ))
@@ -151,6 +159,8 @@ function DayGroup({
   onToggleDone,
   onPatch,
   onDelete,
+  onPush,
+  onCopy,
   onMoveMany,
 }: {
   date: string;
@@ -160,6 +170,8 @@ function DayGroup({
   onToggleDone: (t: WorkTask) => void;
   onPatch: (t: WorkTask, patch: Partial<WorkTask>) => void;
   onDelete: (t: WorkTask) => void;
+  onPush: (t: WorkTask) => void;
+  onCopy: (t: WorkTask, date: string) => void;
   onMoveMany: (tasks: WorkTask[], date: string) => void;
 }) {
   const distance = dayDistance(date, today);
@@ -190,6 +202,8 @@ function DayGroup({
             onToggleDone={onToggleDone}
             onPatch={onPatch}
             onDelete={onDelete}
+            onPush={onPush}
+            onCopy={onCopy}
           />
         ))}
       </div>

@@ -8,6 +8,7 @@ import {
   type WorkRecurrence,
   type WorkSession,
   type WorkDayMark,
+  type WorkTaskReschedule,
   type WorkdayRecap,
   workdayFlags,
   isWeekendIso,
@@ -125,7 +126,7 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
   const until = isoDaysAhead(PLANNING_DAYS);
   const supabase = getSupabaseClient();
 
-  const [sessionsRes, tasksRes, projectsRes, checkinsRes, recurrencesRes, dayMarksRes] = await Promise.all([
+  const [sessionsRes, tasksRes, projectsRes, checkinsRes, recurrencesRes, dayMarksRes, reschedulesRes] = await Promise.all([
     supabase
       .from("work_sessions")
       .select("session_id,started_at,ended_at,work_date")
@@ -166,6 +167,14 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
       .select("work_date,day_type,note")
       .eq("user_email", email)
       .gte("work_date", since),
+    // Same tolerance again: work_task_reschedules is the newest migration of the lot. Its absence
+    // costs the slip statistics and nothing else.
+    supabase
+      .from("work_task_reschedules")
+      .select("reschedule_id,task_id,task_title,from_date,to_date,reason,note,created_at")
+      .eq("user_email", email)
+      .gte("from_date", since)
+      .order("created_at", { ascending: false }),
   ]);
 
   // Any one of these failing with "no such table" means the migration hasn't been run.
@@ -184,6 +193,7 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
         overdue: [],
         recurrences: [],
         recurrencesReady: false,
+        reschedules: [],
         needsSetup: true,
       };
     }
@@ -245,6 +255,10 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
     ? []
     : ((dayMarksRes.data ?? []) as WorkDayMark[]);
 
+  const reschedules = isMissingTable(reschedulesRes.error)
+    ? []
+    : ((reschedulesRes.data ?? []) as WorkTaskReschedule[]);
+
   return {
     today,
     openSession: sessions.find((s) => !s.ended_at) ?? null,
@@ -256,9 +270,10 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
     // Future rows are withheld from history on purpose — buildHistory derives a day from the rows
     // that mention it, so planned work would materialise as "days" with tasksCreated > 0 and
     // hand Work Mirror a fortnight of imaginary future to find patterns in.
-    history: buildHistory(sessions, allTasks.filter((t) => t.work_date <= today), checkins),
+    history: buildHistory(sessions, allTasks.filter((t) => t.work_date <= today), checkins, reschedules, today),
     recurrences: rules.map((r) => ({ ...r, nextDate: nextOccurrence(r, today) })),
     recurrencesReady,
+    reschedules,
     upcoming: allTasks
       .filter((t) => t.work_date > today && openOnly(t))
       .sort((a, b) => a.work_date.localeCompare(b.work_date) || a.created_at.localeCompare(b.created_at)),
@@ -291,12 +306,22 @@ function toCheckin(row: Record<string, unknown>): WorkCheckin {
 function buildHistory(
   sessions: WorkSession[],
   tasks: WorkTask[],
-  checkins: WorkCheckin[]
+  checkins: WorkCheckin[],
+  reschedules: WorkTaskReschedule[],
+  today: string
 ): WorkDayStat[] {
+  // Future slips are excluded for the same reason future tasks are: a task moved from next Tuesday
+  // to next Wednesday would otherwise mint a "day" out of a plan, and hand Work Mirror a fortnight
+  // of imaginary history to find patterns in.
+  const slips = reschedules.filter((r) => r.from_date <= today);
+
   const days = new Set<string>();
   sessions.forEach((s) => days.add(s.work_date));
   tasks.forEach((t) => days.add(t.work_date));
   checkins.forEach((c) => days.add(c.work_date));
+  // A day whose tasks all slipped off it has no rows left pointing at it, and it is precisely the
+  // day worth seeing. The slip IS the evidence that the day happened.
+  slips.forEach((r) => days.add(r.from_date));
 
   const stats: WorkDayStat[] = [];
 
@@ -319,6 +344,7 @@ function buildHistory(
     const completed = dayTasks.filter((t) => t.status === "Done");
     const checkin = checkins.find((c) => c.work_date === date) ?? null;
     const mood = checkin ? moodByCode(checkin.mood) : undefined;
+    const daySlips = slips.filter((r) => r.from_date === date);
 
     stats.push({
       work_date: date,
@@ -329,6 +355,8 @@ function buildHistory(
       incomingCount: dayTasks.filter((t) => t.lane === "Incoming").length,
       waitingCount: dayTasks.filter((t) => t.lane === "Waiting" || t.status === "Waiting").length,
       projectsTouched: new Set(dayTasks.map((t) => t.project_id).filter(Boolean)).size,
+      tasksPushedOut: daySlips.length,
+      pushReasons: daySlips.map((r) => r.reason).filter(Boolean) as string[],
       mood: checkin?.mood ?? null,
       moodWeight: mood ? mood.weight : null,
       factors: checkin?.factors ?? [],
@@ -982,6 +1010,23 @@ export async function updateTask(
     if (patch.status === "In Progress") update.started_at = now;
   }
 
+  /**
+   * The day a task is moving FROM is only knowable before the update — `.select()` returns the new
+   * row. One extra read, and only on the one patch shape that needs it: every other field change
+   * (status, lane, a note) still costs a single round trip.
+   */
+  const before =
+    typeof patch.work_date === "string"
+      ? (
+          await supabase
+            .from("work_tasks")
+            .select("work_date")
+            .eq("task_id", taskId)
+            .eq("user_email", email)
+            .maybeSingle()
+        ).data
+      : null;
+
   const { data, error } = await supabase
     .from("work_tasks")
     .update(update)
@@ -991,6 +1036,168 @@ export async function updateTask(
     .single();
   assertSetup(error);
   if (error) throw new Error(`Could not update task: ${error.message}`);
+
+  const task = data as WorkTask;
+
+  /**
+   * Logged here rather than at each call site, so every path that moves a day — the push button,
+   * the row's date field, anything added later — records the slip without having to remember to.
+   *
+   * Strictly LATER only. Pulling a task forward is the opposite act, and counting it among the
+   * slips would leave the reason tallies describing two different things at once.
+   */
+  if (before && typeof patch.work_date === "string" && patch.work_date > String(before.work_date)) {
+    await logReschedule(email, taskId, task.title, String(before.work_date), patch.work_date);
+  }
+
+  if (task.project_id) await touchProject(email, task.project_id);
+  return task;
+}
+
+/**
+ * Records one slip. Best effort, and silent on failure by design: the move the person asked for
+ * has already happened, and failing their click because the analytics write missed would be
+ * strictly worse than losing one row of a statistic. The reason strip surfaces the real
+ * instruction if the table genuinely isn't there.
+ */
+async function logReschedule(
+  email: string,
+  taskId: string,
+  title: string,
+  fromDate: string,
+  toDate: string
+): Promise<void> {
+  try {
+    await getSupabaseClient().from("work_task_reschedules").insert({
+      user_email: email,
+      task_id: taskId,
+      task_title: title,
+      from_date: fromDate,
+      to_date: toDate,
+    });
+  } catch {
+    // Intentionally swallowed — see above.
+  }
+}
+
+/** work_task_reschedules ships after the rest of my-work.sql, so its absence gets its own line. */
+function assertReschedules(error: { code?: string; message?: string } | null): void {
+  if (isMissingTable(error)) {
+    throw new Error(
+      "Reschedule reasons need one more table — re-run supabase/my-work.sql in the Supabase SQL editor. It's idempotent."
+    );
+  }
+}
+
+/**
+ * Attaches a reason to the most recent slip of one task.
+ *
+ * Addressed by task rather than by reschedule id because of when it is called: the strip that asks
+ * "why?" is describing the move the person just made, and "the newest one" is exactly what they
+ * mean. Threading an id from the PATCH response through the optimistic store to the strip and back
+ * would buy nothing but the ability to answer a question nobody is being asked.
+ */
+export async function setRescheduleReason(
+  email: string,
+  taskId: string,
+  reason: string,
+  note?: string | null
+): Promise<WorkTaskReschedule> {
+  const supabase = getSupabaseClient();
+  const latest = await supabase
+    .from("work_task_reschedules")
+    .select("reschedule_id")
+    .eq("user_email", email)
+    .eq("task_id", taskId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  assertReschedules(latest.error);
+  if (latest.error) throw new Error(`Could not find that move: ${latest.error.message}`);
+  if (!latest.data) throw new Error("That move is no longer on record.");
+
+  const { data, error } = await supabase
+    .from("work_task_reschedules")
+    .update({ reason, note: note ?? null })
+    .eq("reschedule_id", latest.data.reschedule_id)
+    .eq("user_email", email)
+    .select("reschedule_id,task_id,task_title,from_date,to_date,reason,note,created_at")
+    .single();
+  assertReschedules(error);
+  if (error) throw new Error(`Could not save that reason: ${error.message}`);
+  return data as WorkTaskReschedule;
+}
+
+/**
+ * Removes the most recent logged slip for one task — what Undo calls.
+ *
+ * Undo moves the task back, and that backward move is (correctly) not logged as a slip. If the
+ * forward row survived, an undone misclick would still be counted as a day the work slipped, and
+ * the reason tallies Work Mirror reads would drift away from what actually happened. Best effort
+ * for the same reason logging is: the task is already back where it belongs.
+ */
+export async function deleteLatestReschedule(email: string, taskId: string): Promise<void> {
+  try {
+    const supabase = getSupabaseClient();
+    const latest = await supabase
+      .from("work_task_reschedules")
+      .select("reschedule_id")
+      .eq("user_email", email)
+      .eq("task_id", taskId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!latest.data) return;
+    await supabase
+      .from("work_task_reschedules")
+      .delete()
+      .eq("reschedule_id", latest.data.reschedule_id)
+      .eq("user_email", email);
+  } catch {
+    // Intentionally swallowed — see above.
+  }
+}
+
+/**
+ * Duplicates a task onto another day. The original is untouched — that is the whole difference
+ * between this and a reschedule, and the reason both exist.
+ *
+ * The copy starts fresh: status, and every lifecycle stamp with it, comes from the column defaults
+ * rather than from the source, so copying a finished task forward gives you the task to do again
+ * and not a second record of having done it.
+ *
+ * recurrence_id is deliberately NOT copied. A copy is a one-off, not another instance of the
+ * schedule — and the unique index over (recurrence_id, work_date) would reject a copy onto a day
+ * the rule had already fired on, which is exactly the day someone would try to copy it to.
+ */
+export async function copyTask(email: string, taskId: string, workDate: string): Promise<WorkTask> {
+  const supabase = getSupabaseClient();
+  const source = await supabase
+    .from("work_tasks")
+    .select("*")
+    .eq("task_id", taskId)
+    .eq("user_email", email)
+    .maybeSingle();
+  assertSetup(source.error);
+  if (source.error) throw new Error(`Could not read that task: ${source.error.message}`);
+  if (!source.data) throw new Error("That task no longer exists.");
+
+  const row = source.data as Record<string, unknown>;
+  const { data, error } = await supabase
+    .from("work_tasks")
+    .insert({
+      user_email: email,
+      title: String(row.title),
+      lane: String(row.lane),
+      priority: String(row.priority),
+      project_id: (row.project_id as string | null) ?? null,
+      notes: (row.notes as string | null) ?? null,
+      work_date: workDate,
+    })
+    .select("*")
+    .single();
+  assertSetup(error);
+  if (error) throw new Error(`Could not copy that task: ${error.message}`);
 
   const task = data as WorkTask;
   if (task.project_id) await touchProject(email, task.project_id);
