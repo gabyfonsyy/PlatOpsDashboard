@@ -2,7 +2,16 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Plus, Trash2, ChevronRight, Repeat, StickyNote } from "lucide-react";
+import {
+  Check,
+  Plus,
+  Trash2,
+  ChevronRight,
+  ChevronsRight,
+  CopyPlus,
+  Repeat,
+  StickyNote,
+} from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
 import { celebrate } from "@/lib/celebrate";
@@ -19,6 +28,7 @@ import {
   groupTasks,
   isOpen,
   nextMondayIso,
+  pushTargetDate,
   recurrenceLabel,
   statusTone,
   type RecurFreq,
@@ -48,6 +58,8 @@ export function TaskBoard({
   onToggleDone,
   onPatch,
   onDelete,
+  onPush,
+  onCopy,
 }: {
   tasks: WorkTask[];
   projects: WorkProject[];
@@ -58,6 +70,8 @@ export function TaskBoard({
   onToggleDone: (t: WorkTask) => void;
   onPatch: (t: WorkTask, patch: Partial<WorkTask>) => void;
   onDelete: (t: WorkTask) => void;
+  onPush: (t: WorkTask) => void;
+  onCopy: (t: WorkTask, date: string) => void;
 }) {
   const visible = useMemo(
     () => (projectFilter ? tasks.filter((t) => t.project_id === projectFilter) : tasks),
@@ -90,6 +104,8 @@ export function TaskBoard({
           onToggleDone={onToggleDone}
           onPatch={onPatch}
           onDelete={onDelete}
+          onPush={onPush}
+          onCopy={onCopy}
         />
       ))}
 
@@ -108,6 +124,8 @@ export function TaskBoard({
                 onToggleDone={onToggleDone}
                 onPatch={onPatch}
                 onDelete={onDelete}
+                onPush={onPush}
+                onCopy={onCopy}
               />
             ))}
           </div>
@@ -126,6 +144,8 @@ function Lane({
   onToggleDone,
   onPatch,
   onDelete,
+  onPush,
+  onCopy,
 }: {
   lane: TaskLane;
   tasks: WorkTask[];
@@ -135,6 +155,8 @@ function Lane({
   onToggleDone: (t: WorkTask) => void;
   onPatch: (t: WorkTask, patch: Partial<WorkTask>) => void;
   onDelete: (t: WorkTask) => void;
+  onPush: (t: WorkTask) => void;
+  onCopy: (t: WorkTask, date: string) => void;
 }) {
   const meta = LANE_META[lane];
   return (
@@ -171,6 +193,8 @@ function Lane({
               onToggleDone={onToggleDone}
               onPatch={onPatch}
               onDelete={onDelete}
+              onPush={onPush}
+              onCopy={onCopy}
             />
           ))}
         </div>
@@ -187,6 +211,8 @@ export function TaskRow({
   onToggleDone,
   onPatch,
   onDelete,
+  onPush,
+  onCopy,
 }: {
   task: WorkTask;
   projects: WorkProject[];
@@ -194,6 +220,9 @@ export function TaskRow({
   onToggleDone: (t: WorkTask) => void;
   onPatch: (t: WorkTask, patch: Partial<WorkTask>) => void;
   onDelete: (t: WorkTask) => void;
+  /** One click, no dialog: move to the next working day. The reason is asked for afterwards. */
+  onPush: (t: WorkTask) => void;
+  onCopy: (t: WorkTask, date: string) => void;
 }) {
   const done = task.status === "Done";
   const [editing, setEditing] = useState(false);
@@ -201,6 +230,12 @@ export function TaskRow({
   const [notesOpen, setNotesOpen] = useState(false);
   const [notes, setNotes] = useState(task.notes ?? "");
   const hasNotes = Boolean((task.notes ?? "").trim());
+
+  const pushTo = pushTargetDate(task.work_date, today);
+  const [copyOpen, setCopyOpen] = useState(false);
+  // Defaults to the same day the push button would use, which on a weekday is tomorrow and on a
+  // Friday is Monday — so the common answer is already selected and copying is two clicks.
+  const [copyDate, setCopyDate] = useState(pushTo);
 
   /**
    * Notes save on blur rather than on every keystroke: a note is written in one go, and a PATCH
@@ -313,6 +348,35 @@ export function TaskRow({
             that space back and — unlike `hidden`/`invisible` — leaves the controls in the focus
             order, so Tab still reaches them and focus-within opens the cluster. */}
         <div className="flex items-center gap-1 w-0 overflow-hidden opacity-0 group-hover:w-auto group-hover:opacity-100 focus-within:w-auto focus-within:opacity-100 transition-opacity">
+          {/* The push. Deliberately the first control and deliberately a single click — it is the
+              one that gets used every evening, and anything that asks a question first (which day?
+              why?) turns "not today" into a chore and stops being pressed. The reason strip catches
+              up afterwards; see MyWorkView. Hidden on settled tasks: pushing something already done
+              to Monday is not a thing anyone means to do. */}
+          {!done && (
+            <button
+              onClick={() => onPush(task)}
+              className="text-neutral-400 hover:text-sprout-700 transition-colors p-1"
+              aria-label={`Push ${task.title} to ${dayLabel(pushTo, today)}`}
+              title={`Push to ${dayLabel(pushTo, today)} — the next working day`}
+            >
+              <ChevronsRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {/* Copy opens a strip below rather than a popover: this row lives inside a .card, and
+              .card is backdrop-blur-xl, which traps position:fixed children (see the note in
+              ui/SidePanel). A strip has no such problem and no z-index to get wrong. */}
+          <button
+            onClick={() => setCopyOpen((v) => !v)}
+            className="text-neutral-400 hover:text-sprout-700 transition-colors p-1"
+            aria-label={`Copy ${task.title} to another day`}
+            aria-expanded={copyOpen}
+            title="Copy to another day (the original stays)"
+          >
+            <CopyPlus className="w-3.5 h-3.5" />
+          </button>
+
           {/* Rescheduling is one control, not a submenu: pick a day and the row moves there. */}
           <input
             type="date"
@@ -379,6 +443,34 @@ export function TaskRow({
         </button>
       </div>
     </div>
+
+    {copyOpen && (
+      <div className="px-4 pb-3 pl-12 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-neutral-500">Copy to</span>
+        <WhenSelect today={today} value={copyDate} onChange={setCopyDate} />
+        <button
+          onClick={() => {
+            onCopy(task, copyDate);
+            setCopyOpen(false);
+          }}
+          className="btn-secondary py-1 px-3 text-xs"
+        >
+          <CopyPlus className="w-3.5 h-3.5" />
+          Copy
+        </button>
+        <button
+          onClick={() => setCopyOpen(false)}
+          className="text-xs text-neutral-400 hover:text-neutral-600 transition-colors"
+        >
+          Cancel
+        </button>
+        {/* Said out loud because copy and push sit next to each other and look alike. The whole
+            difference between them is what happens to the row you are pointing at. */}
+        <p className="text-[11px] text-neutral-400 w-full">
+          This one stays on {dayLabel(task.work_date, today)}.
+        </p>
+      </div>
+    )}
 
     {notesOpen && (
       <div className="px-4 pb-3 pl-12">

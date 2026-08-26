@@ -6,9 +6,11 @@ import { getCachedMirror, getMyWork, saveMirror, sourceVersion } from "@/lib/wor
 import {
   factorLabel,
   moodByCode,
+  rescheduleReasonLabel,
   type MirrorObservation,
   type WorkDayStat,
   type WorkMirrorResult,
+  type WorkTaskReschedule,
 } from "@/lib/work";
 
 /**
@@ -55,6 +57,10 @@ const FEATURE_INSTRUCTIONS = [
   "  speaks for itself. Never advice.",
   "- Her own end-of-day notes are in the data. They're the richest signal — if they contradict the",
   "  numbers, that contrast is usually the most interesting thing you can point out.",
+  "- Rescheduling data is in there too: which days shed work, why she said it slipped, and any task",
+  "  that keeps moving. A task pushed repeatedly is usually a fact about the task or the week around",
+  "  it — the wrong size, the wrong day, blocked on someone — not about her discipline. Say what the",
+  "  pattern is; never suggest she should try harder.",
   "",
   "Respond with a JSON object only.",
 ].join("\n");
@@ -66,7 +72,10 @@ type Aggregates = ReturnType<typeof aggregate>;
  * signals rather than a dump of every row: a shorter, denser prompt produces observations about
  * the data rather than about the shape of the JSON.
  */
-function aggregate(history: WorkDayStat[]) {
+function aggregate(history: WorkDayStat[], reschedules: WorkTaskReschedule[], today: string) {
+  // Same cut-off the day rollups use: a task moved between two future days is a plan being
+  // revised, not a day that went wrong, and counting it would put imaginary slips in the tally.
+  const slips = reschedules.filter((r) => r.from_date <= today);
   const withMood = history.filter((d) => d.moodWeight !== null);
   const withDuration = history.filter((d) => d.durationMinutes !== null);
 
@@ -87,6 +96,11 @@ function aggregate(history: WorkDayStat[]) {
     avgWaiting: round1(mean(days.map((d) => d.waitingCount))),
     avgProjectsTouched: round1(mean(days.map((d) => d.projectsTouched))),
     avgDurationMinutes: round1(mean(days.filter((d) => d.durationMinutes !== null).map((d) => d.durationMinutes as number))),
+    // Included in the profile, not just at the top level, so the higher/lower-mood and
+    // first/second-half splits can relate slipping to everything else rather than leaving it as an
+    // isolated total. "The days she pushes most work are also the lowest-mood days" is only
+    // available if both numbers are computed over the same subset.
+    avgTasksPushedOut: round1(mean(days.map((d) => d.tasksPushedOut))),
     commonFactors: topFactors(days, 3),
   });
 
@@ -106,6 +120,15 @@ function aggregate(history: WorkDayStat[]) {
     secondHalf: profile(chronological.slice(mid)),
     moodCounts: countBy(history.map((d) => d.mood).filter(Boolean) as string[], (m) => moodByCode(m)?.label ?? m),
     factorCounts: countBy(history.flatMap((d) => d.factors), factorLabel),
+    totalTasksPushed: slips.length,
+    // Only the reasons actually given. A slip with no reason is absent rather than counted as
+    // "unknown": a large "unknown" bucket reads as a category and the model will describe it as one.
+    pushReasonCounts: countBy(
+      slips.map((r) => r.reason).filter(Boolean) as string[],
+      rescheduleReasonLabel
+    ),
+    // The strongest single signal this data carries. One push is a Tuesday; five is the task.
+    repeatedlyPushed: repeatedlyPushed(slips),
     // The reflections are the person's own words about their own days — the richest signal here,
     // and the only free text included.
     recentNotes: history
@@ -113,6 +136,43 @@ function aggregate(history: WorkDayStat[]) {
       .slice(0, 8)
       .map((d) => ({ date: d.work_date, mood: moodByCode(d.mood ?? "")?.label ?? d.mood, note: d.note })),
   };
+}
+
+/**
+ * Tasks that moved more than once, worst first.
+ *
+ * Grouped by task_id where there is one, falling back to the title only for slips whose task has
+ * since been deleted — grouping by title alone would split a renamed task into two innocent-looking
+ * halves and hide exactly the pattern this is for. The title reported is the most recent one.
+ */
+function repeatedlyPushed(slips: WorkTaskReschedule[]) {
+  const byTask = new Map<string, { title: string; times: number; reasons: string[]; latest: string }>();
+
+  for (const slip of slips) {
+    const key = slip.task_id ?? `title:${slip.task_title}`;
+    const found = byTask.get(key);
+    if (found) {
+      found.times += 1;
+      if (slip.reason) found.reasons.push(rescheduleReasonLabel(slip.reason));
+      if (slip.created_at > found.latest) {
+        found.latest = slip.created_at;
+        found.title = slip.task_title;
+      }
+    } else {
+      byTask.set(key, {
+        title: slip.task_title,
+        times: 1,
+        reasons: slip.reason ? [rescheduleReasonLabel(slip.reason)] : [],
+        latest: slip.created_at,
+      });
+    }
+  }
+
+  return Array.from(byTask.values())
+    .filter((t) => t.times > 1)
+    .sort((a, b) => b.times - a.times)
+    .slice(0, 5)
+    .map(({ title, times, reasons }) => ({ title, times, reasons }));
 }
 
 function topFactors(days: WorkDayStat[], n: number): string[] {
@@ -179,7 +239,7 @@ export async function POST(req: Request) {
   const voice: VoiceMode = isVoiceMode(body.voice) ? body.voice : "normal";
 
   return handle(async (email): Promise<WorkMirrorResult> => {
-    const { history, needsSetup } = await getMyWork(email);
+    const { history, reschedules, today, needsSetup } = await getMyWork(email);
 
     if (needsSetup) {
       return {
@@ -208,7 +268,7 @@ export async function POST(req: Request) {
       };
     }
 
-    const aggregates = aggregate(history);
+    const aggregates = aggregate(history, reschedules, today);
     // Voice is part of the key: the same numbers in a different register genuinely are a different
     // answer, and serving a plain-register insight to someone in Gaby's View (or vice versa) would
     // look like the mode had silently stopped working.

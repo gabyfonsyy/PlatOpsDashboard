@@ -5,8 +5,15 @@ import { useRouter } from "next/navigation";
 import { ProjectStrip, TaskBoard } from "@/components/work/TaskBoard";
 import { UpcomingPanel } from "@/components/work/UpcomingPanel";
 import { RepeatingList } from "@/components/work/RepeatingList";
+import { RescheduleReasonStrip } from "@/components/work/RescheduleReasonStrip";
 import { celebrate } from "@/lib/celebrate";
-import { isOpen, type WorkProject, type WorkRecurrence, type WorkTask } from "@/lib/work";
+import {
+  isOpen,
+  pushTargetDate,
+  type WorkProject,
+  type WorkRecurrence,
+  type WorkTask,
+} from "@/lib/work";
 
 /**
  * Owns the two pieces of state shared across this page's task surfaces (it's My Work in Light and
@@ -50,6 +57,12 @@ export function MyWorkView({
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The slip that was just made, if any — what the reason strip describes. One at a time: pushing
+   * a second task supersedes the first, because a stack of "why?" prompts is a form, and this is
+   * meant to be a question you can ignore.
+   */
+  const [slip, setSlip] = useState<{ task: WorkTask; from: string; to: string } | null>(null);
 
   // The server hands these over already partitioned; they're re-merged here so the optimistic
   // reducer sees every task it might have to move, then re-partitioned below off `work_date`.
@@ -88,6 +101,16 @@ export function MyWorkView({
 
   function patchTask(task: WorkTask, patch: Partial<WorkTask>) {
     setError(null);
+    /**
+     * Any move to a LATER day is a slip, however it was made — the push button, the row's date
+     * field, a drag added later. Detected here rather than in the push handler so every path gets
+     * the same follow-up question, and so this stays in step with the server, which logs on
+     * exactly the same condition (see updateTask). Moving a task EARLIER is the opposite act and
+     * gets no strip.
+     */
+    if (typeof patch.work_date === "string" && patch.work_date > task.work_date) {
+      setSlip({ task, from: task.work_date, to: patch.work_date });
+    }
     startTransition(async () => {
       applyOptimistic({ ids: [task.task_id], patch });
       try {
@@ -96,7 +119,64 @@ export function MyWorkView({
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         celebrate("nope");
+        setSlip(null); // the move didn't happen, so there is nothing to explain
         router.refresh();
+      }
+    });
+  }
+
+  /** One click: to the next working day, from today if the task is already overdue. */
+  function pushTask(task: WorkTask) {
+    patchTask(task, { work_date: pushTargetDate(task.work_date, today) });
+  }
+
+  /**
+   * Puts the task back and removes the slip that was just logged, so an undone misclick leaves no
+   * trace in the reason tallies. The PATCH is backward, so it is never logged as a new slip.
+   */
+  function undoSlip() {
+    if (!slip) return;
+    const { task, from } = slip;
+    setSlip(null);
+    setError(null);
+    startTransition(async () => {
+      applyOptimistic({ ids: [task.task_id], patch: { work_date: from } });
+      try {
+        await send("PATCH", { task_id: task.task_id, work_date: from });
+        await fetch("/api/work/tasks/reason", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task_id: task.task_id }),
+        });
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        router.refresh();
+      }
+    });
+  }
+
+  /**
+   * Copies a task onto another day, leaving the original where it is. Not optimistic: the new row
+   * is the server's to mint (id, stamps, the fields a copy inherits), and inventing a placeholder
+   * task client-side to be replaced a moment later is how two ids for one task get into a list.
+   */
+  function copyTask(task: WorkTask, date: string) {
+    setError(null);
+    startTransition(async () => {
+      try {
+        const res = await fetch("/api/work/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ copy_of: task.task_id, work_date: date }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || json?.ok === false) throw new Error(json?.error || `HTTP ${res.status}`);
+        celebrate("success");
+        router.refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        celebrate("nope");
       }
     });
   }
@@ -154,6 +234,19 @@ export function MyWorkView({
     <div className="flex flex-col gap-6">
       {error && <p className="text-xs text-red-600">{error}</p>}
 
+      {/* Above the board, because the task it is asking about has just left the board. */}
+      {slip && (
+        <RescheduleReasonStrip
+          key={`${slip.task.task_id}:${slip.to}`}
+          task={slip.task}
+          from={slip.from}
+          to={slip.to}
+          today={today}
+          onUndo={undoSlip}
+          onDismiss={() => setSlip(null)}
+        />
+      )}
+
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
         <div className="xl:col-span-2 flex flex-col gap-4">
           <h2 className="text-sm font-semibold text-neutral-900">Today</h2>
@@ -166,6 +259,8 @@ export function MyWorkView({
             onToggleDone={toggleDone}
             onPatch={patchTask}
             onDelete={removeTask}
+            onPush={pushTask}
+            onCopy={copyTask}
           />
         </div>
 
@@ -197,6 +292,8 @@ export function MyWorkView({
         onToggleDone={toggleDone}
         onPatch={patchTask}
         onDelete={removeTask}
+        onPush={pushTask}
+        onCopy={copyTask}
         onMoveMany={moveMany}
       />
     </div>

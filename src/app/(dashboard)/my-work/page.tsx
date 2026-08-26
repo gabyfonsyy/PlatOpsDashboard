@@ -36,6 +36,7 @@ const EMPTY: MyWorkData = {
   overdue: [],
   recurrences: [],
   recurrencesReady: false,
+  reschedules: [],
 };
 
 export default async function MyWorkPage() {
