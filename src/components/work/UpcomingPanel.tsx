@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { TaskRow } from "@/components/work/TaskBoard";
 import { Copy } from "@/components/ui/Copy";
 import {
+  DECK_COPY,
   dayDistance,
   dayLabel,
   groupTasksByDay,
@@ -28,6 +29,7 @@ export function UpcomingPanel({
   upcoming,
   overdue,
   projects,
+  slipCounts,
   onToggleDone,
   onPatch,
   onDelete,
@@ -39,6 +41,8 @@ export function UpcomingPanel({
   upcoming: WorkTask[];
   overdue: WorkTask[];
   projects: WorkProject[];
+  /** Passed straight through to the rows, which mark anything pushed more than once. */
+  slipCounts: Map<string, number>;
   onToggleDone: (t: WorkTask) => void;
   onPatch: (t: WorkTask, patch: Partial<WorkTask>) => void;
   onDelete: (t: WorkTask) => void;
@@ -62,7 +66,9 @@ export function UpcomingPanel({
         className="flex items-center gap-2 self-start group"
       >
         <CalendarClock className="w-4 h-4 text-neutral-400" />
-        <h2 className="text-sm font-semibold text-neutral-900">Ahead</h2>
+        <h2 className="text-sm font-semibold text-neutral-900">
+          <Copy serious={DECK_COPY.ahead.serious} playful={DECK_COPY.ahead.playful} />
+        </h2>
         <span className="text-xs text-neutral-400">
           {total === 0
             ? "nothing planned"
@@ -103,6 +109,7 @@ export function UpcomingPanel({
                   today={today}
                   tasks={tasks}
                   projects={projects}
+                  slipCounts={slipCounts}
                   onToggleDone={onToggleDone}
                   onPatch={onPatch}
                   onDelete={onDelete}
@@ -131,6 +138,7 @@ export function UpcomingPanel({
                 today={today}
                 tasks={tasks}
                 projects={projects}
+                slipCounts={slipCounts}
                 onToggleDone={onToggleDone}
                 onPatch={onPatch}
                 onDelete={onDelete}
@@ -156,6 +164,7 @@ function DayGroup({
   today,
   tasks,
   projects,
+  slipCounts,
   onToggleDone,
   onPatch,
   onDelete,
@@ -167,6 +176,7 @@ function DayGroup({
   today: string;
   tasks: WorkTask[];
   projects: WorkProject[];
+  slipCounts: Map<string, number>;
   onToggleDone: (t: WorkTask) => void;
   onPatch: (t: WorkTask, patch: Partial<WorkTask>) => void;
   onDelete: (t: WorkTask) => void;
@@ -199,6 +209,7 @@ function DayGroup({
             task={task}
             projects={projects}
             today={today}
+            slipCount={slipCounts.get(task.task_id) ?? 0}
             onToggleDone={onToggleDone}
             onPatch={onPatch}
             onDelete={onDelete}

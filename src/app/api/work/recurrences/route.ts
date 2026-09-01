@@ -25,6 +25,9 @@ const PATCHABLE = new Set([
   "start_date",
   "end_date",
   "paused",
+  // Inherited by future untouched instances, so re-triaging the rule re-triages the routine.
+  "urgent",
+  "important",
 ]);
 
 function invalid(field: string, value: unknown, allowed: readonly string[]): string | null {
@@ -81,6 +84,8 @@ export async function POST(req: NextRequest) {
       end_date: (body.end_date as string) || null,
       byweekday: body.byweekday === undefined ? undefined : Number(body.byweekday),
       bymonthday: body.bymonthday === undefined ? undefined : Number(body.bymonthday),
+      urgent: (body.urgent as boolean | null) ?? null,
+      important: (body.important as boolean | null) ?? null,
     });
     revalidatePath("/my-work");
     return rule;

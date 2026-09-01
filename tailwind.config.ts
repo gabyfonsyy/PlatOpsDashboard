@@ -66,6 +66,18 @@ const config: Config = {
           "35%": { transform: "scale(1.06)" },
           "100%": { transform: "scale(1)" },
         },
+        // Arrival of a floating popup from the bottom-right — the reschedule prompt. Short and
+        // one-shot, and the global reduced-motion block already collapses it to nothing.
+        "toast-in": {
+          "0%": { opacity: "0", transform: "translateY(10px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
+        // A critical signal light, breathing. Slow and shallow: it has to read as "alive and
+        // serious", never as an alarm, on a screen someone keeps open all day.
+        "signal-pulse": {
+          "0%, 100%": { opacity: "1" },
+          "50%": { opacity: "0.45" },
+        },
       },
       animation: {
         "dropdown-in": "dropdown-in 0.16s cubic-bezier(0.16, 1, 0.3, 1)",
@@ -76,6 +88,8 @@ const config: Config = {
         "fade-in": "fade-in 0.8s ease-out both",
         "sheen-sweep": "sheen-sweep 0.9s cubic-bezier(0.16, 1, 0.3, 1)",
         "score-flash": "score-flash 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
+        "toast-in": "toast-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) both",
+        "signal-pulse": "signal-pulse 2.4s ease-in-out infinite",
       },
       boxShadow: {
         // Theme-driven so dark/adhd get their own depth and bloom rather than a light-mode
@@ -113,6 +127,30 @@ const config: Config = {
           900: v("a-900"),
           950: v("a-950"),
         },
+
+        /**
+         * Gaby accent — lavender. The second accent, and it means one thing: THIS IS YOURS.
+         * Selected states, personal surfaces, the register itself.
+         *
+         * Deliberately not a status colour. `sprout` is interactive, `ok`/`warn`/`danger` are
+         * states, and this is identity — the moment lavender also means "warning" somewhere,
+         * neither reading survives anywhere.
+         */
+        gaby: {
+          50: v("g-50"),
+          100: v("g-100"),
+          200: v("g-200"),
+          300: v("g-300"),
+          400: v("g-400"),
+          500: v("g-500"),
+          600: v("g-600"),
+          700: v("g-700"),
+          800: v("g-800"),
+          900: v("g-900"),
+        },
+
+        /** A decorative warm point. Never carries meaning — see the star field in globals.css. */
+        peach: v("peach"),
 
         // Neutral ramp. In dark/adhd the ramp is INVERTED (50 = darkest, 900 = lightest) so the
         // existing semantics hold: `text-neutral-900` stays "primary text", `bg-neutral-50`

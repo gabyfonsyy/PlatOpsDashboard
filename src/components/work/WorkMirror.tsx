@@ -5,6 +5,7 @@ import { Loader2, RefreshCw } from "lucide-react";
 import type { WorkMirrorResult } from "@/lib/work";
 import { useTheme } from "@/components/theme/ThemeProvider";
 import { voiceForTheme } from "@/lib/ai-voice";
+import { Copy } from "@/components/ui/Copy";
 
 /**
  * Work Mirror. A quiet observer, and the UI has to hold that line as much as the prompt does:
@@ -47,7 +48,9 @@ export function WorkMirror({ daysAvailable }: { daysAvailable: number }) {
     <div className="card p-5 flex flex-col gap-4">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h2 className="text-sm font-semibold text-neutral-900">🪞 Work Mirror</h2>
+          <h2 className="text-sm font-semibold text-neutral-900">
+            <Copy serious="🪞 Work Mirror" playful="🛰 Mission Debrief" />
+          </h2>
           <p className="text-xs text-neutral-500 mt-0.5 max-w-xl">
             Patterns across your tracked days — durations, tasks, projects, moods and your own
             notes. It reports what it sees; it doesn&apos;t give advice. Runs only when you ask,

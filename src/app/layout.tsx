@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Providers } from "./providers";
+import { SpaceField } from "@/components/theme/SpaceField";
 
 export const metadata: Metadata = {
   title: "Platform Operations Dashboard | Sprout",
@@ -27,6 +28,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
       </head>
       <body>
+        {/* Gaby View's atmosphere. Rendered in every theme and hidden by CSS rather than mounted
+            from JS — the theme comes from a pre-hydration script, so a JS gate would pop the whole
+            field in after hydration on every load. Hidden spans cost nothing, and this way the sky
+            is already there in the first paint it belongs to. */}
+        <SpaceField />
         <Providers>{children}</Providers>
       </body>
     </html>

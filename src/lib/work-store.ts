@@ -19,6 +19,10 @@ import {
   moodByCode,
   nextOccurrence,
   occurrencesBetween,
+  parkComplaint,
+  tallyQuadrants,
+  toPhaseList,
+  toStringList,
 } from "@/lib/work";
 
 /**
@@ -143,9 +147,12 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
       .gte("work_date", since)
       .lte("work_date", until)
       .order("created_at", { ascending: true }),
+    // `*` for the same reason as work_tasks above: urgent/important and the park columns arrive
+    // with a migration that may not have been run yet, and naming a column that does not exist
+    // fails the whole query and takes the Projects panel down with it.
     supabase
       .from("work_projects")
-      .select("project_id,name,status,notes,last_activity_at,created_at")
+      .select("*")
       .eq("user_email", email)
       .order("created_at", { ascending: true }),
     supabase
@@ -203,8 +210,12 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
   const sessions = (sessionsRes.data ?? []) as WorkSession[];
   // recurrence_id is normalised to null rather than left undefined: pre-migration rows don't carry
   // the column at all, and `undefined` would slip past every `x === null` check downstream.
+  // urgent/important get the same treatment for the same reason, and the distinction matters more
+  // here than it did for recurrence_id: null is a MEANING ("not sorted yet"), so a pre-migration
+  // row has to arrive as null rather than as undefined, which quadrantOf would read identically
+  // but every `x === null` check downstream would not.
   let allTasks = ((tasksRes.data ?? []) as Array<Record<string, unknown>>).map(
-    (row) => ({ ...row, recurrence_id: (row.recurrence_id as string | null) ?? null }) as WorkTask
+    (row) => normaliseTask(row)
   );
   const checkins = ((checkinsRes.data ?? []) as Array<Record<string, unknown>>).map(toCheckin);
 
@@ -240,8 +251,11 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
       open[0] ??
       null;
     return {
-      ...(p as WorkProject),
+      ...normaliseProject(p as Record<string, unknown>),
       openTaskCount: open.length,
+      // The evidence against which the project's own quadrant is a claim. Open tasks only: a
+      // project's finished work says what it WAS, and the question here is what it is now.
+      taskQuadrants: tallyQuadrants(open),
       currentFocus: focus?.title ?? null,
     } as WorkProject;
   });
@@ -281,6 +295,46 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
       .filter((t) => t.work_date < today && openOnly(t))
       .sort((a, b) => a.work_date.localeCompare(b.work_date) || a.created_at.localeCompare(b.created_at)),
   };
+}
+
+/**
+ * Every column added after the first release is optional in the row that comes back, because the
+ * migration adding it is run by hand and may not have been. These two put the shape back: absent
+ * becomes null, which is a value the rest of the app already understands, rather than undefined,
+ * which quietly passes through `=== null` guards and JSON.stringify alike.
+ */
+function normaliseTask(row: Record<string, unknown>): WorkTask {
+  return {
+    ...row,
+    recurrence_id: (row.recurrence_id as string | null) ?? null,
+    urgent: typeof row.urgent === "boolean" ? row.urgent : null,
+    important: typeof row.important === "boolean" ? row.important : null,
+    park_reason: (row.park_reason as string | null) ?? null,
+    park_decision: (row.park_decision as string | null) ?? null,
+    parked_at: (row.parked_at as string | null) ?? null,
+    phase_id: (row.phase_id as string | null) ?? null,
+  } as WorkTask;
+}
+
+function normaliseProject(row: Record<string, unknown>): WorkProject {
+  return {
+    ...row,
+    urgent: typeof row.urgent === "boolean" ? row.urgent : null,
+    important: typeof row.important === "boolean" ? row.important : null,
+    park_reason: (row.park_reason as string | null) ?? null,
+    park_decision: (row.park_decision as string | null) ?? null,
+    parked_at: (row.parked_at as string | null) ?? null,
+    problem: (row.problem as string | null) ?? null,
+    outcome: (row.outcome as string | null) ?? null,
+    metric_baseline: (row.metric_baseline as string | null) ?? null,
+    metric_target: (row.metric_target as string | null) ?? null,
+    metric_by_when: (row.metric_by_when as string | null) ?? null,
+    // jsonb round-trips as unknown, and a pre-migration row carries no column at all. Both have to
+    // become an empty array here rather than reaching a `.map` somewhere in the UI as undefined.
+    explicitly_out: toStringList(row.explicitly_out),
+    phases: toPhaseList(row.phases),
+    owner: (row.owner as string | null) ?? null,
+  } as WorkProject;
 }
 
 function toCheckin(row: Record<string, unknown>): WorkCheckin {
@@ -379,6 +433,10 @@ function instanceFrom(rule: WorkRecurrence, email: string, work_date: string) {
     priority: rule.priority,
     project_id: rule.project_id,
     notes: rule.notes,
+    // The instance is born already sorted. A routine whose quadrant has to be re-picked every
+    // morning is a routine whose quadrant never gets picked at all.
+    urgent: rule.urgent ?? null,
+    important: rule.important ?? null,
     work_date,
   };
 }
@@ -499,6 +557,8 @@ export async function createRecurrence(
     end_date?: string | null;
     byweekday?: number | null;
     bymonthday?: number | null;
+    urgent?: boolean | null;
+    important?: boolean | null;
   }
 ): Promise<WorkRecurrence> {
   const supabase = getSupabaseClient();
@@ -525,6 +585,8 @@ export async function createRecurrence(
       project_id: input.project_id ?? null,
       notes: input.notes ?? null,
       freq: input.freq,
+      urgent: input.urgent ?? null,
+      important: input.important ?? null,
       byweekday,
       bymonthday,
       start_date: start,
@@ -545,7 +607,7 @@ export async function createRecurrence(
 }
 
 /** Fields a rule change propagates to its future untouched instances. */
-const INHERITED = ["title", "lane", "priority", "project_id", "notes"] as const;
+const INHERITED = ["title", "lane", "priority", "project_id", "notes", "urgent", "important"] as const;
 /** Fields that change WHICH days fire, so existing future instances have to be rebuilt. */
 const RESCHEDULING = ["freq", "byweekday", "bymonthday", "start_date", "end_date", "paused"] as const;
 
@@ -675,6 +737,72 @@ export async function getCachedMirror(email: string, version: string): Promise<C
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * The generic pair, for any context other than Work Mirror.
+ *
+ * ai_insight_cache was built generic (context + entity_id) precisely so the next AI feature would
+ * reuse it instead of adding another cache with its own invalidation bugs — but the only helpers
+ * on it were mirror-shaped. These two are the generic ones the table was designed for; the mirror
+ * pair stays as it is because it carries a typed row shape of its own.
+ *
+ * Both swallow their errors, for the same reasons as the mirror pair: a broken cache must behave
+ * exactly like a cache miss, and a failed write must not fail the request that already paid for
+ * the answer.
+ */
+export async function getCachedInsight<T>(
+  email: string,
+  context: string,
+  entityId: string,
+  version: string
+): Promise<{ content: T; model: string | null; generated_at: string } | null> {
+  try {
+    const { data, error } = await getSupabaseClient()
+      .from("ai_insight_cache")
+      .select("content_json,model_used,generated_at")
+      .eq("user_email", email)
+      .eq("context", context)
+      .eq("entity_id", entityId)
+      .eq("source_version", version)
+      .maybeSingle();
+    if (error || !data || data.content_json === null) return null;
+    return {
+      content: data.content_json as T,
+      model: (data.model_used as string | null) ?? null,
+      generated_at: String(data.generated_at),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function saveInsight(
+  email: string,
+  context: string,
+  entityId: string,
+  version: string,
+  content: unknown,
+  model: string
+): Promise<void> {
+  try {
+    await getSupabaseClient()
+      .from("ai_insight_cache")
+      .upsert(
+        {
+          user_email: email,
+          context,
+          entity_id: entityId,
+          source_version: version,
+          content_json: content,
+          model_used: model,
+          generated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_email,context,entity_id,source_version" }
+      );
+  } catch {
+    // Intentionally swallowed — see above.
   }
 }
 
@@ -966,9 +1094,41 @@ export async function createTask(
     notes?: string;
     /** 'yyyy-MM-dd'. Defaults to today; a future date plans the task instead of adding it now. */
     work_date?: string;
+    /** Eisenhower axes. Omitted means unsorted, which is a legitimate way to capture something fast. */
+    urgent?: boolean | null;
+    important?: boolean | null;
+    /** Which phase of its project this advances. Points at ProjectPhase.id. */
+    phase_id?: string | null;
   }
 ): Promise<WorkTask> {
   const supabase = getSupabaseClient();
+
+  /**
+   * A task on a project starts in the project's square unless it says otherwise.
+   *
+   * Not a convenience — it is what makes the drift finding mean anything. If every task has to be
+   * triaged from scratch, the quadrants scatter for no reason and "this Protect project is being
+   * worked in Drive" stops being a signal and becomes an artefact of not bothering. Inheriting
+   * makes the DEFAULT agree with the claim, so a divergence is something you actually did.
+   *
+   * Only when the caller left both axes unset. An explicit answer — including a deliberate
+   * "Unsorted" — is never overwritten, and one axis answered alone is left half-answered rather
+   * than completed on her behalf.
+   */
+  let { urgent, important } = { urgent: input.urgent ?? null, important: input.important ?? null };
+  if (input.project_id && urgent === null && important === null) {
+    const parent = await supabase
+      .from("work_projects")
+      .select("urgent,important")
+      .eq("project_id", input.project_id)
+      .eq("user_email", email)
+      .maybeSingle();
+    const row = parent.data as { urgent?: unknown; important?: unknown } | null;
+    if (typeof row?.urgent === "boolean" && typeof row?.important === "boolean") {
+      urgent = row.urgent;
+      important = row.important;
+    }
+  }
   const { data, error } = await supabase
     .from("work_tasks")
     .insert({
@@ -978,14 +1138,18 @@ export async function createTask(
       priority: input.priority ?? "Normal",
       project_id: input.project_id ?? null,
       notes: input.notes ?? null,
+      urgent,
+      important,
+      phase_id: input.phase_id ?? null,
       work_date: input.work_date ?? manilaToday(),
     })
     .select("*")
     .single();
   assertSetup(error);
+  assertTriageColumns(error);
   if (error) throw new Error(`Could not add task: ${error.message}`);
   if (input.project_id) await touchProject(email, input.project_id);
-  return data as WorkTask;
+  return normaliseTask(data as Record<string, unknown>);
 }
 
 /**
@@ -1008,6 +1172,20 @@ export async function updateTask(
     update.completed_at = patch.status === "Done" ? now : null;
     update.deferred_at = patch.status === "Deferred" ? now : null;
     if (patch.status === "In Progress") update.started_at = now;
+
+    /**
+     * Deferred IS parked, at the task level, so the park stamp follows the status rather than
+     * being a separate thing to remember. Leaving the state clears the reason and the decision
+     * too: a stale "why this was parked" attached to work that is now live reads as current and
+     * is the exact kind of half-true record this page is supposed not to keep.
+     */
+    if (patch.status === "Deferred") {
+      update.parked_at = now;
+    } else {
+      update.parked_at = null;
+      update.park_reason = null;
+      update.park_decision = null;
+    }
   }
 
   /**
@@ -1035,9 +1213,10 @@ export async function updateTask(
     .select("*")
     .single();
   assertSetup(error);
+  assertTriageColumns(error);
   if (error) throw new Error(`Could not update task: ${error.message}`);
 
-  const task = data as WorkTask;
+  const task = normaliseTask(data as Record<string, unknown>);
 
   /**
    * Logged here rather than at each call site, so every path that moves a day — the push button,
@@ -1077,6 +1256,35 @@ async function logReschedule(
     });
   } catch {
     // Intentionally swallowed — see above.
+  }
+}
+
+/**
+ * The Eisenhower columns are the newest migration of the lot, and unlike the tables above they are
+ * added to tables that already exist — so a page against an un-migrated database READS fine (the
+ * star selects simply do not include them) and only fails on the first WRITE. Which makes a bare
+ * PostgREST "could not find the column" the single most likely error anyone sees here, and the
+ * one least likely to suggest its own fix. This turns it into the instruction.
+ */
+function assertTriageColumns(error: { code?: string; message?: string } | null): void {
+  if (!error) return;
+  const message = error.message ?? "";
+  if (isMissingColumn(error) && /urgent|important|park_reason|park_decision|parked_at/i.test(message)) {
+    throw new Error(
+      "The Eisenhower columns aren't there yet — re-run supabase/my-work.sql in the Supabase SQL editor. It's idempotent."
+    );
+  }
+}
+
+/** The brief columns arrive with the same hand-run migration, and fail the same way. */
+function assertBriefColumns(error: { code?: string; message?: string } | null): void {
+  if (!error) return;
+  const message = error.message ?? "";
+  const named = /problem|outcome|metric_baseline|metric_target|metric_by_when|explicitly_out|phases|owner/i;
+  if (isMissingColumn(error) && named.test(message)) {
+    throw new Error(
+      "The project brief columns aren't there yet — re-run supabase/my-work.sql in the Supabase SQL editor. It's idempotent."
+    );
   }
 }
 
@@ -1192,14 +1400,23 @@ export async function copyTask(email: string, taskId: string, workDate: string):
       priority: String(row.priority),
       project_id: (row.project_id as string | null) ?? null,
       notes: (row.notes as string | null) ?? null,
+      // The triage travels with the copy — it is the same kind of work on another day. The PARK
+      // does not: a copy is something you intend to do, and inheriting "parked, because X" would
+      // put a fresh task on the board already carrying somebody else's excuse.
+      urgent: typeof row.urgent === "boolean" ? row.urgent : null,
+      important: typeof row.important === "boolean" ? row.important : null,
+      // Same reasoning as the triage: a copy is the same work on another day, so it belongs to
+      // the same phase of the same plan.
+      phase_id: (row.phase_id as string | null) ?? null,
       work_date: workDate,
     })
     .select("*")
     .single();
   assertSetup(error);
+  assertTriageColumns(error);
   if (error) throw new Error(`Could not copy that task: ${error.message}`);
 
-  const task = data as WorkTask;
+  const task = normaliseTask(data as Record<string, unknown>);
   if (task.project_id) await touchProject(email, task.project_id);
   return task;
 }
@@ -1228,7 +1445,7 @@ export async function updateTasks(
     .select("*");
   assertSetup(error);
   if (error) throw new Error(`Could not move tasks: ${error.message}`);
-  return (data ?? []) as WorkTask[];
+  return (data ?? []).map((row) => normaliseTask(row as Record<string, unknown>));
 }
 
 export async function deleteTask(email: string, taskId: string): Promise<void> {
@@ -1243,7 +1460,15 @@ export async function deleteTask(email: string, taskId: string): Promise<void> {
 
 export async function createProject(
   email: string,
-  input: { name: string; status?: string; notes?: string }
+  input: {
+    name: string;
+    status?: string;
+    notes?: string;
+    urgent?: boolean | null;
+    important?: boolean | null;
+    /** The one-pager. Every field optional — see BRIEF_COLUMNS. */
+    brief?: Record<string, unknown>;
+  }
 ): Promise<WorkProject> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
@@ -1253,13 +1478,70 @@ export async function createProject(
       name: input.name.trim(),
       status: input.status ?? "Active",
       notes: input.notes ?? null,
+      urgent: input.urgent ?? null,
+      important: input.important ?? null,
+      ...(input.brief ?? {}),
       last_activity_at: new Date().toISOString(),
     })
-    .select("project_id,name,status,notes,last_activity_at,created_at")
+    .select("*")
     .single();
   assertSetup(error);
+  assertTriageColumns(error);
+  assertBriefColumns(error);
   if (error) throw new Error(`Could not add project: ${error.message}`);
-  return data as WorkProject;
+  return normaliseProject(data as Record<string, unknown>);
+}
+
+/**
+ * A project may only enter Paused with a stated reason AND a named decision — the rule that
+ * separates parking something from letting it rot.
+ *
+ * Enforced in the store rather than in the route so it holds for every caller, and checked against
+ * the MERGED row (what is already stored plus what is being written) so re-pausing a project that
+ * already carries both does not demand them again. Leaving Paused clears all three columns, for
+ * the same reason updateTask clears them: a reason that describes a state you are no longer in is
+ * worse than no reason at all.
+ *
+ * "Not a slipped date" is the part that cannot be enforced by a NOT NULL — a decision is named or
+ * it is not, and only a person can tell. What the check does buy is that the question gets asked
+ * at the moment of parking, which is the only moment anyone has an honest answer to it.
+ */
+async function resolveParkFields(
+  email: string,
+  projectId: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  const leavingOrStaying = patch.status;
+  if (leavingOrStaying === undefined && !("park_reason" in patch) && !("park_decision" in patch)) {
+    return;
+  }
+
+  const current = await getSupabaseClient()
+    .from("work_projects")
+    .select("*")
+    .eq("project_id", projectId)
+    .eq("user_email", email)
+    .maybeSingle();
+  const row = (current.data ?? {}) as Record<string, unknown>;
+  const status = leavingOrStaying === undefined ? String(row.status ?? "") : String(leavingOrStaying);
+
+  if (status !== "Paused") {
+    if (String(row.status ?? "") === "Paused") {
+      patch.park_reason = null;
+      patch.park_decision = null;
+      patch.parked_at = null;
+    }
+    return;
+  }
+
+  const merged = {
+    park_reason: "park_reason" in patch ? (patch.park_reason as string | null) : (row.park_reason as string | null),
+    park_decision:
+      "park_decision" in patch ? (patch.park_decision as string | null) : (row.park_decision as string | null),
+  };
+  const complaint = parkComplaint(merged);
+  if (complaint) throw new Error(complaint);
+  patch.parked_at = (row.parked_at as string | null) ?? new Date().toISOString();
 }
 
 export async function updateProject(
@@ -1268,15 +1550,35 @@ export async function updateProject(
   patch: Record<string, unknown>
 ): Promise<WorkProject> {
   const supabase = getSupabaseClient();
+  await resolveParkFields(email, projectId, patch);
   const { data, error } = await supabase
     .from("work_projects")
     .update({ ...patch, updated_at: new Date().toISOString() })
     .eq("project_id", projectId)
     .eq("user_email", email)
-    .select("project_id,name,status,notes,last_activity_at,created_at")
+    .select("*")
     .single();
+  assertTriageColumns(error);
+  assertBriefColumns(error);
   if (error) throw new Error(`Could not update project: ${error.message}`);
-  return data as WorkProject;
+  return normaliseProject(data as Record<string, unknown>);
+}
+
+/**
+ * Deletes a project. Its tasks are NOT deleted with it — work_tasks.project_id is
+ * `on delete set null`, so they survive as ungrouped tasks.
+ *
+ * That is the right behaviour and it is worth being explicit about: the tasks record days that
+ * actually happened, and cascading would mean tidying up a project silently rewrote the history of
+ * every day it touched. The UI says how many tasks are about to be let loose before it asks.
+ */
+export async function deleteProject(email: string, projectId: string): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("work_projects")
+    .delete()
+    .eq("project_id", projectId)
+    .eq("user_email", email);
+  if (error) throw new Error(`Could not delete project: ${error.message}`);
 }
 
 /** Best-effort: a failed activity stamp must never fail the task write that triggered it. */

@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { handle } from "@/lib/work-route";
 import { copyTask, createTask, deleteTask, updateTask, updateTasks } from "@/lib/work-store";
-import { TASK_LANES, TASK_PRIORITIES, TASK_STATUSES } from "@/lib/work";
+import { TASK_LANES, TASK_PRIORITIES, TASK_STATUSES, parkComplaint } from "@/lib/work";
 
 /**
  * Whitelisted patch fields. Anything else in the body is dropped rather than forwarded, so a
@@ -12,7 +12,37 @@ import { TASK_LANES, TASK_PRIORITIES, TASK_STATUSES } from "@/lib/work";
  * work_date IS patchable: moving a task to another day is the whole of scheduling. It's validated
  * as a real calendar date below, so the CHECK-free `date` column can't be handed "tomorrow".
  */
-const PATCHABLE = new Set(["title", "lane", "status", "priority", "project_id", "notes", "work_date"]);
+const PATCHABLE = new Set([
+  "title",
+  "lane",
+  "status",
+  "priority",
+  "project_id",
+  "notes",
+  "work_date",
+  // The two Eisenhower axes, patched independently — the client sends the pair, but the whitelist
+  // lets either arrive alone so a half-answered triage is representable end to end.
+  "urgent",
+  "important",
+  // The two things parking is required to state. parked_at is NOT here: it is a stamp, and
+  // stamps belong to the server (see updateTask).
+  "park_reason",
+  "park_decision",
+  // Which phase of its project this advances. A free-text id rather than a validated enum: the
+  // phases live in the project's jsonb, so there is no list to check against without a second
+  // read, and the worst a bad value can do is render as unphased.
+  "phase_id",
+]);
+
+/**
+ * The axes are tri-state: true, false, or null for "not sorted yet". `undefined` means the field
+ * was not in the body at all and is left alone; anything else is a client bug, and letting a
+ * string "true" through would put a value in the column that quadrantOf reads as unsorted forever.
+ */
+function invalidTriState(field: string, value: unknown): string | null {
+  if (value === undefined || value === null || typeof value === "boolean") return null;
+  return `Invalid ${field}: expected true, false or null`;
+}
 
 function invalid(field: string, value: unknown, allowed: readonly string[]): string | null {
   if (value === undefined) return null;
@@ -40,6 +70,8 @@ function validate(body: Record<string, unknown>): string | null {
     invalid("lane", body.lane, TASK_LANES) ??
     invalid("status", body.status, TASK_STATUSES) ??
     invalid("priority", body.priority, TASK_PRIORITIES) ??
+    invalidTriState("urgent", body.urgent) ??
+    invalidTriState("important", body.important) ??
     invalidDate(body.work_date)
   );
 }
@@ -76,6 +108,9 @@ export async function POST(req: NextRequest) {
       project_id: (body.project_id as string | null) || null,
       notes: (body.notes as string) || undefined,
       work_date: (body.work_date as string) || undefined,
+      urgent: (body.urgent as boolean | null) ?? null,
+      important: (body.important as boolean | null) ?? null,
+      phase_id: (body.phase_id as string | null) || null,
     });
     revalidatePath("/my-work");
     return task;
@@ -99,6 +134,20 @@ export async function PATCH(req: NextRequest) {
     if (bad) throw new Error(bad);
     const patch: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(body)) if (PATCHABLE.has(k)) patch[k] = v;
+
+    /**
+     * Parking a task is the task-level version of pausing a project, and it gets the same rule:
+     * a stated reason and a named decision, or it is not a park. Checked only when Deferred is
+     * being set in THIS request — a batch that happens to touch already-parked tasks is a
+     * reschedule, not a re-park, and re-asking there would break bulk moves for no gain.
+     */
+    if (patch.status === "Deferred") {
+      const complaint = parkComplaint({
+        park_reason: patch.park_reason as string | null,
+        park_decision: patch.park_decision as string | null,
+      });
+      if (complaint) throw new Error(complaint);
+    }
     const result = ids.length > 0 ? await updateTasks(email, ids, patch) : await updateTask(email, id, patch);
     revalidatePath("/my-work");
     return result;

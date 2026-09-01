@@ -81,17 +81,46 @@ export function OverviewQuickPanel() {
 
   return (
     <>
+      {/*
+        A tab on the right edge, not an icon in the header.
+
+        It was in the header beside the theme toggle, where it sat close enough to the pill nav to
+        read as part of it — and it is not navigation. This is a thing you consult mid-task and
+        then dismiss, so it belongs at the edge of the screen the panel slides out of: the button
+        and the panel are visibly the same object, one pulled out of the other.
+
+        Vertically centred and fixed, so it is in the same place on every page and never moves as
+        content scrolls. `z-30` puts it under the panel (z-50) and over the page.
+      */}
       <button
         onClick={() => setOpen(true)}
-        className="relative text-neutral-400 hover:text-sprout-700 transition-colors p-1"
+        className={cn(
+          "group fixed right-0 top-1/2 -translate-y-1/2 z-30",
+          "flex items-center gap-2 py-3 pl-2.5 pr-2",
+          "rounded-l-xl border border-r-0 border-line/70 bg-surface/80 backdrop-blur-xl shadow-card",
+          "text-neutral-400 hover:text-sprout-700 hover:pr-3 transition-all duration-200",
+          open && "opacity-0 pointer-events-none"
+        )}
         aria-label="Today's overview"
         title="Today's overview"
       >
-        <Compass className="w-5 h-5" />
+        <Compass className="w-5 h-5 shrink-0" />
+        {/*
+          The label is written sideways and only opens on hover. A permanent word on a fixed edge
+          tab is a permanent distraction; an icon alone is a guess. `writing-mode` keeps the tab
+          narrow enough to sit outside the reading column at any width, and `max-w-0 -> max-w-8`
+          animates a real width rather than opacity, so the collapsed state reserves nothing.
+        */}
+        <span
+          className="max-w-0 group-hover:max-w-8 overflow-hidden transition-all duration-200 text-[11px] font-medium tracking-wide whitespace-nowrap"
+          style={{ writingMode: "vertical-rl" }}
+        >
+          Today
+        </span>
         {/* A dot rather than a count: this is a peek affordance, and a number on it would turn
             every page into a notification surface competing for attention. */}
         {data && (data.attention.length > 0 || data.priorityAttention.length > 0) && (
-          <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-500" />
+          <span className="absolute top-1.5 left-1.5 w-1.5 h-1.5 rounded-full bg-amber-500" />
         )}
       </button>
 

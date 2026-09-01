@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getMyWork } from "@/lib/work-store";
-import { dayLabel, formatDuration, moodByCode, type MyWorkData } from "@/lib/work";
+import { FOCUS_SOFT_LIMIT, dayLabel, formatDuration, moodByCode, type MyWorkData } from "@/lib/work";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { Copy } from "@/components/ui/Copy";
 import { PageTitle } from "@/components/ui/PageTitle";
@@ -62,6 +62,7 @@ export default async function MyWorkPage() {
     recurrences,
     recurrencesReady,
     recentDays,
+    reschedules,
     needsSetup,
   } = data;
 
@@ -137,12 +138,23 @@ export default async function MyWorkPage() {
             sublabel={`${doneToday} done`}
             tooltip="Everything not yet finished or deferred on today's board."
           />
+          {/*
+            Current focus is marked by COLOUR, not by an outline — the ambient cyan glow that
+            `.adhd-happy` carries in Gaby View. It had a ring and an orbiting moon for about an
+            hour; both went the same way as the background arcs, because linework on a dark ground
+            reads as a diagram rather than as atmosphere.
+
+            Only when Focus holds a believable amount: a glow on an empty card is decoration, and a
+            glow on nine tasks celebrates the exact thing the soft limit exists to warn about.
+          */}
           <MetricCard
             label="In Focus"
             value={String(focusOpen.length)}
             sublabel={focusOpen.length ? focusOpen[0].title : "nothing claimed yet"}
             tooltip="Open tasks in the Focus lane — the 1–2 things that actually deserve today."
-            className={focusOpen.length > 0 && focusOpen.length <= 3 ? "adhd-happy" : undefined}
+            className={
+              focusOpen.length > 0 && focusOpen.length <= FOCUS_SOFT_LIMIT ? "adhd-happy" : undefined
+            }
           />
           <MetricCard
             label="Ahead"
@@ -178,6 +190,7 @@ export default async function MyWorkPage() {
         projects={projects}
         recurrences={recurrences}
         recurrencesReady={recurrencesReady}
+        reschedules={reschedules}
       />
     </div>
   );

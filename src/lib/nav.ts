@@ -3,9 +3,9 @@
  *
  * Light and Dark get the plain name — the one a colleague reading over your shoulder needs, and the
  * one that matches the URL, the tables and the API routes. Gaby's View gets the flight-deck name,
- * which is not decoration: the theme is a spacecraft, so "Re-entry" for returning to the office and
- * "Black Box" for the incident log say what the page is *within that frame*, and neither needs
- * translating back.
+ * which is not decoration: the theme is a mission deck, so "Station Logs" for time in the office
+ * and "Critical Signals" for the incident log say what the page is *within that frame*, and
+ * neither needs translating back.
  *
  * Both strings are rendered into the markup and CSS shows one (see <Copy> and the .copy-serious /
  * .copy-playful rules). That's deliberate over reading the theme in JS: the theme is applied by a
@@ -14,8 +14,9 @@
  * means server components can use these names without theme context.
  *
  * `nav` is the pill; `title` is the page's own heading. They differ where the heading has always
- * been longer than the tab ("Leave" / "Leave Tracker") — but the playful name is short in both
- * places, because a flight deck doesn't label anything "Tracker".
+ * been longer than the tab ("Leave" / "Leave Tracker"), and the playful pair now differs the same
+ * way: the pill says "Off-Orbit" and the heading "Off-Orbit Logs". The pill has to stay short —
+ * seven of them share one bar, and the straddle in TopNav breaks when that bar gets wide.
  */
 
 export type PageKey =
@@ -47,23 +48,27 @@ export const PAGE_NAMES: Record<PageKey, PageName> = {
     title: { serious: "Overview", playful: "All Hands" },
   },
   leave: {
-    nav: { serious: "Leave", playful: "Shore Leave" },
-    title: { serious: "Leave Tracker", playful: "Shore Leave" },
+    nav: { serious: "Leave", playful: "Off-Orbit" },
+    title: { serious: "Leave Tracker", playful: "Off-Orbit Logs" },
   },
   rto: {
-    nav: { serious: "RTO", playful: "Re-entry" },
-    title: { serious: "RTO Tracker", playful: "Re-entry" },
+    nav: { serious: "RTO", playful: "Station" },
+    title: { serious: "RTO Tracker", playful: "Station Logs" },
   },
   projects: {
     nav: { serious: "Projects", playful: "Missions" },
     title: { serious: "Projects & Initiatives", playful: "Missions" },
   },
   incidents: {
-    nav: { serious: "Incident Logs", playful: "Black Box" },
-    title: { serious: "Incident Logs", playful: "Black Box" },
+    // Pill trimmed, heading kept whole — same split as Off-Orbit / Off-Orbit Logs above. At the
+    // full name the playful bar measures ~58px wider than the width the header straddle was
+    // designed around, and that overlap is a documented breakage (see TopNav). The page's own
+    // heading says "Critical Signals"; the pill has to fit next to six others.
+    nav: { serious: "Incident Logs", playful: "Signals" },
+    title: { serious: "Incident Logs", playful: "Critical Signals" },
   },
   monitoring: {
-    nav: { serious: "Ticket Monitoring", playful: "Radar" },
-    title: { serious: "Ticket Monitoring", playful: "Radar" },
+    nav: { serious: "Ticket Monitoring", playful: "Telemetry" },
+    title: { serious: "Ticket Monitoring", playful: "Telemetry" },
   },
 };
