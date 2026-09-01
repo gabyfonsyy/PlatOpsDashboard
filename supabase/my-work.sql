@@ -298,6 +298,141 @@ create index if not exists work_task_reschedules_task_idx
   on work_task_reschedules (task_id, created_at desc);
 
 -- ----------------------------------------------------------------------------
+-- Eisenhower triage: two axes, never one column.
+--
+-- `urgent` and `important` are stored SEPARATELY and the quadrant is derived (quadrantOf in
+-- lib/work.ts). A single `quadrant` enum would have been fewer characters and would have thrown
+-- away the thing that makes the matrix worth using: the two questions are independent, and the
+-- whole insight of the model is watching what happens when you answer them one at a time.
+--
+-- Both are NULLABLE, and that is the important part. NULL means "not sorted yet" — not "neither".
+-- A default of false/false would silently file every task that was typed in a hurry into
+-- "Kill or park", which is the most destructive resting place in the model: work would arrive
+-- pre-condemned, the quadrant that is supposed to be a decision would fill up with things nobody
+-- decided anything about, and the one honest reading ("I haven't triaged this") would be
+-- unrecoverable. So an untriaged task shows as Unsorted and asks to be sorted.
+--
+-- No CHECK constraint is possible or wanted here: every combination of (null, true, false) is a
+-- legitimate state, including "I know this is important and I haven't decided if it's urgent".
+-- ----------------------------------------------------------------------------
+alter table work_tasks
+  add column if not exists urgent boolean,
+  add column if not exists important boolean;
+
+-- The rule carries the triage so its instances are born already sorted. A recurring task whose
+-- quadrant has to be re-picked every morning is a recurring task that never gets picked at all.
+alter table work_recurrences
+  add column if not exists urgent boolean,
+  add column if not exists important boolean;
+
+-- Projects get the same two axes, because "what am I steering vs what should I have killed" is
+-- the question the matrix is actually for at the project level — a personal project sitting in
+-- Kill-or-park for three months is a more expensive finding than a task in the same square.
+alter table work_projects
+  add column if not exists urgent boolean,
+  add column if not exists important boolean;
+
+-- ----------------------------------------------------------------------------
+-- Parking, with the two things a park is required to state.
+--
+-- "A parked project needs a stated reason and a named decision, not a slipped date." Both are
+-- columns rather than free text in `notes` precisely so the requirement can be ENFORCED (see
+-- assertParkable in lib/work-store.ts) instead of merely suggested. A park with no decision
+-- attached is not a park, it is a task quietly rotting, and the difference between those two is
+-- the entire point of the fourth quadrant.
+--
+--   park_reason   — why this is not being worked on. A fact about now.
+--   park_decision — the decision that ends the park, named. "Decide with Ken whether we still
+--                   need a second reviewer" is a decision; "revisit in Q4" is a slipped date
+--                   wearing a decision's coat, which is exactly what this column exists to stop.
+--   parked_at     — when it was parked, so a park that has quietly outlived its reason can be
+--                   found. Set by the server, never by the client.
+--
+-- Nullable throughout: a live project has none of them, and un-parking clears them rather than
+-- leaving a stale reason attached to active work.
+-- ----------------------------------------------------------------------------
+alter table work_projects
+  add column if not exists park_reason text,
+  add column if not exists park_decision text,
+  add column if not exists parked_at timestamptz;
+
+-- Tasks can be parked too — same discipline, same two answers. Deferring a task is the task-level
+-- version of pausing a project, and it was previously the one exit from the board that required
+-- no explanation at all.
+alter table work_tasks
+  add column if not exists park_reason text,
+  add column if not exists park_decision text,
+  add column if not exists parked_at timestamptz;
+
+-- Backs the matrix cells, which read "today's tasks in one quadrant" on every page load.
+create index if not exists work_tasks_user_quadrant_idx
+  on work_tasks (user_email, work_date, urgent, important);
+
+-- ----------------------------------------------------------------------------
+-- The project brief: the one page a project has to be able to fill in before it is a project.
+--
+-- Eight columns rather than one `brief` blob, and that is the whole point. A single free-text
+-- field would be filled in the way free text always is — a paragraph that reads well, commits to
+-- nothing, and cannot be checked against reality later. Separate columns mean each question has to
+-- be answered on its own, and mean the app can say WHICH answer is missing (briefGaps in
+-- lib/work.ts) instead of shrugging at a half-written page.
+--
+--   problem         — what is broken today, with evidence. A number, or something someone else
+--                     can confirm. Stored as prose because the evidence varies; the discipline is
+--                     enforced by the prompt beside it, not by a type.
+--   outcome         — what is true when this is done, from the point of view of whoever benefits.
+--   metric_baseline — where it is now. NULLABLE ON PURPOSE, and the one field that is allowed to
+--                     be empty: if there is no baseline then measuring it is Phase 1, which is a
+--                     real finding about the project rather than a gap in the form. The UI offers
+--                     to add exactly that phase.
+--   metric_target   — where it needs to get to.
+--   metric_by_when  — by when. Kept apart from the target so "20% fewer" cannot quietly stand in
+--                     for a commitment with no date attached.
+--   explicitly_out  — two or three things people will assume are included and are not. A JSON
+--                     array of strings; the count is what makes it useful, so it is a list rather
+--                     than a paragraph that can contain one item and look complete.
+--   phases          — [{ name, exit }]. Named by the STATE each one ends in, with one exit
+--                     criterion apiece. An array because a project has as many as it has, and
+--                     ordered because the order is the plan.
+--   owner           — one name. Not a team. A single text column rather than a list, so the
+--                     schema itself refuses the committee.
+--
+-- Every column is nullable: a project can be captured before it can be articulated, and the card
+-- says so out loud rather than the gap being invisible. What is NOT allowed is a project that
+-- looks finished because nobody asked.
+-- ----------------------------------------------------------------------------
+alter table work_projects
+  add column if not exists problem text,
+  add column if not exists outcome text,
+  add column if not exists metric_baseline text,
+  add column if not exists metric_target text,
+  add column if not exists metric_by_when text,
+  add column if not exists explicitly_out jsonb not null default '[]'::jsonb,
+  add column if not exists phases jsonb not null default '[]'::jsonb,
+  add column if not exists owner text;
+
+-- ----------------------------------------------------------------------------
+-- Which phase of its project a task belongs to.
+--
+-- Text, not an integer index, and not a foreign key. The phases live inside work_projects.phases
+-- as a jsonb array, so there is no row to point at — and an INDEX would be the obvious choice and
+-- the wrong one: reordering the plan (which the brief panel lets you do, because the order IS the
+-- plan) would silently re-file every task under a different phase. The id is minted when the phase
+-- is created and travels with it.
+--
+-- Nullable throughout. Most tasks belong to no project at all, and a task on a project with a
+-- brief that has not been phased yet is a perfectly ordinary thing.
+--
+-- No FK and no cascade, deliberately: deleting a phase from the brief must not delete the days of
+-- work done against it. The task keeps a phase_id that no longer resolves, which reads as
+-- "unphased" and loses nothing that happened.
+-- ----------------------------------------------------------------------------
+alter table work_tasks
+  add column if not exists phase_id text;
+
+create index if not exists work_tasks_phase_idx on work_tasks (user_email, phase_id);
+
+-- ----------------------------------------------------------------------------
 -- Same lock-down as every other table: RLS on, no policies, service_role only.
 -- ----------------------------------------------------------------------------
 do $$

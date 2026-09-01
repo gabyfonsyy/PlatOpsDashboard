@@ -65,6 +65,22 @@
   --ok-500: 16 185 129;
   --ok-700: 4 120 87;
 
+  /* Gaby accent — lavender. Defined in EVERY theme, not only in Gaby View: a `gaby-*` class that
+     resolves to nothing outside one theme is a component that silently loses its colour the moment
+     someone switches to Light to screen-share. Light and Dark get a restrained version; Gaby View
+     is where it actually carries meaning. */
+  --g-50: 248 245 254;
+  --g-100: 238 233 252;
+  --g-200: 221 213 248;
+  --g-300: 194 182 240;
+  --g-400: 160 145 226;
+  --g-500: 128 110 206;
+  --g-600: 104 86 178;
+  --g-700: 84 69 144;
+  --g-800: 64 52 110;
+  --g-900: 44 36 76;
+  --peach: 226 138 112;
+
   --shadow-card: 0 1px 2px rgba(56, 33, 66, 0.06), 0 12px 32px -16px rgba(107, 66, 148, 0.22);
   --shadow-glow: 0 0 0 1px rgba(168, 124, 214, 0.18), 0 8px 24px -6px rgba(124, 79, 168, 0.35);
   --shadow-glow-lg: 0 0 0 1px rgba(168, 124, 214, 0.22), 0 20px 48px -12px rgba(107, 66, 148, 0.45);
@@ -131,6 +147,18 @@
   --ok-500: 52 211 153;
   --ok-700: 110 231 183;
 
+  --g-50: 34 28 60;
+  --g-100: 46 38 80;
+  --g-200: 64 53 110;
+  --g-300: 96 80 158;
+  --g-400: 146 126 216;
+  --g-500: 178 160 238;
+  --g-600: 200 186 246;
+  --g-700: 219 209 250;
+  --g-800: 233 226 252;
+  --g-900: 244 240 254;
+  --peach: 240 168 146;
+
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 14px 36px -18px rgba(0, 0, 0, 0.75);
   --shadow-glow: 0 0 0 1px rgba(191, 146, 214, 0.22), 0 8px 26px -8px rgba(120, 70, 170, 0.55);
   --shadow-glow-lg: 0 0 0 1px rgba(191, 146, 214, 0.3), 0 22px 52px -14px rgba(120, 70, 170, 0.7);
@@ -142,79 +170,122 @@
   --scrollbar-hover: rgba(191, 146, 214, 0.4);
 }
 
-/* ADHD View — "Gaby's View". A spacecraft: deep-space ground, nebula bloom, a static star field,
-   and a periwinkle-indigo accent instead of the magenta it used to be.
+/* Gaby View — a personal mission control.
 
-   The ramp is a HUE ROTATION of the old one, not a redesign. Every shade keeps its lightness and
-   saturation, so every existing sprout and neutral usage keeps exactly the contrast behaviour
-   they were built against — a mid-tone that white text sits on stays a mid-tone, a dark fill stays
-   a dark fill. Only the colour of space changes.
+   The frame is an observatory deck, not a spaceship set: a blue-grey ground with a cool nebula
+   behind it, and colour used the way light is used in space — as small, deliberate points against
+   a large dark field. That is the whole discipline of this palette. Anything that spreads an
+   accent across a large area (a neon gradient, a saturated panel) stops it reading as a signal and
+   starts it reading as decoration, at which point the interface has a mood but no hierarchy.
 
-   Switching from Dark should still be immediately obvious, not a subtle tint. */
+   The ramp keeps the inverted-dark convention exactly: 50 is the darkest fill, 950 the brightest
+   text, so every existing sprout-* and neutral-* usage keeps the contrast behaviour it was built
+   against. What changed is the hue family — periwinkle-indigo out, blue-grey with a cyan accent
+   in — plus a second accent (--g-*, lavender) for the things that are specifically hers.
+
+   Roles, and it is worth keeping these straight when adding anything:
+     --a-*  cyan      primary interactive: buttons, links, focus rings, active states
+     --g-*  lavender  Gaby-specific and selected states; personality, never status
+     --ok   mint      healthy, complete
+     --warn gold      needs a look
+     --danger coral   critical only, and deliberately muted — a P1 should read as serious,
+                      not as an alarm clock
+*/
 [data-theme="adhd"] {
-  /* Deep space, with the blue kept out of pure black so the nebula has something to sit on. */
-  --canvas: 7 9 24;
-  --surface: 18 22 46;
-  --surface-raised: 56 66 116;
-  --line: 56 66 118;
+  /* Deep space as blue-grey, not black: the nebula and the stars both need something to sit on,
+     and a true black ground makes every panel edge look like a cut-out. */
+  --canvas: 9 13 25;
+  --surface: 19 26 43;
+  /* Steel blue. Must read as clearly ABOVE an --n-100 fill (23 31 48) — see surface-raised's note
+     in tailwind.config.ts — or a selected pill disappears. */
+  --surface-raised: 45 59 87;
+  --line: 41 55 82;
 
-  /* Accent — periwinkle through starlight. */
-  --a-50: 28 32 70;
-  --a-100: 38 44 94;
-  --a-200: 54 64 128;
-  --a-300: 86 100 182;
-  --a-400: 128 146 234;
-  --a-500: 154 170 246;
-  --a-600: 178 190 250;
-  --a-700: 202 212 252;
-  --a-800: 222 228 253;
-  --a-900: 238 242 254;
-  --a-950: 251 252 255;
+  /* Accent — cool cyan, deep water through starlight. The interactive colour. */
+  --a-50: 10 40 53;
+  --a-100: 12 55 72;
+  --a-200: 16 78 100;
+  --a-300: 25 120 149;
+  --a-400: 54 170 200;
+  --a-500: 98 208 234;
+  --a-600: 142 226 245;
+  --a-700: 180 237 250;
+  --a-800: 209 245 252;
+  --a-900: 232 250 254;
+  --a-950: 247 253 255;
 
-  /* Neutral — the same inverted ramp, tinted navy rather than purple. */
-  --n-50: 15 18 40;
-  --n-100: 22 26 52;
-  --n-200: 36 42 76;
-  --n-300: 54 62 104;
-  --n-400: 138 148 190;
-  --n-500: 160 170 210;
-  --n-600: 184 192 226;
-  --n-700: 206 212 238;
-  --n-800: 226 230 248;
-  --n-900: 243 246 255;
+  /* Gaby accent — soft lavender. Selected states, personal surfaces, the register itself.
+     Kept OUT of the status family on purpose: if lavender ever means "warning" as well as "yours",
+     neither reading survives. */
+  --g-50: 30 30 62;
+  --g-100: 42 41 84;
+  --g-200: 60 58 118;
+  --g-300: 96 92 166;
+  --g-400: 148 141 222;
+  --g-500: 182 173 244;
+  --g-600: 205 198 250;
+  --g-700: 222 217 252;
+  --g-800: 235 232 253;
+  --g-900: 245 243 255;
+
+  /* A decorative warm point, for the handful of places that want a glint rather than a status.
+     Never carries meaning — see the star field. */
+  --peach: 246 182 162;
+
+  /* Neutral — blue-grey steel. Text lands soft blue-white rather than pure white, which is what
+     keeps a full page of it calm to read for eight hours. */
+  --n-50: 16 22 37;
+  --n-100: 23 31 49;
+  --n-200: 36 48 71;
+  --n-300: 55 71 102;
+  --n-400: 128 145 177;
+  --n-500: 151 167 197;
+  --n-600: 175 190 215;
+  --n-700: 199 211 231;
+  --n-800: 220 228 243;
+  --n-900: 237 243 252;
   --n-950: 255 255 255;
 
-  --danger-50: 66 22 34;
-  --danger-100: 84 27 41;
-  --danger-200: 116 38 56;
-  --danger-500: 251 113 133;
-  --danger-600: 253 164 175;
-  --danger-700: 254 205 211;
+  /* Critical — muted coral. Restrained on purpose: this palette is dark and low-chroma, so a
+     saturated red here would be the loudest thing on the screen by a wide margin, and a P1 badge
+     should not out-shout an actual outage. */
+  --danger-50: 58 26 30;
+  --danger-100: 75 33 37;
+  --danger-200: 103 45 50;
+  --danger-500: 240 132 124;
+  --danger-600: 246 166 158;
+  --danger-700: 250 198 192;
 
-  --warn-50: 66 44 14;
-  --warn-100: 84 56 16;
-  --warn-200: 112 74 22;
-  --warn-500: 252 200 60;
-  --warn-600: 253 219 110;
-  --warn-700: 254 232 160;
-  --warn-800: 254 240 190;
-  --warn-900: 255 247 220;
+  /* Attention — soft gold. */
+  --warn-50: 60 44 17;
+  --warn-100: 78 56 20;
+  --warn-200: 104 74 26;
+  --warn-500: 244 197 100;
+  --warn-600: 249 215 142;
+  --warn-700: 252 230 180;
+  --warn-800: 253 240 209;
+  --warn-900: 254 247 232;
 
-  --ok-100: 14 62 66;
-  --ok-500: 62 224 214;
-  --ok-700: 140 240 234;
+  /* Healthy — mint. */
+  --ok-100: 12 58 57;
+  --ok-500: 92 228 199;
+  --ok-700: 158 243 223;
 
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.6), 0 16px 40px -18px rgba(30, 40, 140, 0.65);
-  --shadow-glow: 0 0 0 1px rgba(154, 170, 246, 0.3), 0 10px 30px -8px rgba(70, 90, 230, 0.6);
-  --shadow-glow-lg: 0 0 0 1px rgba(154, 170, 246, 0.4), 0 26px 60px -14px rgba(70, 90, 230, 0.75);
+  /* Shadow is depth, glow is attention. Both cool, both soft-edged: a hard shadow on a dark ground
+     reads as a border, and this design leans on the difference between the two. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.55), 0 18px 44px -22px rgba(10, 50, 80, 0.75);
+  --shadow-glow: 0 0 0 1px rgba(98, 208, 234, 0.22), 0 10px 30px -10px rgba(40, 150, 190, 0.5);
+  --shadow-glow-lg: 0 0 0 1px rgba(98, 208, 234, 0.32), 0 26px 60px -16px rgba(40, 150, 190, 0.62);
 
-  /* Nebula. Three clouds rather than one wash, and one of them cool — an all-violet sky reads as
-     a colour choice, whereas indigo drifting into teal reads as gas and distance. */
-  --bloom-1: rgba(74, 86, 232, 0.30);
-  --bloom-2: rgba(56, 176, 208, 0.16);
-  --bloom-3: rgba(150, 78, 232, 0.24);
-  --scrollbar: rgba(154, 170, 246, 0.3);
-  --scrollbar-hover: rgba(154, 170, 246, 0.5);
+  /* Haze, not clouds. Three very large, very low-alpha masses — a cool navy body, a faint aqua
+     edge and an indigo drift — sized well beyond the viewport and anchored off it, so no mass has
+     a visible edge or centre anywhere on the page. Alphas are deliberately below the point where
+     you would describe the background as having a colour in it. */
+  --bloom-1: rgba(34, 62, 116, 0.24);
+  --bloom-2: rgba(48, 120, 152, 0.08);
+  --bloom-3: rgba(92, 84, 166, 0.14);
+  --scrollbar: rgba(98, 208, 234, 0.22);
+  --scrollbar-hover: rgba(98, 208, 234, 0.42);
 }
 
 @layer base {
@@ -304,6 +375,21 @@
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
   }
 
+  /*
+   * A status as a point of light.
+   *
+   * The colour is passed in as `--signal-rgb` (space-separated channels) by whatever renders it,
+   * so one class covers every state instead of five variants — and so a caller can hand it a
+   * token (`--ok-500`, `--warn-500`) rather than a hex that then drifts from the palette.
+   *
+   * Works in all three themes; Gaby View adds the halo (see the signal rules there). In Light it
+   * is simply a small solid dot, which is the right amount of ceremony on a white page.
+   */
+  .signal {
+    @apply inline-block w-1.5 h-1.5 rounded-full shrink-0;
+    background-color: rgb(var(--signal-rgb));
+  }
+
   .tab {
     @apply inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium text-neutral-500
            hover:text-sprout-700 hover:bg-sprout-50/80 transition-all duration-200;
@@ -355,7 +441,41 @@
 [data-theme="adhd"] .copy-playful { display: inline; }
 
 /* ============================================================================
-   ADHD VIEW — personality layer
+   PRIMARY ACTION ON AN INVERTED RAMP  (dark + Gaby View)
+
+   `.btn-primary` and `.pill-active` are defined once, in @layer components, as
+   `from-sprout-500 to-sprout-600 text-white`. That is correct in Light, where the
+   ramp runs dark-to-light and 500/600 are mid-tones.
+
+   In Dark and Gaby View the ramp is INVERTED — 50 is the darkest fill, 950 the
+   brightest text — so 500/600 are LIGHT, and white text on them measured 2.24:1
+   in Dark and 1.62:1 in Gaby View. The second of those is not "low contrast", it
+   is an invisible label on the most important button in the app, and it had been
+   there since the themes were built.
+
+   The fix is to rebuild the fill from the deep end of the SAME ramp, so the hue,
+   the meaning and the token all stay put and only the lightness moves: 7.74:1 in
+   Dark, 6.75:1 in Gaby View. The bright end of the ramp still does its job one
+   layer up, as the glow and the inner highlight.
+
+   Both themes share this because they share the cause. If a fourth theme ever
+   inverts its ramp, add it here rather than writing a third copy.
+   ============================================================================ */
+[data-theme="dark"] .btn-primary,
+[data-theme="dark"] .pill-active,
+[data-theme="adhd"] .btn-primary,
+[data-theme="adhd"] .pill-active {
+  background-image: linear-gradient(135deg, rgb(var(--a-300)), rgb(var(--a-200)));
+  color: rgb(var(--n-950));
+  box-shadow: inset 0 1px 0 0 rgb(var(--a-500) / 0.35), 0 8px 22px -10px rgb(var(--a-400) / 0.6);
+}
+[data-theme="dark"] .btn-primary:hover,
+[data-theme="adhd"] .btn-primary:hover {
+  box-shadow: inset 0 1px 0 0 rgb(var(--a-500) / 0.5), 0 14px 34px -10px rgb(var(--a-400) / 0.75);
+}
+
+/* ============================================================================
+   GABY VIEW — the deck
    Everything here is scoped under [data-theme="adhd"], so no other theme pays
    for it, and all of it is disabled under prefers-reduced-motion below.
    ============================================================================ */
@@ -369,16 +489,20 @@
    Each one is its own composited layer, and each re-runs its blur whenever
    anything behind or on it changes.
 
-   That is what made this theme feel heavy. Two rules now:
+   Two rules, and the redesign did not relax either:
 
      1. Nothing full-viewport animates forever. An animating fixed layer forces
         the whole viewport to re-composite every frame, and invalidates the
         backdrop of the sticky header and pill nav (both blur(24px), painted
-        above it) 60 times a second for as long as the tab is open.
-     2. Blur radius is spent where it shows. On this palette — dark ground, high
-        chroma, a bloom already behind everything — the difference between 24px
-        and 10px on a card is invisible, and 4px on a small input is invisible
-        full stop. The glass stays, at a fraction of the fill cost.
+        above it) 60 times a second for as long as the tab is open. The
+        atmosphere — haze and stars — is therefore STATIC. It is depth, not
+        motion.
+     2. Blur radius is spent where it shows. On this palette the difference
+        between 24px and 10px on a card is invisible, and 4px on a small input is
+        invisible full stop.
+
+   The moving parts are all small and bounded: one focus ring, one status pulse,
+   the cursor canvas. Nothing that covers the screen.
    ---------------------------------------------------------------------------- */
 [data-theme="adhd"] .card {
   -webkit-backdrop-filter: blur(10px);
@@ -395,26 +519,37 @@
   background-color: rgb(var(--surface) / 0.85);
 }
 
-/* Cards get a touch more life on hover, and a one-shot entrance. Transform-only
-   (GPU-friendly), and never on a property that would reflow the table beneath. */
+/* ----------------------------------------------------------------------------
+   PANELS
+
+   A card here is a lit instrument panel: a dark glass face, a hairline edge, and
+   a single bright line along the top where the light catches it. That top
+   highlight is doing most of the work — it is what separates "a rectangle with a
+   border" from "a surface with a direction of light", and it costs one inset
+   box-shadow rather than a pseudo-element or a gradient.
+   ---------------------------------------------------------------------------- */
 [data-theme="adhd"] .card {
+  border-color: rgb(var(--line) / 0.75);
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.06), var(--shadow-card);
   transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s ease,
     border-color 0.22s ease;
 }
+
+/* Hover lifts and warms the edge toward the interactive accent — the same cyan
+   the buttons use, so "this responds to you" is one colour across the whole app. */
 [data-theme="adhd"] .card:hover {
   transform: translateY(-2px);
-  box-shadow: var(--shadow-glow-lg);
-  border-color: rgb(var(--a-400) / 0.45);
+  border-color: rgb(var(--a-400) / 0.42);
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.09), var(--shadow-glow-lg);
 }
 
 /* A metric card that reads as "good news" gets a slow ambient glow. One element,
    6s cycle — calm enough to notice only if you look for it.
 
-   Glow rather than the translateY drift this used to be: the class lands on a
-   `.card`, and moving a backdrop-filtered element re-samples and re-blurs its
-   backdrop on every frame of an infinite animation. A box-shadow change repaints
-   the card's own layer and leaves the (unmoved) backdrop cached. Same read, and
-   the expensive half of the work is gone. */
+   Glow rather than a transform: the class lands on a `.card`, and moving a
+   backdrop-filtered element re-samples and re-blurs its backdrop on every frame
+   of an infinite animation. A box-shadow change repaints the card's own layer and
+   leaves the (unmoved) backdrop cached. */
 [data-theme="adhd"] .adhd-happy {
   animation: glow-breathe 6s ease-in-out infinite;
 }
@@ -429,7 +564,7 @@
   position: absolute;
   inset: 0 auto 0 0;
   width: 40%;
-  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.28), transparent);
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.22), transparent);
   transform: translateX(-120%);
   pointer-events: none;
 }
@@ -452,16 +587,15 @@
   transition: background-color 0.16s ease;
 }
 [data-theme="adhd"] tbody tr:hover {
-  background-color: rgb(var(--a-500) / 0.07);
+  background-color: rgb(var(--a-500) / 0.06);
 }
 
 /* Badges pop in when they mount, so a status change is felt as well as seen.
    Feeling one status change is worth an animation. Feeling 113 at once — which is
-   what /projects actually renders, and /incident-logs is not far behind — is a
-   stutter on first paint plus 113 composited layers held open by `both`. So the
-   pop belongs to badges you are looking AT (cards, dialogs, the task board) and
-   tables opt out. `:where()` keeps the exclusion at zero specificity, so it can
-   never win against something a component sets deliberately. */
+   what /projects actually renders — is a stutter on first paint plus 113
+   composited layers held open by `both`. So the pop belongs to badges you are
+   looking AT, and tables opt out. `:where()` keeps the exclusion at zero
+   specificity, so it can never win against something a component sets. */
 [data-theme="adhd"] .badge {
   animation: pop-in 0.26s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -480,66 +614,253 @@
 }
 
 /* ----------------------------------------------------------------------------
-   STAR FIELD
+   SIGNAL LIGHTS
 
-   Two fixed layers of static dots plus a faint galactic band. It replaces the
-   three lonely sparkles that used to be here, and it is deliberately STATIC:
-   nothing on a full-viewport fixed layer is allowed to animate forever (see COST
-   CONTROL above) because the sticky header and pill nav are backdrop-filtered and
-   painted on top of it, so a twinkle would re-blur them sixty times a second for
-   as long as the tab is open. A star field is texture, not motion — the moving
-   sparkle in this theme is the cursor canvas, which is bounded and self-stopping.
+   The status vocabulary, as points of light rather than filled shapes. A 6px dot
+   with a soft halo carries the same information as a coloured pill and takes a
+   fraction of the visual weight, which is what lets a dense board stay calm.
 
-   Both layers paint once, then fade in together. The cost is a single paint of a
-   viewport-sized layer at load and nothing thereafter.
+   `.signal` is theme-agnostic and defined for all three (see the base rule in the
+   components layer); only the halo is Gaby View's.
    ---------------------------------------------------------------------------- */
-
-/* Far stars: many, small, faint. Sizes and positions are irregular on purpose —
-   an even grid reads as a pattern, and the eye catches a pattern immediately. */
-[data-theme="adhd"] body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background-image:
-    radial-gradient(1px 1px at 6% 12%, rgba(255, 255, 255, 0.55), transparent 60%),
-    radial-gradient(1px 1px at 13% 61%, rgba(214, 226, 255, 0.4), transparent 60%),
-    radial-gradient(1px 1px at 21% 34%, rgba(255, 255, 255, 0.32), transparent 60%),
-    radial-gradient(1px 1px at 27% 88%, rgba(226, 234, 255, 0.45), transparent 60%),
-    radial-gradient(1px 1px at 34% 7%, rgba(255, 255, 255, 0.38), transparent 60%),
-    radial-gradient(1px 1px at 39% 49%, rgba(205, 220, 255, 0.3), transparent 60%),
-    radial-gradient(1px 1px at 46% 73%, rgba(255, 255, 255, 0.5), transparent 60%),
-    radial-gradient(1px 1px at 52% 19%, rgba(230, 238, 255, 0.35), transparent 60%),
-    radial-gradient(1px 1px at 58% 92%, rgba(255, 255, 255, 0.42), transparent 60%),
-    radial-gradient(1px 1px at 64% 41%, rgba(210, 224, 255, 0.33), transparent 60%),
-    radial-gradient(1px 1px at 71% 66%, rgba(255, 255, 255, 0.46), transparent 60%),
-    radial-gradient(1px 1px at 77% 24%, rgba(232, 240, 255, 0.36), transparent 60%),
-    radial-gradient(1px 1px at 83% 79%, rgba(255, 255, 255, 0.3), transparent 60%),
-    radial-gradient(1px 1px at 88% 45%, rgba(216, 228, 255, 0.44), transparent 60%),
-    radial-gradient(1px 1px at 93% 15%, rgba(255, 255, 255, 0.34), transparent 60%),
-    radial-gradient(1px 1px at 97% 69%, rgba(228, 236, 255, 0.4), transparent 60%);
-  animation: fade-in 1.2s ease-out both;
+[data-theme="adhd"] .signal {
+  box-shadow: 0 0 0 3px rgb(var(--signal-rgb) / 0.12), 0 0 10px 0 rgb(var(--signal-rgb) / 0.5);
 }
 
-/* Near stars and the galactic band. Fewer, brighter, faintly coloured — a few
-   warm and a few blue, because a sky of identical white dots looks printed. */
-[data-theme="adhd"] body::after {
-  content: "";
+/* Critical states breathe. Slow — 2.4s — because a fast pulse reads as an alarm
+   and this has to be survivable on a screen someone watches all day. Opacity only:
+   the dot is 6px, so there is no layout and almost no paint. */
+[data-theme="adhd"] .signal-critical {
+  animation: signal-pulse 2.4s ease-in-out infinite;
+}
+
+/* ----------------------------------------------------------------------------
+   CURRENT FOCUS
+
+   There was a ring and an orbiting moon here. Both are gone, for the same reason
+   the background arcs are: they were linework, and linework on a dark ground
+   reads as a diagram. "This is what you are on right now" is carried by COLOUR
+   instead — the ambient cyan glow of `.adhd-happy`, which is the interactive
+   accent and therefore already means "active" everywhere else in the app.
+
+   If a marker is ever wanted back, make it a point of light, not an outline.
+   ---------------------------------------------------------------------------- */
+
+/* ----------------------------------------------------------------------------
+   ATMOSPHERE
+
+   Three fixed layers, all static, all painted once:
+
+     body background   haze + one directional gradient for depth
+     body::before      far stars — fifteen, tiny, clustered
+     body::after       four near stars
+
+   Nothing here has an edge, a centre or a repeat. That is the whole specification:
+   the background's job is to be noticed subconsciously and never to become a
+   subject. If you are unsure whether something belongs here, it does not.
+   ---------------------------------------------------------------------------- */
+
+/* Haze and depth. NOTHING with an edge.
+
+   There were two orbital arcs here and they were a mistake worth recording: a
+   radial-gradient ring reads as a ring. However faint the band and however far
+   off-canvas the centre, the eye reconstructs the whole circle from the visible
+   segment — that is what eyes do — so the page acquired two enormous spheres and
+   looked, in Gaby's words, like a basketball. The lesson generalises: on a
+   background, a CURVE is a shape, and a shape is a subject. Anything that can be
+   traced with a finger will be.
+
+   So the field is three soft masses plus one directional gradient, and that is
+   all. The masses are sized well past the viewport and anchored outside it, so
+   none of them has a visible edge or centre to find. The linear gradient is the
+   only thing giving the page a top and a bottom, and it has no form at all — it
+   is the difference between a window and a poster. */
+[data-theme="adhd"] body {
+  background-image:
+    /* Depth. The only thing giving the page a top and a bottom, and it has no form at all. */
+    linear-gradient(
+      184deg,
+      rgba(126, 156, 214, 0.05) 0%,
+      transparent 38%,
+      rgba(4, 6, 14, 0.34) 100%
+    ),
+    /* Two nebula masses. Each is built from THREE overlapping ellipses at different angles rather
+       than one circle, because a single radial-gradient is a disc and a disc has a centre you can
+       find. Overlapping ellipses of different sizes give an outline nothing can trace — which is
+       the entire difference between haze and a planet. */
+    radial-gradient(1500px 900px at 4% -18%, var(--bloom-1), transparent 62%),
+    radial-gradient(1100px 1300px at 22% 6%, var(--bloom-1), transparent 58%),
+    radial-gradient(1700px 700px at -6% 30%, var(--bloom-3), transparent 60%),
+    radial-gradient(1300px 1100px at 104% 78%, var(--bloom-3), transparent 60%),
+    radial-gradient(1600px 800px at 88% 104%, var(--bloom-1), transparent 62%),
+    radial-gradient(900px 1200px at 118% 52%, var(--bloom-2), transparent 58%);
+}
+
+/* ----------------------------------------------------------------------------
+   THE STAR FIELD
+
+   The stars themselves are DOM now — see components/theme/SpaceField.tsx for why
+   (per-star blur and per-star twinkle phase are both impossible in a gradient
+   list). What is left here is the styling and the motion.
+
+   Rendered in every theme and hidden by CSS rather than mounted conditionally in
+   JS: the theme is applied by a pre-hydration script, so a JS gate would pop the
+   whole field in after hydration on every page load. Hidden spans cost nothing.
+   ---------------------------------------------------------------------------- */
+.space-field {
+  display: none;
+}
+
+[data-theme="adhd"] .space-field {
+  display: block;
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  background-image:
-    radial-gradient(2px 2px at 17% 22%, rgba(255, 255, 255, 0.85), transparent 65%),
-    radial-gradient(2px 2px at 43% 78%, rgba(198, 216, 255, 0.8), transparent 65%),
-    radial-gradient(2.5px 2.5px at 68% 31%, rgba(255, 248, 232, 0.75), transparent 65%),
-    radial-gradient(2px 2px at 86% 62%, rgba(255, 255, 255, 0.7), transparent 65%),
-    radial-gradient(2px 2px at 31% 47%, rgba(226, 210, 255, 0.6), transparent 65%),
-    /* The band: a wide, very faint ellipse across the upper third. Reads as depth
-       rather than as a shape, which is the whole trick. */
-    radial-gradient(120% 34% at 62% 22%, rgba(150, 170, 255, 0.07), transparent 70%);
+  /* Contains the whole atmosphere. Its own opacity is the master volume for every
+     layer inside — the one number to turn down if this ever feels loud. */
+  opacity: 0.9;
   animation: fade-in 1.6s ease-out both;
+}
+
+/* The layers are inset NEGATIVELY so the drifting ones have somewhere to go
+   without exposing an edge as they move. */
+[data-theme="adhd"] .space-stars,
+[data-theme="adhd"] .space-dust,
+[data-theme="adhd"] .space-smudges {
+  position: absolute;
+  inset: -6%;
+}
+
+[data-theme="adhd"] .space-star {
+  position: absolute;
+  border-radius: 999px;
+}
+
+/* Per-star twinkle. Each span carries its own duration and a NEGATIVE delay, so
+   the field is already mid-cycle on first paint and no two stars are in step —
+   a field that pulses in unison reads as the screen flickering.
+
+   Opacity only, on 1-3px elements. This is the cheapest animation a browser can
+   be asked to run, and the reason it is affordable at all is that it never
+   changes geometry: no layout, no repaint of anything but the star itself. */
+[data-theme="adhd"] .space-star-twinkle {
+  animation-name: star-twinkle;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+
+/* Cosmic dust: soft, irregular, and slowly drifting.
+
+   Built from overlapping ellipses at different sizes and angles rather than
+   circles — see the note on the body haze. The drift is `transform`, which is
+   compositor-only, over 240s: about a pixel every four seconds. You will never
+   catch it moving, which is the point; it only has to stop the field feeling
+   like a printed image. */
+[data-theme="adhd"] .space-dust {
+  background-image:
+    radial-gradient(620px 320px at 18% 24%, rgba(72, 108, 178, 0.075), transparent 70%),
+    radial-gradient(420px 560px at 26% 18%, rgba(86, 122, 196, 0.055), transparent 72%),
+    radial-gradient(760px 300px at 72% 62%, rgba(104, 96, 186, 0.06), transparent 70%),
+    radial-gradient(360px 640px at 80% 54%, rgba(88, 84, 170, 0.05), transparent 72%),
+    radial-gradient(540px 380px at 46% 88%, rgba(64, 116, 158, 0.045), transparent 70%),
+    radial-gradient(300px 420px at 8% 72%, rgba(96, 110, 190, 0.04), transparent 72%);
+  animation: dust-drift 240s ease-in-out infinite alternate;
+}
+
+/* Distant light clusters — unresolved stars, the "there is more out there than I
+   can see" layer. Three, and they drift the other way from the dust so the two
+   layers separate very slowly instead of moving as one plate. */
+[data-theme="adhd"] .space-smudges {
+  animation: smudge-drift 300s ease-in-out infinite alternate;
+}
+[data-theme="adhd"] .space-smudge {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(14px);
+}
+
+/* ============================================================================
+   KEYFRAMES
+
+   These are declared HERE, by hand, and not only in tailwind.config.ts — and that
+   is a correctness requirement, not duplication for its own sake.
+
+   Tailwind emits an `@keyframes` block only when it sees the matching `animate-*`
+   UTILITY in the content scan. Every animation above is applied from hand-written
+   CSS (`.adhd-happy { animation: glow-breathe ... }`), never as a class, so
+   Tailwind had no reason to emit any of them. The declarations shipped, the
+   keyframes did not, and the browser silently ignores an animation whose name it
+   cannot resolve.
+
+   Net effect, found 2026-09-01 by diffing the served stylesheet against the
+   config: SEVEN of Gaby View's animations had never run at any point — the
+   ambient glow on a good-news card, the badge pop, the button sheen, the
+   just-changed number flash, and the star field's fade-in. No error, no warning,
+   nothing in the console; the theme was simply quieter than it was written to be.
+
+   Keeping them in the config as well is deliberate: `animate-glow-pulse` and
+   `animate-toast-in` ARE used as utilities elsewhere, and the two definitions are
+   identical, so a duplicate costs a few bytes and removes a trap. If you add an
+   animation that hand-written CSS refers to, add it in both places.
+   ============================================================================ */
+@keyframes pop-in {
+  0% { opacity: 0; transform: scale(0.94) translateY(4px); }
+  60% { opacity: 1; transform: scale(1.015) translateY(0); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes glow-breathe {
+  0%, 100% { box-shadow: var(--shadow-card); }
+  50% { box-shadow: var(--shadow-glow-lg); }
+}
+
+@keyframes fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@keyframes sheen-sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(220%); }
+}
+
+@keyframes score-flash {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+/* A star breathing. The floor is 0.35 rather than 0 — a star that goes out entirely
+   reads as a dead pixel, and a field of them reads as a fault. */
+@keyframes star-twinkle {
+  0% { opacity: 0.35; }
+  100% { opacity: 1; }
+}
+
+/* Both drifts are tiny and on transform only (compositor-only, no repaint). The two
+   layers move in different directions and over different periods so they separate
+   very slowly rather than sliding as one plate — parallax is what sells depth, and
+   it is free here. */
+@keyframes dust-drift {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  100% { transform: translate3d(1.6%, -1.1%, 0) scale(1.04); }
+}
+
+@keyframes smudge-drift {
+  0% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(-1.2%, 0.9%, 0); }
+}
+
+@keyframes signal-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 /* ============================================================================
@@ -568,10 +889,27 @@
     transform: none;
   }
 
-  /* The star field is static, so it STAYS under reduced motion — it carries no
-     information and asks nothing of the eye. Only its arrival animation goes. */
-  html:not([data-motion="force"])[data-theme="adhd"] body::before,
-  html:not([data-motion="force"])[data-theme="adhd"] body::after {
+  /* The star field STAYS under reduced motion — it carries no information and asks nothing of
+     the eye. What goes is every part of it that moves: the twinkle and both drifts are stopped
+     outright rather than left frozen, and the stars settle at full opacity so a stopped field
+     looks like a still sky rather than one caught mid-blink at random brightnesses. */
+  html:not([data-motion="force"])[data-theme="adhd"] .space-star-twinkle {
+    animation: none;
+  }
+  html:not([data-motion="force"])[data-theme="adhd"] .space-dust,
+  html:not([data-motion="force"])[data-theme="adhd"] .space-smudges {
+    animation: none;
+    transform: none;
+  }
+
+  /* The layers themselves are static, so they STAY. Only the arrival animation goes. */
+  html:not([data-motion="force"])[data-theme="adhd"] .space-field {
+    animation: none;
+  }
+
+  /* The critical signal keeps its colour and loses its breath — the dot still says "critical",
+     it just stops moving. */
+  html:not([data-motion="force"])[data-theme="adhd"] .signal-critical {
     animation: none;
     opacity: 1;
   }

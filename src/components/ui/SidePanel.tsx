@@ -31,12 +31,20 @@ export function SidePanel({
   onClose,
   title,
   description,
+  width = "standard",
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   description?: string;
+  /**
+   * "wide" is for a panel that is a DOCUMENT rather than a control — the project brief, which is
+   * six questions with prose answers and would otherwise be read a clause at a time. Two sizes,
+   * not a free width: a panel that can be any width is a panel that ends up a different width on
+   * every screen it is used from.
+   */
+  width?: "standard" | "wide";
   children: ReactNode;
 }) {
   // Portals need a DOM target, which does not exist during SSR.
@@ -93,7 +101,8 @@ export function SidePanel({
         aria-label={title}
         tabIndex={-1}
         className={cn(
-          "absolute right-0 top-0 h-full w-full max-w-md bg-surface border-l border-line/70 shadow-2xl",
+          "absolute right-0 top-0 h-full w-full bg-surface border-l border-line/70 shadow-2xl",
+          width === "wide" ? "max-w-2xl" : "max-w-md",
           "flex flex-col outline-none transition-transform duration-300 ease-out",
           open ? "translate-x-0" : "translate-x-full"
         )}

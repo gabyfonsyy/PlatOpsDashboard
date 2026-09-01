@@ -26,23 +26,377 @@ export type TaskLane = (typeof TASK_LANES)[number];
  * making. So: render `LANE_META[lane].label`, never the raw lane, and expect 'Today' in the
  * database and in the API.
  */
-export const LANE_META: Record<TaskLane, { label: string; hint: string }> = {
-  Focus: { label: "Focus", hint: "The 1–2 things that actually deserve today" },
-  Today: { label: "To Do", hint: "Also intending to work on these" },
-  Waiting: { label: "Waiting", hint: "Blocked on someone or something else" },
-  Incoming: { label: "Incoming", hint: "New requests, not yet triaged" },
+export const LANE_META: Record<
+  TaskLane,
+  { label: string; hint: string; playful: string; playfulHint: string }
+> = {
+  Focus: {
+    label: "Focus",
+    hint: "The 1–2 things that actually deserve today",
+    playful: "Focus",
+    playfulHint: "The 1–2 things that actually deserve today",
+  },
+  Today: {
+    label: "To Do",
+    hint: "Also intending to work on these",
+    playful: "Mission Queue",
+    playfulHint: "Also intending to work on these",
+  },
+  Waiting: {
+    label: "Waiting",
+    hint: "Blocked on someone or something else",
+    playful: "Grounded",
+    playfulHint: "Held down by someone or something else",
+  },
+  Incoming: {
+    label: "Incoming",
+    hint: "New requests, not yet triaged",
+    playful: "Incoming",
+    playfulHint: "New signals, not yet triaged",
+  },
 };
 
-/** The label to show for a lane. Use this anywhere a lane reaches the screen. */
+/**
+ * The label to show for a lane.
+ *
+ * Returns the PLAIN name only. Anywhere the lane can be rendered as markup — a board heading —
+ * use <Copy serious={meta.label} playful={meta.playful} /> instead, so the register follows the
+ * theme with no client JS. This exists for the places that need a bare string: `<option>` text,
+ * aria-labels, titles. Which is also the right call on the merits — a dropdown is where you go
+ * when you need to be sure what you are picking, and "Grounded" in a select next to a task you
+ * are trying to file is a riddle. Space vocabulary belongs on headings, not on controls.
+ */
 export function laneLabel(lane: TaskLane): string {
   return LANE_META[lane].label;
 }
+
+/**
+ * Gaby View's names for the board's own sections — the ones that are not lanes.
+ *
+ * Applied where the metaphor genuinely describes the thing, and nowhere else. "Mission Complete"
+ * for finished work earns its place; renaming the date picker would not. Both registers ship in
+ * the markup and CSS picks one (see <Copy>).
+ */
+export const DECK_COPY = {
+  today: { serious: "Today", playful: "Mission Queue" },
+  settled: { serious: "Settled today", playful: "Mission Complete" },
+  projects: { serious: "Projects", playful: "In Orbit" },
+  repeating: { serious: "Repeating", playful: "Standing Orders" },
+  ahead: { serious: "Ahead", playful: "On Approach" },
+  debrief: { serious: "Work Mirror", playful: "Mission Debrief" },
+} as const;
 
 /**
  * Focus is a commitment, not a bucket — the whole point is that it stays small enough to mean
  * something. Exceeded, the UI says so rather than silently letting it become a second Today list.
  */
 export const FOCUS_SOFT_LIMIT = 3;
+
+// ---------------------------------------------------------------------------- eisenhower
+
+/**
+ * The Eisenhower matrix, as two independent axes rather than one four-valued field.
+ *
+ * `urgent` and `important` are stored separately (see supabase/my-work.sql) and the quadrant is
+ * DERIVED here. That is deliberate: the value of the model is that the two questions get asked
+ * one at a time, and a single enum makes it possible to pick a square without ever answering
+ * either one. Two booleans also make the half-triaged state — "I know this matters, I haven't
+ * decided whether it's urgent" — representable instead of forcing a guess.
+ *
+ * Both are nullable. NULL is "not sorted yet", NOT "neither": defaulting to false/false would file
+ * everything typed in a hurry into Kill-or-park, and work that arrives pre-condemned is worse than
+ * work that arrives unsorted.
+ */
+export const QUADRANTS = ["drive", "protect", "delegate", "park"] as const;
+export type Quadrant = (typeof QUADRANTS)[number];
+
+/** The two axes, as they are stored. Either may be null while a triage is half-answered. */
+export type Triage = { urgent: boolean | null; important: boolean | null };
+
+/**
+ * What each square means and what it asks of you. The `note` is the failure mode of that square —
+ * the thing that goes wrong when the quadrant is used badly — and it is shown next to the work,
+ * not filed in documentation, because a matrix with no warnings attached degrades into four
+ * prettier priority levels within a fortnight.
+ */
+export const QUADRANT_META: Record<
+  Quadrant,
+  {
+    key: Quadrant;
+    /** The verb. What you DO with the square — the label everywhere on screen. */
+    verb: string;
+    /** The definition, for anyone reading the board for the first time. */
+    axis: string;
+    /** The instruction. */
+    line: string;
+    /** The warning: what this square does to you when it is used wrong. */
+    note: string;
+    /**
+     * The same two sentences in Gaby's View. Rendered through <Copy>, so BOTH strings are always
+     * in the markup and CSS picks one — which is what lets a server component switch register
+     * without a hydration flash.
+     *
+     * The rule from ai-voice.ts applies here too: the register may change, the CONTENT may not.
+     * Each playful line has to make exactly the same claim as its serious twin, because these are
+     * the sentences that stop the matrix decaying into four prettier priority levels. A joke that
+     * drops the warning is not a different register, it is a missing warning.
+     */
+    playful: { line: string; note: string };
+    urgent: boolean;
+    important: boolean;
+    tone: "danger" | "success" | "warning" | "neutral";
+    /** Left border on the cell, and the dot on a row's chip. */
+    accent: string;
+    dot: string;
+    text: string;
+  }
+> = {
+  drive: {
+    key: "drive",
+    verb: "Drive",
+    axis: "Urgent + Important",
+    line: "You personally steer.",
+    note: "If everything is here, nothing is.",
+    playful: {
+      line: "You, personally, at the wheel. No delegating this one.",
+      note: "If everything is in here, nothing is. That is the trap.",
+    },
+    urgent: true,
+    important: true,
+    tone: "danger",
+    accent: "border-l-red-400",
+    dot: "bg-red-500",
+    text: "text-red-700",
+  },
+  protect: {
+    key: "protect",
+    verb: "Protect",
+    axis: "Important, not urgent",
+    line: "The thing that stops next quarter's fire.",
+    note: "Gets eaten first — it needs a calendar block.",
+    playful: {
+      line: "The stuff that means next quarter is not on fire.",
+      note: "Always the first thing eaten. Block the time or lose it.",
+    },
+    urgent: false,
+    important: true,
+    tone: "success",
+    accent: "border-l-sprout-400",
+    dot: "bg-sprout-500",
+    text: "text-sprout-700",
+  },
+  delegate: {
+    key: "delegate",
+    verb: "Delegate",
+    axis: "Urgent, not important",
+    line: "As an IC, this was “do it fast”.",
+    note: "As a lead, this is your biggest time leak.",
+    playful: {
+      line: "IC you said “do it fast”. Lead you shouldn’t be doing it at all.",
+      note: "Your biggest time leak, wearing a helpful little hat.",
+    },
+    urgent: true,
+    important: false,
+    tone: "warning",
+    accent: "border-l-amber-400",
+    dot: "bg-amber-500",
+    text: "text-amber-700",
+  },
+  park: {
+    key: "park",
+    verb: "Kill or park",
+    axis: "Neither",
+    line: "Kill it, or park it on purpose.",
+    note: "A parked project needs a stated reason and a named decision, not a slipped date.",
+    playful: {
+      line: "Kill it, or park it like you mean it.",
+      note: "A park needs a reason and a named decision — not a date you’ll quietly move again.",
+    },
+    urgent: false,
+    important: false,
+    tone: "neutral",
+    accent: "border-l-neutral-300",
+    dot: "bg-neutral-400",
+    text: "text-neutral-600",
+  },
+};
+
+/**
+ * Reading order of the cells: Drive, Protect, Delegate, Kill-or-park — the 2x2 read left to right,
+ * top to bottom, with urgency on the horizontal. Protect sits top-right rather than bottom-left on
+ * purpose: it is the square this whole feature exists to defend, and putting it below the fold
+ * would be an odd way to defend it.
+ */
+export const QUADRANT_ORDER: Quadrant[] = ["drive", "protect", "delegate", "park"];
+
+/** Where a thing sits, or null when it has not been triaged. Both axes have to be answered. */
+export function quadrantOf(item: Partial<Triage> | null | undefined): Quadrant | null {
+  if (!item) return null;
+  const { urgent, important } = item;
+  if (typeof urgent !== "boolean" || typeof important !== "boolean") return null;
+  if (urgent && important) return "drive";
+  if (!urgent && important) return "protect";
+  if (urgent && !important) return "delegate";
+  return "park";
+}
+
+/** The stored pair for a square. `null` clears the triage back to unsorted. */
+export function triageFor(quadrant: Quadrant | null): Triage {
+  if (!quadrant) return { urgent: null, important: null };
+  const meta = QUADRANT_META[quadrant];
+  return { urgent: meta.urgent, important: meta.important };
+}
+
+/** Short label for a chip: the verb, or "Unsorted". */
+export function quadrantLabel(quadrant: Quadrant | null): string {
+  return quadrant ? QUADRANT_META[quadrant].verb : "Unsorted";
+}
+
+/**
+ * The same soft-limit idea as FOCUS_SOFT_LIMIT, applied to the square that always overflows.
+ * "If everything is here, nothing is" stays a slogan until something counts.
+ */
+export const DRIVE_SOFT_LIMIT = 3;
+
+/** Buckets by quadrant, keeping everything untriaged separate rather than lumping it into park. */
+export function groupByQuadrant<T extends Partial<Triage>>(
+  items: T[]
+): { cells: Record<Quadrant, T[]>; unsorted: T[] } {
+  const cells = Object.fromEntries(QUADRANTS.map((q) => [q, [] as T[]])) as Record<Quadrant, T[]>;
+  const unsorted: T[] = [];
+  for (const item of items) {
+    const q = quadrantOf(item);
+    if (q) cells[q].push(item);
+    else unsorted.push(item);
+  }
+  return { cells, unsorted };
+}
+
+export type MatrixReadout = {
+  counts: Record<Quadrant, number>;
+  unsorted: number;
+  triaged: number;
+  /**
+   * Deterministic observations about the shape of the day. Never more than a few.
+   *
+   * Each carries both registers, and the FIGURES ARE IDENTICAL in the two — only the framing words
+   * differ. Copy's own rule is never to use it on operational values, and a number that changed
+   * between registers would be exactly that: the same board reporting two different days.
+   */
+  notes: Array<{ quadrant: Quadrant | null; text: string; playful: string }>;
+};
+
+/**
+ * What the day's shape actually says, computed from the rows — never written by a model, never
+ * guessed. Each note restates the failure mode of a square together with the number that triggered
+ * it, so the warning is checkable rather than decorative.
+ *
+ * `slipCounts` maps task_id to how many times that task has been pushed to a later day, and it is
+ * what makes the Protect warning evidence rather than a proverb: "gets eaten first" is a claim,
+ * and the reschedule log is the only thing on this page that can support it.
+ */
+export function matrixReadout(tasks: WorkTask[], slipCounts?: Map<string, number>): MatrixReadout {
+  const open = tasks.filter(isOpen);
+  const { cells, unsorted } = groupByQuadrant(open);
+  const counts = Object.fromEntries(QUADRANTS.map((q) => [q, cells[q].length])) as Record<
+    Quadrant,
+    number
+  >;
+  const triaged = QUADRANTS.reduce((n, q) => n + counts[q], 0);
+  const notes: MatrixReadout["notes"] = [];
+
+  // Drive overflowing is the classic failure and the only one worth raising a voice about.
+  if (counts.drive > DRIVE_SOFT_LIMIT) {
+    notes.push({
+      quadrant: "drive",
+      text: `${counts.drive} of ${triaged} sorted tasks are in Drive. If everything is here, nothing is.`,
+      playful: `${counts.drive} of ${triaged} are in Drive. If it's all urgent and important, none of it is — pick.`,
+    });
+  }
+
+  // Only said once there is a day to describe. "Nothing in Protect" on an almost-empty board is a
+  // statement about an almost-empty board, not about how the day is being spent.
+  if (triaged >= 3 && counts.protect === 0) {
+    notes.push({
+      quadrant: "protect",
+      text: "Nothing in Protect. That is the square that stops next quarter's fire.",
+      playful: "Protect is empty. That's the one that keeps next quarter off fire, so.",
+    });
+  }
+
+  if (slipCounts && counts.protect > 0) {
+    const eaten = cells.protect.filter((t) => (slipCounts.get(t.task_id) ?? 0) > 0);
+    const moves = eaten.reduce((n, t) => n + (slipCounts.get(t.task_id) ?? 0), 0);
+    if (eaten.length > 0) {
+      const subject = eaten.length === 1 ? "One Protect task has" : `${eaten.length} Protect tasks have`;
+      const times = `${moves} ${moves === 1 ? "time" : "times"}`;
+      notes.push({
+        quadrant: "protect",
+        text: `${subject} been pushed ${times}. It gets eaten first — block the time.`,
+        playful: `${subject} been pushed ${times}. Told you it gets eaten first. Put it in the calendar.`,
+      });
+    }
+  }
+
+  // Stated as a share rather than a count: four delegate tasks out of twenty is a Tuesday, four
+  // out of six is a job description.
+  if (counts.delegate > 0 && triaged >= 3 && counts.delegate * 2 >= triaged) {
+    notes.push({
+      quadrant: "delegate",
+      text: `${counts.delegate} of ${triaged} are urgent but not important — the time leak. Hand it over or make it smaller.`,
+      playful: `${counts.delegate} of ${triaged} are other people's urgent. That's the leak — hand it over or shrink it.`,
+    });
+  }
+
+  if (counts.park > 0) {
+    notes.push({
+      quadrant: "park",
+      text: `${counts.park} in Kill or park. Each needs a stated reason and a named decision, or it should be deleted.`,
+      playful: `${counts.park} sitting in Kill or park. Reason and a named decision each, or bin them.`,
+    });
+  }
+
+  if (unsorted.length > 0) {
+    notes.push({
+      quadrant: null,
+      text: `${unsorted.length} not sorted yet — the matrix can only describe what has been triaged.`,
+      playful: `${unsorted.length} still unsorted. The matrix can only tell you about what you've actually triaged.`,
+    });
+  }
+
+  return { counts, unsorted: unsorted.length, triaged, notes };
+}
+
+/**
+ * How many times each task has been pushed to a later day, from the reschedule log. Grouped by
+ * task_id so a renamed task keeps one tally; slips whose task has since been deleted carry a null
+ * id and are dropped rather than collapsed together under a single key.
+ */
+export function slipCountsByTask(slips: Array<{ task_id: string | null }>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const slip of slips) {
+    if (!slip.task_id) continue;
+    counts.set(slip.task_id, (counts.get(slip.task_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * A park is only a park when both answers are present, and this is enforced rather than suggested
+ * (see assertParkable in work-store.ts). The whole difference between parking something and
+ * letting it rot is that one of them was decided out loud. Returns the complaint, or null when it
+ * is properly parked.
+ */
+export function parkComplaint(item: {
+  park_reason?: string | null;
+  park_decision?: string | null;
+}): string | null {
+  if (!(item.park_reason ?? "").trim()) return "Parking this needs a stated reason.";
+  if (!(item.park_decision ?? "").trim()) {
+    return "Parking this needs a named decision — not a date to revisit.";
+  }
+  return null;
+}
 
 // ---------------------------------------------------------------------------- status
 
@@ -154,6 +508,252 @@ export const FLAG_MESSAGES: Record<WorkdayFlag, string> = {
 export const PROJECT_STATUSES = ["Active", "Paused", "Waiting", "Completed"] as const;
 export type WorkProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+// ---------------------------------------------------------------------------- project brief
+
+/**
+ * One phase of a project, named by the STATE it ends in rather than by the activity that fills it.
+ *
+ * "Migration verified on staging" is a state; "do the migration" is a to-do list item with a
+ * fortnight of ambiguity inside it. The exit criterion is the second half of the same discipline:
+ * one sentence that is either true or not true on a given morning, so a phase can be finished by
+ * observation instead of by agreement.
+ */
+export type ProjectPhase = {
+  /**
+   * Stable id, minted when the phase is created and stored inside the jsonb alongside it.
+   *
+   * Tasks point at this rather than at a position, because the ORDER IS THE PLAN and the brief
+   * panel lets you reorder it — an index would silently re-file every task the first time a phase
+   * moved up. See work_tasks.phase_id.
+   */
+  id: string;
+  /** The state this phase ends in. */
+  name: string;
+  /** The one thing that has to be true for the phase to be over. */
+  exit: string;
+};
+
+/** A new phase id. Short, dependency-free, and only ever generated once per phase. */
+export function newPhaseId(): string {
+  return `ph${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/**
+ * The questions the one-pager asks, in the order it asks them. Kept as data rather than as JSX so
+ * the prompts, the helper text and the gap messages all read from one place and cannot drift apart
+ * — the rule under each field is the whole value of the form, and a rule that only exists in the
+ * markup gets quietly reworded the first time the layout changes.
+ */
+export const BRIEF_PROMPTS = {
+  problem: {
+    label: "Problem",
+    ask: "What is broken today, with evidence.",
+    rule: "Needs a number, or something someone else can confirm.",
+  },
+  outcome: {
+    label: "Outcome",
+    ask: "What is true when this is done.",
+    rule: "Written from the point of view of whoever benefits.",
+  },
+  metric: {
+    label: "Success metric",
+    ask: "Baseline → target → by when.",
+    rule: "No baseline? Then measuring it is Phase 1.",
+  },
+  explicitlyOut: {
+    label: "Explicitly out",
+    ask: "Two or three things people will assume are included and are not.",
+    rule: "The ones that would otherwise be argued about in week three.",
+  },
+  phases: {
+    label: "Phases",
+    ask: "Named by the state each one ends in.",
+    rule: "One exit criterion apiece.",
+  },
+  owner: {
+    label: "Owner",
+    ask: "One name.",
+    rule: "Not a team.",
+  },
+} as const;
+
+/** The minimum that makes "explicitly out" mean anything. One exclusion is an afterthought. */
+export const MIN_EXPLICITLY_OUT = 2;
+
+/** The phase the app offers to add for you when a project has no baseline to improve on. */
+export const MEASURE_PHASE: Omit<ProjectPhase, "id"> = {
+  name: "Baseline measured",
+  exit: "A number exists for where this stands today, and someone else can reproduce it.",
+};
+
+/**
+ * What the brief is still missing, in the order the form asks for it.
+ *
+ * Returns the gaps rather than a boolean, because "incomplete" on its own is the least useful
+ * thing this could say: the card shows exactly which questions have not been answered, and a
+ * project you cannot yet answer them for is a finding about the project, not a form error.
+ *
+ * The baseline is deliberately NOT a gap — a missing baseline is legitimate, and the form turns it
+ * into a phase instead of a complaint.
+ */
+export function briefGaps(project: {
+  problem?: string | null;
+  outcome?: string | null;
+  metric_target?: string | null;
+  metric_by_when?: string | null;
+  explicitly_out?: string[] | null;
+  phases?: ProjectPhase[] | null;
+  owner?: string | null;
+}): string[] {
+  const gaps: string[] = [];
+  const filled = (v: string | null | undefined) => Boolean((v ?? "").trim());
+
+  if (!filled(project.problem)) gaps.push("Problem");
+  if (!filled(project.outcome)) gaps.push("Outcome");
+  if (!filled(project.metric_target) || !filled(project.metric_by_when)) {
+    gaps.push("Success metric");
+  }
+  const out = (project.explicitly_out ?? []).filter((v) => v.trim());
+  if (out.length < MIN_EXPLICITLY_OUT) gaps.push("Explicitly out");
+  const phases = (project.phases ?? []).filter((p) => p.name.trim() && p.exit.trim());
+  if (phases.length === 0) gaps.push("Phases");
+  if (!filled(project.owner)) gaps.push("Owner");
+
+  return gaps;
+}
+
+/** "12 → 3 by end of Q4", or null when there is not yet a metric to state. */
+export function metricLine(project: {
+  metric_baseline?: string | null;
+  metric_target?: string | null;
+  metric_by_when?: string | null;
+}): string | null {
+  const target = (project.metric_target ?? "").trim();
+  if (!target) return null;
+  const baseline = (project.metric_baseline ?? "").trim();
+  const byWhen = (project.metric_by_when ?? "").trim();
+  const head = baseline ? `${baseline} → ${target}` : target;
+  return byWhen ? `${head} by ${byWhen}` : head;
+}
+
+/**
+ * Coerces whatever came back from a jsonb column into the shape the UI expects. jsonb round-trips
+ * as `unknown`, and a row written before this column existed arrives as undefined — both have to
+ * become an empty array rather than reaching a `.map` as null.
+ */
+export function toStringList(raw: unknown): string[] {
+  return Array.isArray(raw) ? raw.map((v) => String(v)).filter((v) => v.trim()) : [];
+}
+
+export function toPhaseList(raw: unknown): ProjectPhase[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((v, i) => {
+      const row = (v ?? {}) as Record<string, unknown>;
+      const name = String(row.name ?? "").trim();
+      return {
+        // A phase written before ids existed gets a DETERMINISTIC one derived from its position
+        // and name — never a fresh random id, which would be minted again on the very next read
+        // and break the link to every task pointing at it.
+        id: String(row.id ?? "").trim() || `ph-${i}-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 24)}`,
+        name,
+        exit: String(row.exit ?? "").trim(),
+      };
+    })
+    .filter((p) => p.name || p.exit);
+}
+
+// ---------------------------------------------------------------------------- brief review (AI)
+
+/**
+ * An AI pass over one field of the brief.
+ *
+ * The single rule that shapes this whole feature: the model may make what she wrote CLEARER, and
+ * it may not make it TRUER. A problem statement is required to carry evidence — "needs a number,
+ * or something someone else can confirm" — and a model asked to improve one will supply a
+ * beautifully specific number that came from nowhere. That is not a worse suggestion than a vague
+ * one; it is a different and much more dangerous artefact, because the result reads as rigorous
+ * and is fiction, and six weeks later nobody remembers which figures were measured.
+ *
+ * So the shape has three parts, and the third is the important one:
+ *
+ *   revised — the same claim, said better. No new facts, no new numbers, no new names.
+ *   why     — one line on what changed, so a suggestion can be judged rather than just accepted.
+ *   asks    — what is MISSING that only she can answer. This is where "you haven't said how long
+ *             the wait actually is" goes, instead of the model inventing three days.
+ *
+ * The prompt states the rule and `stripInventedFigures` enforces it mechanically afterwards —
+ * prompts are a request, and this one matters too much to be left as a request.
+ */
+export type BriefFieldReview = {
+  revised: string;
+  why: string;
+  asks: string[];
+};
+
+/** The metric, revised field by field. Same rule: rewording only, never a fabricated figure. */
+export type BriefMetricReview = {
+  baseline: string;
+  target: string;
+  by_when: string;
+  why: string;
+  asks: string[];
+};
+
+/**
+ * The exclusions. `items` are her own, said more sharply; `suggested` are ones the model thinks
+ * people will assume — kept in a SEPARATE field and never merged into `items`, because an
+ * exclusion is a scope decision and a scope decision she did not make must not arrive looking
+ * like one she did.
+ */
+export type BriefListReview = {
+  items: string[];
+  suggested: string[];
+  why: string;
+  asks: string[];
+};
+
+export type BriefReview = {
+  problem: BriefFieldReview | null;
+  outcome: BriefFieldReview | null;
+  metric: BriefMetricReview | null;
+  explicitly_out: BriefListReview | null;
+  /**
+   * Fields whose suggestion was DISCARDED because it introduced a figure that was not in the
+   * source. Surfaced rather than swallowed: silently dropping it would leave a field looking as
+   * though the model had no opinion, when in fact it had one and it was disqualified.
+   */
+  discarded: string[];
+  model: string | null;
+  generatedAt?: string;
+  /** True when served from ai_insight_cache — i.e. this answer cost no AI request. */
+  fromCache?: boolean;
+  /** Set when the review could not run at all. The panel shows this instead of empty suggestions. */
+  unavailable?: string;
+};
+
+/**
+ * Every numeric token in a string: 3, 3.2, 40%, 1,200. Deliberately crude — it only has to be a
+ * superset of "things that look like evidence".
+ */
+function figuresIn(text: string): string[] {
+  return (text.match(/\d[\d,.]*\s*%?/g) ?? []).map((f) => f.replace(/[\s,]/g, "").replace(/\.$/, ""));
+}
+
+/**
+ * True when `revised` contains a figure that `original` does not — i.e. the model invented
+ * evidence.
+ *
+ * Strict on purpose, and the asymmetry is deliberate. A false positive costs one discarded
+ * suggestion and says so on screen. A false negative puts a made-up number into a document that
+ * exists precisely to hold real ones. Word-to-digit rewrites ("two" -> "2") will trip this; that
+ * is the correct side to fail on.
+ */
+export function inventsFigures(original: string, revised: string): boolean {
+  const before = new Set(figuresIn(original));
+  return figuresIn(revised).some((f) => !before.has(f));
+}
+
 // ---------------------------------------------------------------------------- recurrence
 
 /**
@@ -178,6 +778,9 @@ export type WorkRecurrence = {
   priority: TaskPriority;
   project_id: string | null;
   notes: string | null;
+  /** Carried onto every instance, so a routine is not re-triaged every single morning. */
+  urgent: boolean | null;
+  important: boolean | null;
   freq: RecurFreq;
   /** weekly only. 0 = Sunday, matching Date#getUTCDay. */
   byweekday: number | null;
@@ -412,6 +1015,23 @@ export type WorkTask = {
   started_at: string | null;
   completed_at: string | null;
   deferred_at: string | null;
+  /**
+   * The two Eisenhower axes. Null means UNSORTED, not "neither" — see the eisenhower section
+   * above. Rows written before the migration carry no column at all, so the store normalises
+   * them to null rather than leaving undefined to slip past every `=== null` check.
+   */
+  urgent: boolean | null;
+  important: boolean | null;
+  /** Why it is parked, and the decision that ends the park. Both set together, or neither. */
+  park_reason: string | null;
+  park_decision: string | null;
+  parked_at: string | null;
+  /**
+   * Which phase of its project this advances, or null. Points at ProjectPhase.id, never at a
+   * position — see the note there. An id that no longer resolves (its phase was deleted from the
+   * brief) reads as unphased, which loses the label and keeps the day's work.
+   */
+  phase_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -422,9 +1042,38 @@ export type WorkProject = {
   status: WorkProjectStatus;
   notes: string | null;
   last_activity_at: string | null;
+  /** Same two axes as a task. A personal project sitting in Kill-or-park is the costlier finding. */
+  urgent: boolean | null;
+  important: boolean | null;
+  /**
+   * The one-pager. Every field nullable — a project can be captured before it can be articulated —
+   * but the card names what is still missing (briefGaps) rather than letting the gap be invisible.
+   */
+  problem: string | null;
+  outcome: string | null;
+  metric_baseline: string | null;
+  metric_target: string | null;
+  metric_by_when: string | null;
+  explicitly_out: string[];
+  phases: ProjectPhase[];
+  /** One name. The column is a single text field so the schema itself refuses the committee. */
+  owner: string | null;
+  /**
+   * What a Paused project is required to state. The API refuses to pause without both — a park
+   * with no decision attached is not a park, it is a project quietly rotting.
+   */
+  park_reason: string | null;
+  park_decision: string | null;
+  parked_at: string | null;
   created_at: string;
   /** Joined in by the store, not a column. */
   openTaskCount?: number;
+  /**
+   * How this project's OPEN tasks sit across the matrix. Computed by the store, not stored.
+   * Exists so the project's own quadrant can be checked against the work rather than trusted —
+   * see projectDrift.
+   */
+  taskQuadrants?: QuadrantTally;
   /** Highest-priority open task, for the "current focus" line on the card. */
   currentFocus?: string | null;
 };
@@ -525,6 +1174,142 @@ export type MyWorkData = {
   /** True when the Supabase tables haven't been created yet, so the page can explain rather than break. */
   needsSetup?: boolean;
 };
+
+// ---------------------------------------------------------------------------- project ↔ task
+
+/**
+ * How a project's open tasks actually sit across the matrix.
+ *
+ * The point of counting them is the comparison, not the count: a project's own quadrant is a
+ * CLAIM about what kind of work it is, and its tasks are the EVIDENCE. Nothing else on this page
+ * can tell you the two have come apart.
+ */
+export type QuadrantTally = Record<Quadrant, number> & { unsorted: number; total: number };
+
+export function tallyQuadrants(items: Array<Partial<Triage>>): QuadrantTally {
+  const { cells, unsorted } = groupByQuadrant(items);
+  const tally = Object.fromEntries(QUADRANTS.map((q) => [q, cells[q].length])) as Record<
+    Quadrant,
+    number
+  >;
+  return { ...tally, unsorted: unsorted.length, total: items.length };
+}
+
+/**
+ * The finding this whole pairing exists for: the project says one thing and the work says another.
+ *
+ * Only raised when the evidence is strong enough to mean something — at least two triaged tasks,
+ * and a clear majority of them in a square that is not the project's own. One Drive task on a
+ * Protect project is a Tuesday; four of five is a project that has quietly become firefighting and
+ * nobody announced it.
+ *
+ * Returns both registers, same rule as matrixReadout: identical figures, different framing.
+ */
+export function projectDrift(
+  project: Partial<Triage>,
+  tally: QuadrantTally
+): { quadrant: Quadrant; text: string; playful: string } | null {
+  const claimed = quadrantOf(project);
+  if (!claimed) return null;
+  const triaged = tally.total - tally.unsorted;
+  if (triaged < 2) return null;
+
+  // The square the work is actually in, if one dominates.
+  const dominant = QUADRANT_ORDER.reduce((best, q) => (tally[q] > tally[best] ? q : best), QUADRANT_ORDER[0]);
+  if (dominant === claimed) return null;
+  if (tally[dominant] * 2 <= triaged) return null;
+
+  const claim = QUADRANT_META[claimed].verb;
+  const actual = QUADRANT_META[dominant].verb;
+  const share = `${tally[dominant]} of ${triaged}`;
+
+  // Protect -> Drive is the one worth naming outright; it is the specific failure the Protect
+  // square exists to prevent, and "drifted" undersells it.
+  if (claimed === "protect" && dominant === "drive") {
+    return {
+      quadrant: "drive",
+      text: `Classed Protect, but ${share} open tasks are Drive. This has become firefighting.`,
+      playful: `You called this Protect. ${share} of its tasks are Drive. It's firefighting now.`,
+    };
+  }
+
+  return {
+    quadrant: dominant,
+    text: `Classed ${claim}, but ${share} open tasks are ${actual}.`,
+    playful: `Says ${claim} on the tin. ${share} of the actual work is ${actual}.`,
+  };
+}
+
+/**
+ * Which phase a project is in, judged by its tasks rather than declared.
+ *
+ * A phase you have to mark as finished is a phase that stays open forever, so this is derived:
+ * the first phase with open work is the current one; failing that, the first phase nothing has
+ * been done against yet. It is a reading of the board, and it is wrong in exactly the way the
+ * board is wrong, which is the honest failure mode.
+ */
+export function currentPhaseFor(
+  project: { phases: ProjectPhase[] },
+  tasks: WorkTask[]
+): { phase: ProjectPhase; index: number; open: number; done: number } | null {
+  if (project.phases.length === 0) return null;
+
+  const counts = project.phases.map((phase) => {
+    const mine = tasks.filter((t) => t.phase_id === phase.id);
+    return { open: mine.filter(isOpen).length, done: mine.length - mine.filter(isOpen).length };
+  });
+
+  let index = counts.findIndex((c) => c.open > 0);
+  if (index === -1) index = counts.findIndex((c) => c.open === 0 && c.done === 0);
+  if (index === -1) index = project.phases.length - 1;
+
+  return { phase: project.phases[index], index, open: counts[index].open, done: counts[index].done };
+}
+
+/**
+ * Projects that are nominally Active and have no open task anywhere — today, ahead or overdue.
+ *
+ * This is the specific way a personal project dies: not abandoned, not parked, just never on a
+ * board. It keeps a status of Active and a well-written brief and nothing happens to it for a
+ * quarter. Parked projects are excluded — a park is a decision, and nagging about one is nagging
+ * about a choice already made out loud.
+ */
+export function stalledProjects(projects: WorkProject[]): WorkProject[] {
+  return projects.filter((p) => p.status === "Active" && (p.openTaskCount ?? 0) === 0);
+}
+
+/** The readout lines about projects, to sit alongside the task ones. Same two-register shape. */
+export function projectReadout(
+  projects: WorkProject[]
+): Array<{ quadrant: Quadrant | null; text: string; playful: string }> {
+  const notes: Array<{ quadrant: Quadrant | null; text: string; playful: string }> = [];
+
+  const stalled = stalledProjects(projects);
+  if (stalled.length > 0) {
+    const names = stalled.slice(0, 3).map((p) => p.name).join(", ");
+    const more = stalled.length > 3 ? ` and ${stalled.length - 3} more` : "";
+    notes.push({
+      quadrant: null,
+      text: `${stalled.length === 1 ? "One active project has" : `${stalled.length} active projects have`} no task anywhere: ${names}${more}. Active with nothing on a board is how a project quietly stops.`,
+      playful: `Nothing on any board for: ${names}${more}. Still marked Active, though. That's how they die.`,
+    });
+  }
+
+  for (const project of projects) {
+    if (!project.taskQuadrants) continue;
+    const drift = projectDrift(project, project.taskQuadrants);
+    if (drift) {
+      notes.push({
+        quadrant: drift.quadrant,
+        text: `${project.name}: ${drift.text}`,
+        playful: `${project.name}: ${drift.playful}`,
+      });
+    }
+  }
+
+  // Bounded: this strip is a glance, and six lines of it is a report nobody reads.
+  return notes.slice(0, 4);
+}
 
 // ---------------------------------------------------------------------------- dates
 

@@ -12,7 +12,6 @@ import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { celebrate } from "@/lib/celebrate";
 import { PAGE_NAMES } from "@/lib/nav";
 import { Copy } from "@/components/ui/Copy";
-import { OverviewQuickPanel } from "@/components/overview/OverviewQuickPanel";
 
 /**
  * Where signing in lands (see login/page.tsx) and where the brand mark goes back to.
@@ -29,7 +28,8 @@ const PRIMARY_NAV = { href: "/my-work", page: "home" } as const;
  * It briefly was, and before that it was buried in the Teams dropdown. Neither fitted: the bar is
  * for places you go and work, and the Overview is something you consult — usually in the middle of
  * doing something else, which is exactly when navigating away from it is worst. So its entry point
- * is the compass in the header (OverviewQuickPanel), available on every page, with the full page
+ * is the compass tab on the right edge (OverviewQuickPanel, mounted in the dashboard layout so it
+ * is not tangled up with the header's stacking), available on every page, with the full page
  * one click from inside the panel. Removing the pill also gives the bar its width back.
  */
 const LEADING_NAV = [{ href: PRIMARY_NAV.href, page: PRIMARY_NAV.page }] as const;
@@ -120,8 +120,6 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
           </Link>
 
           <div className="flex items-center gap-4 shrink-0">
-            {/* Today's overview, without leaving the page you're on. Hides itself on "/". */}
-            <OverviewQuickPanel />
             <ThemeToggle />
             <RefreshDataButton />
             {session?.user && (

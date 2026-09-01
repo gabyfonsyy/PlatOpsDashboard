@@ -2,17 +2,23 @@
 
 import { useMemo, useOptimistic, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ProjectStrip, TaskBoard } from "@/components/work/TaskBoard";
+import { ProjectStrip, TaskBoard, type Grouping } from "@/components/work/TaskBoard";
 import { UpcomingPanel } from "@/components/work/UpcomingPanel";
 import { RepeatingList } from "@/components/work/RepeatingList";
 import { RescheduleReasonStrip } from "@/components/work/RescheduleReasonStrip";
 import { celebrate } from "@/lib/celebrate";
+import { LayoutGrid, Rows3 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Copy } from "@/components/ui/Copy";
 import {
+  DECK_COPY,
   isOpen,
   pushTargetDate,
+  slipCountsByTask,
   type WorkProject,
   type WorkRecurrence,
   type WorkTask,
+  type WorkTaskReschedule,
 } from "@/lib/work";
 
 /**
@@ -23,7 +29,15 @@ import {
  *     rather than navigating away. Deliberately not a URL param: it's a transient view toggle, not
  *     a location worth linking to or putting in the back button.
  *
- *  2. The optimistic task store. It holds today, ahead and overdue together, as one array, because
+ *  2. The framing — lanes or the Eisenhower matrix. One switch changes BOTH the board and the
+ *     project list, because the two are the same judgement asked at two scales, and letting them
+ *     disagree ("matrix over here, lanes over there") is how a page ends up with two moods.
+ *
+ *     Kept in component state rather than the URL for the same reason as the project filter: it
+ *     is a way of looking at today, not a place. It is also NOT a filter — both framings show
+ *     every task, so nothing can hide in the one you are not currently looking at.
+ *
+ *  3. The optimistic task store. It holds today, ahead and overdue together, as one array, because
  *     rescheduling moves a task BETWEEN those surfaces — push something to tomorrow and it has to
  *     leave the board and appear under Tomorrow in the same frame. Split stores would each apply
  *     their own half of that move and disagree until the server answered.
@@ -31,6 +45,69 @@ import {
  * `useOptimistic` + `startTransition` also means a failed write rolls back automatically when the
  * transition settles and the server state comes back unchanged — no manual undo bookkeeping.
  */
+
+/**
+ * Two framings of the same work, one switch. A segmented control rather than a select: there are
+ * exactly two states, both worth naming, and the current one should be legible without opening
+ * anything.
+ */
+function GroupingToggle({
+  value,
+  onChange,
+}: {
+  value: Grouping;
+  onChange: (next: Grouping) => void;
+}) {
+  const options: Array<{ key: Grouping; label: string; hint: string; Icon: typeof Rows3 }> = [
+    {
+      key: "lane",
+      label: "Lanes",
+      hint: "Group by where it sits in today — Focus, To Do, Waiting, Incoming",
+      Icon: Rows3,
+    },
+    {
+      key: "matrix",
+      label: "Matrix",
+      hint: "Group by urgency and importance — Drive, Protect, Delegate, Kill or park",
+      Icon: LayoutGrid,
+    },
+  ];
+  return (
+    <div
+      role="group"
+      aria-label="How today's work is grouped"
+      className="inline-flex items-center gap-1 rounded-lg p-0.5 bg-neutral-100/70"
+    >
+      {options.map(({ key, label, hint, Icon }) => (
+        <button
+          key={key}
+          onClick={() => onChange(key)}
+          title={hint}
+          aria-pressed={value === key}
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs transition-colors",
+            /*
+             * `bg-surface-raised`, never `bg-white`. This was `bg-white text-neutral-900`, which
+             * is white-on-white in Dark and Gaby View: the neutral ramp is INVERTED there, so
+             * `text-neutral-900` is near-white, and `bg-white` is literal white in every theme
+             * because it is a raw Tailwind colour rather than a token.
+             *
+             * `surface-raised` exists for exactly this case — a surface that has to read as above
+             * a `neutral-100` fill — and it is defined per theme, so the selection stays visible
+             * in all three.
+             */
+            value === key
+              ? "bg-surface-raised text-neutral-900 shadow-sm"
+              : "text-neutral-500 hover:text-neutral-800"
+          )}
+        >
+          <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 type Action =
   | { ids: string[]; patch: Partial<WorkTask> }
@@ -44,6 +121,7 @@ export function MyWorkView({
   projects,
   recurrences,
   recurrencesReady,
+  reschedules,
 }: {
   today: string;
   tasks: WorkTask[];
@@ -52,9 +130,12 @@ export function MyWorkView({
   projects: WorkProject[];
   recurrences: WorkRecurrence[];
   recurrencesReady: boolean;
+  /** The slip log, for the "moved N times" marker and the evidence behind the Protect warning. */
+  reschedules: WorkTaskReschedule[];
 }) {
   const router = useRouter();
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const [grouping, setGrouping] = useState<Grouping>("lane");
   const [, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   /**
@@ -67,6 +148,7 @@ export function MyWorkView({
   // The server hands these over already partitioned; they're re-merged here so the optimistic
   // reducer sees every task it might have to move, then re-partitioned below off `work_date`.
   const all = useMemo(() => [...tasks, ...upcoming, ...overdue], [tasks, upcoming, overdue]);
+  const slipCounts = useMemo(() => slipCountsByTask(reschedules), [reschedules]);
 
   const [optimistic, applyOptimistic] = useOptimistic(all, (current: WorkTask[], action: Action) => {
     if ("remove" in action) return current.filter((t) => t.task_id !== action.remove);
@@ -234,7 +316,10 @@ export function MyWorkView({
     <div className="flex flex-col gap-6">
       {error && <p className="text-xs text-red-600">{error}</p>}
 
-      {/* Above the board, because the task it is asking about has just left the board. */}
+      {/* Renders as a floating popup in the bottom-right, portalled to document.body — its
+          position in this tree is irrelevant, and it is mounted here only because this is where
+          the slip is known. It used to be a strip above the board and was easy to miss, since the
+          eye is on the row that just moved rather than at the top of the page. */}
       {slip && (
         <RescheduleReasonStrip
           key={`${slip.task.task_id}:${slip.to}`}
@@ -249,11 +334,18 @@ export function MyWorkView({
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
         <div className="xl:col-span-2 flex flex-col gap-4">
-          <h2 className="text-sm font-semibold text-neutral-900">Today</h2>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <h2 className="text-sm font-semibold text-neutral-900">
+              <Copy serious={DECK_COPY.today.serious} playful={DECK_COPY.today.playful} />
+            </h2>
+            <GroupingToggle value={grouping} onChange={setGrouping} />
+          </div>
           <TaskBoard
             tasks={partition.todayTasks}
             projects={projects}
             today={today}
+            grouping={grouping}
+            slipCounts={slipCounts}
             projectFilter={projectFilter}
             onClearFilter={() => setProjectFilter(null)}
             onToggleDone={toggleDone}
@@ -265,16 +357,22 @@ export function MyWorkView({
         </div>
 
         <div className="flex flex-col gap-4">
-          <h2 className="text-sm font-semibold text-neutral-900">Projects</h2>
+          <h2 className="text-sm font-semibold text-neutral-900">
+            <Copy serious={DECK_COPY.projects.serious} playful={DECK_COPY.projects.playful} />
+          </h2>
           <ProjectStrip
             projects={projects}
+            tasks={optimistic}
             activeId={projectFilter}
+            grouping={grouping}
             onSelect={setProjectFilter}
           />
 
           {/* Beneath Projects rather than beside the board: a schedule is something you set up
               occasionally and then stop looking at. Its output is already on the board. */}
-          <h2 className="text-sm font-semibold text-neutral-900 mt-2">Repeating</h2>
+          <h2 className="text-sm font-semibold text-neutral-900 mt-2">
+            <Copy serious={DECK_COPY.repeating.serious} playful={DECK_COPY.repeating.playful} />
+          </h2>
           <RepeatingList
             rules={recurrences}
             ready={recurrencesReady}
@@ -289,6 +387,7 @@ export function MyWorkView({
         upcoming={partition.ahead}
         overdue={partition.behind}
         projects={projects}
+        slipCounts={slipCounts}
         onToggleDone={toggleDone}
         onPatch={patchTask}
         onDelete={removeTask}
