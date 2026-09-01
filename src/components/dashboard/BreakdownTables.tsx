@@ -15,18 +15,22 @@ export function CountRankTable({
   rows,
   countLabel = "Tickets",
   emptyMessage = "Nothing in this period.",
+  description,
 }: {
   title: string;
   keyLabel: string;
   rows: CountRow[];
   countLabel?: string;
   emptyMessage?: string;
+  /** Caption under the title — e.g. to name an exclusion the rows were built with. */
+  description?: string;
 }) {
   const max = rows.reduce((m, r) => Math.max(m, r.count), 0);
   return (
     <div className="card overflow-x-auto">
       <div className="px-4 py-3 border-b border-neutral-200">
         <h3 className="text-sm font-semibold text-neutral-900">{title}</h3>
+        {description && <p className="text-xs text-neutral-400 mt-0.5">{description}</p>}
       </div>
       <table className="w-full text-sm">
         <thead className="bg-neutral-50 border-b border-neutral-200">
