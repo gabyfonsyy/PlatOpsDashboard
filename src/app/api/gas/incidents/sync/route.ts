@@ -6,8 +6,13 @@ import { fetchGas } from "@/lib/gas-client";
 
 /**
  * POST /api/gas/incidents/sync — pulls every Jira ticket carrying the Report Tagging field
- * (customfield_10262) into INCIDENT_TICKETS (IncidentsApi.sync in GAS). Read-only against Jira:
- * the tag is the manager's own input and this never writes back to it.
+ * (customfield_10262) into INCIDENT_TICKETS, and sweeps out the ones whose tag has since been
+ * CLEARED (IncidentsApi.sync in GAS). Read-only against Jira: the tag is the manager's own input,
+ * and this route only ever reads it in either direction — the one path that writes to Jira is
+ * ../ticket, which clears the field when an incident is retracted from the dashboard instead.
+ *
+ * A swept ticket that already has logs is flagged rather than deleted, so this route can never
+ * destroy written feedback; see sweepUntaggedIncidentTickets_.
  *
  * Optional body { team } limits the run to one team_key, which is what the page sends when a
  * team filter is active — no reason to re-walk the other two projects' JQL for a DBA-only view.

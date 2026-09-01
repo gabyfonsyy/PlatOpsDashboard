@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 import { formatManilaDate } from "@/lib/format";
 import { issueGroupTone, jiraIssueUrl, type IncidentTicket } from "@/lib/incidents";
 import { IncidentLogDialog } from "@/components/incidents/IncidentLogDialog";
+import { RemoveIncidentTicketButton } from "@/components/incidents/RemoveIncidentTicketButton";
 
 /**
  * Tickets tagged in Jira that have no log yet — the manager's actual to-do list, kept above the
@@ -155,10 +156,16 @@ export function IncidentQueueTable({
                     {formatManilaDate(ticket.incident_date)}
                   </td>
                   <td className="px-4 py-3">
-                    <button onClick={() => setLogging(ticket)} className="btn-secondary py-1.5 px-3 text-xs">
-                      <MessageSquarePlus className="w-3.5 h-3.5" />
-                      Log incident
-                    </button>
+                    <div className="flex flex-col items-start gap-1">
+                      <button onClick={() => setLogging(ticket)} className="btn-secondary py-1.5 px-3 text-xs">
+                        <MessageSquarePlus className="w-3.5 h-3.5" />
+                        Log incident
+                      </button>
+                      {/* The other outcome of reviewing a tagged ticket. Nothing is lost here - a
+                          queue row has no feedback on it yet - so it stays a quiet tertiary link
+                          rather than a second button competing with the real action. */}
+                      <RemoveIncidentTicketButton issueKey={ticket.issue_key} />
+                    </div>
                   </td>
                 </tr>
               );

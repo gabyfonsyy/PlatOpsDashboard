@@ -15,6 +15,7 @@ import {
   type IncidentTicket,
 } from "@/lib/incidents";
 import { IncidentLogDialog } from "@/components/incidents/IncidentLogDialog";
+import { RemoveIncidentTicketButton } from "@/components/incidents/RemoveIncidentTicketButton";
 import { Copy } from "@/components/ui/Copy";
 
 type TeamMeta = { hasPeerReview: boolean; label: string };
@@ -117,6 +118,11 @@ export function IncidentLogsTable({
                   {ticket.issue_group && (
                     <Badge tone={issueGroupTone(ticket.issue_group)}>{ticket.issue_group}</Badge>
                   )}
+                  {/* The sync found Report Tagging cleared in Jira but wouldn't delete a ticket
+                      carrying feedback. Badged rather than hidden: its deductions are STILL in
+                      every score on this page until it's removed, so a silent disappearance from
+                      the list would be the one outcome that misleads. */}
+                  {ticket.untagged_at && <Badge tone="warning">Untagged in Jira</Badge>}
                   <span className="text-xs text-neutral-400">
                     {formatManilaDate(ticket.incident_date)}
                   </span>
@@ -126,22 +132,50 @@ export function IncidentLogsTable({
                 )}
               </div>
 
-              <div className="flex items-center gap-3 shrink-0">
-                <span className="text-right">
-                  <span className="block text-xs text-neutral-400 uppercase tracking-wide">Impact</span>
-                  <span className="block text-base font-semibold text-red-600 tabular-nums">
-                    {formatScoreImpact(scoreImpact)}
+              <div className="flex flex-col items-end gap-1 shrink-0">
+                <div className="flex items-center gap-3">
+                  <span className="text-right">
+                    <span className="block text-xs text-neutral-400 uppercase tracking-wide">Impact</span>
+                    <span className="block text-base font-semibold text-red-600 tabular-nums">
+                      {formatScoreImpact(scoreImpact)}
+                    </span>
                   </span>
-                </span>
-                <button
-                  onClick={() => setEditing({ ticket })}
-                  className="btn-secondary py-1.5 px-3 text-xs"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Add log
-                </button>
+                  <button
+                    onClick={() => setEditing({ ticket })}
+                    className="btn-secondary py-1.5 px-3 text-xs"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add log
+                  </button>
+                </div>
+                {/* Retracting straight from here, without going to Jira first. Suppressed while the
+                    ticket is flagged, since the strip below already asks the same question with the
+                    context that makes it answerable. */}
+                {!ticket.untagged_at && (
+                  <RemoveIncidentTicketButton
+                    issueKey={ticket.issue_key}
+                    logCount={ticketLogs.length}
+                  />
+                )}
               </div>
             </div>
+
+            {ticket.untagged_at && (
+              <div className="px-4 py-2 border-b border-neutral-200/70 bg-amber-50/60 flex items-center justify-between gap-3 flex-wrap">
+                <p className="text-xs text-amber-800">
+                  Report Tagging was cleared in Jira on {formatManilaDate(ticket.untagged_at)}, so this
+                  isn&apos;t being counted as an incident there any more — but it still has{" "}
+                  {ticketLogs.length} log{ticketLogs.length === 1 ? "" : "s"} deducting from the scores
+                  above. Remove it to drop {ticketLogs.length === 1 ? "it" : "them"}, or re-tag the
+                  ticket in Jira if the untag was a mistake.
+                </p>
+                <RemoveIncidentTicketButton
+                  issueKey={ticket.issue_key}
+                  logCount={ticketLogs.length}
+                  className="shrink-0"
+                />
+              </div>
+            )}
 
             <table className="w-full text-sm">
               <thead className="bg-neutral-50/70 border-b border-neutral-200/70">

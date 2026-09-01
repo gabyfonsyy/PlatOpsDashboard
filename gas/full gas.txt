@@ -2023,6 +2023,9 @@ function handleRequest_(e, method) {
         // — same shape as 'rto' + bulkUpsert above.
         if (params.action === 'sync') return jsonResponse_({ ok: true, data: IncidentsApi.sync(params) });
         if (params.action === 'setValidator') return jsonResponse_({ ok: true, data: IncidentsApi.setValidator(body) });
+        // Deletes an incident TICKET (and its logs), and clears Report Tagging in Jira so the sync
+        // cannot hand it back. Not dispatchCrud_'s 'delete', which targets an incident LOG by id.
+        if (params.action === 'removeTicket') return jsonResponse_({ ok: true, data: IncidentsApi.removeTicket(body) });
         return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, IncidentsApi) });
 
       case 'ticket-projects':
@@ -2185,10 +2188,14 @@ function parseBool_(value) {
  * Incident Logs — two layers, deliberately kept apart:
  *
  *   INCIDENT_TICKETS  synced FROM Jira. A ticket enters the incident list when the manager sets
- *                     the "Report Tagging" custom field (customfield_10262) on it in Jira. That
- *                     field is the manager's own input and the only trigger; this backend reads
- *                     it and NEVER writes to Jira. Its value is used purely as a flag — presence
- *                     means "valid incident log" — so it isn't stored or surfaced.
+ *                     the "Report Tagging" custom field (customfield_10262) on it in Jira, and
+ *                     LEAVES the list when that field is cleared again — untagging is how an
+ *                     incident is retracted after a second look (see
+ *                     sweepUntaggedIncidentTickets_). Its value is used purely as a flag —
+ *                     presence means "valid incident log" — so it isn't stored or surfaced.
+ *                     The sync only ever READS it. The one code path in this project that writes
+ *                     to Jira at all is removeTicket, which clears this single field when the
+ *                     retraction is started from the dashboard instead of from Jira.
  *
  *   INCIDENT_LOGS     entered on the dashboard. Severity (S1-S4, each carrying a fixed evaluation
  *                     score impact), the manager's feedback, the AI-rephrased version of that
@@ -2211,6 +2218,9 @@ const INCIDENT_TICKET_HEADERS = [
   'issue_key', 'team_key', 'project_key', 'summary', 'issue_type', 'status',
   'doer', 'validator', 'validator_source', 'validator_override',
   'created', 'updated', 'resolved_datetime', 'incident_date', 'last_synced_at',
+  // When the sweep found Report Tagging cleared in Jira on a ticket it could not delete because it
+  // already carries logs. Blank on every normal row; re-cleared if the ticket is tagged again.
+  'untagged_at',
 ];
 
 /**
@@ -2374,6 +2384,22 @@ const INCIDENT_SYNC_MAX_ISSUES = 250;
  */
 const INCIDENT_SYNC_TIME_BUDGET_MS = 40000;
 
+/**
+ * How many stored issue keys the untagged sweep asks Jira about per request. 100 is the search
+ * endpoint's page size, so a batch is one round-trip; the whole sweep costs
+ * ceil(stored tickets / 100) searches regardless of how many turn out to be untagged.
+ */
+const INCIDENT_SWEEP_BATCH_SIZE = 100;
+
+/**
+ * The sweep's OWN wall-clock budget, on top of INCIDENT_SYNC_TIME_BUDGET_MS rather than carved out
+ * of it. The forward pass routinely spends its entire budget and reports `capped`, and if the sweep
+ * shared that clock it would get zero time on exactly those runs — untagged tickets would then only
+ * ever disappear on a quiet day. Kept small so sync + sweep still fits inside the calling route's
+ * 60s maxDuration (see api/gas/incidents/sync/route.ts).
+ */
+const INCIDENT_SWEEP_TIME_BUDGET_MS = 10000;
+
 var IncidentsApi = {
   /**
    * params: team (team_key), year ("2026"), month ("2026-08"), startDate/endDate (yyyy-MM-dd).
@@ -2402,6 +2428,10 @@ var IncidentsApi = {
       t.validator_derived = String(t.validator || '');
       t.validator_override = String(t.validator_override || '');
       t.validator = t.validator_override || t.validator_derived;
+      // Surfaced so the page can badge a ticket whose Jira tag has been cleared but which the
+      // sweep refused to delete because it already carries logs. Normalised to a string — an
+      // untouched cell reads back as an empty string, not undefined.
+      t.untagged_at = String(t.untagged_at || '');
       return t;
     });
     let logs = sheetToObjects_(getOrCreateIncidentLogsSheet_(ss)).map(stripRowMeta_).map((l) => {
@@ -2588,7 +2618,72 @@ var IncidentsApi = {
   },
 
   /**
-   * Pulls every Jira ticket carrying the Report Tagging field into INCIDENT_TICKETS.
+   * Takes a ticket out of the incident list AND clears its Report Tagging field in Jira, for a
+   * ticket that on a second look was not a valid incident.
+   *
+   * The Jira write is what makes this meaningful rather than cosmetic. Report Tagging is the sole
+   * membership condition, so deleting only the local row would hand the ticket straight back on the
+   * next sync — the JQL still matches it. Clearing the field is therefore the operation, and the
+   * row deletion is the follow-through.
+   *
+   * ORDER IS DELIBERATE: Jira first, sheet second. Both partial failures then converge on the right
+   * end state — a failed Jira write leaves everything untouched and reports the reason (no edit
+   * permission, field not on the screen), and a failed row delete after a successful untag is
+   * cleaned up by the next sync's sweep. The reverse order has a partial failure that never heals.
+   *
+   * Any incident logs on the ticket go with it. That destroys manager-written feedback and the
+   * evaluation deductions attached to it, so this is only ever reached from an explicit confirm in
+   * the UI that states how many logs it will take — never from the daily trigger, which can only
+   * flag (see sweepUntaggedIncidentTickets_).
+   *
+   * payload: { issue_key }.
+   */
+  removeTicket: function (payload) {
+    const issueKey = String((payload && payload.issue_key) || '').trim();
+    if (!issueKey) throw new Error('issue_key is required');
+
+    const ss = getManagerDataSpreadsheet_();
+    const ticketSheet = getOrCreateIncidentTicketsSheet_(ss);
+    // Checked before the Jira call so a typo'd key doesn't clear a field on a ticket this dashboard
+    // doesn't even track.
+    if (!sheetToObjects_(ticketSheet).some((r) => r.issue_key === issueKey)) {
+      throw new Error(`Incident ticket not found: ${issueKey}`);
+    }
+
+    // Outside withLock_ on purpose: this is a network round-trip, and holding the document lock
+    // across it would block every other write on the spreadsheet for its duration.
+    const fields = {};
+    fields[INCIDENT_REPORT_TAGGING_FIELD] = null;
+    jiraUpdateIssueFields_(issueKey, fields);
+
+    return withLock_(function () {
+      const logSheet = getOrCreateIncidentLogsSheet_(ss);
+      const doomedLogs = sheetToObjects_(logSheet)
+        .filter((l) => l.issue_key === issueKey)
+        .map((l) => l._row);
+      // Bottom-up: deleteRow shifts every row below it up by one.
+      doomedLogs.sort((a, b) => b - a).forEach((rowIndex) => logSheet.deleteRow(rowIndex));
+
+      // Re-read rather than reusing the index from the existence check above — that was taken
+      // before the Jira round-trip, and another write could have moved the row since.
+      const row = sheetToObjects_(ticketSheet).find((r) => r.issue_key === issueKey);
+      if (row) deleteSheetRow_(ticketSheet, row._row);
+
+      return {
+        issue_key: issueKey,
+        deleted: true,
+        logsDeleted: doomedLogs.length,
+        untaggedInJira: true,
+      };
+    });
+  },
+
+  /**
+   * Pulls every Jira ticket carrying the Report Tagging field into INCIDENT_TICKETS, then sweeps
+   * out the ones whose tag has since been REMOVED (see sweepUntaggedIncidentTickets_) — the tag is
+   * the whole membership condition, so it has to be honoured in both directions or a retracted
+   * incident stays on the page forever.
+   *
    * params.team optionally limits the run to one team_key. Per-team failures are collected and
    * returned rather than thrown: `cf[10262] IS NOT EMPTY` is a hard JQL error on a project where
    * the field isn't available, and one such team must not block the others from syncing.
@@ -2631,6 +2726,21 @@ var IncidentsApi = {
       }
     });
 
+    // Only teams whose forward pass SUCCEEDED are swept. A team whose `cf[…] IS NOT EMPTY` JQL is
+    // rejected (the field isn't available on that project) has already failed above, and sweeping
+    // it would ask Jira the same rejected question — then read the failure as "none of these are
+    // tagged any more" and delete the team's whole list. This gate is the primary guard against
+    // that; fetchStillTaggedKeys_ carries a second one.
+    const failedTeams = {};
+    errors.forEach((e) => { failedTeams[e.team_key] = true; });
+    const sweep = sweepUntaggedIncidentTickets_(
+      sheet,
+      teams.filter((t) => !failedTeams[t.team_key]),
+      Date.now() + INCIDENT_SWEEP_TIME_BUDGET_MS
+    );
+    sweep.errors.forEach((e) => errors.push(e));
+    if (sweep.capped) capped = true;
+
     return {
       syncedAt: nowIso_(),
       scanned: scanned,
@@ -2643,6 +2753,13 @@ var IncidentsApi = {
       outOfWindow: outOfWindow,
       prunedBefore: prune.deleted,
       prunedKeptBecauseLogged: prune.keptBecauseLogged,
+      // Tickets whose Report Tagging field has since been cleared in Jira: deleted outright when
+      // they had no log, flagged for the manager to confirm when they did, and un-flagged when a
+      // previously-untagged ticket has been tagged again.
+      untaggedChecked: sweep.checked,
+      untaggedRemoved: sweep.removed,
+      untaggedFlagged: sweep.flagged,
+      untaggedRestored: sweep.restored,
       elapsedMs: Date.now() - startedAt,
       // Surfaced because it's the one thing that makes a run slow — a spike here means the RAW
       // tabs are behind (see buildIncidentValidatorIndex_), not that Jira got slower.
@@ -2861,6 +2978,175 @@ function pruneIncidentTicketsBefore_(sheet, floor) {
 
   doomed.sort((a, b) => b - a).forEach((rowIndex) => sheet.deleteRow(rowIndex));
   return { deleted: doomed.length, keptBecauseLogged: keptBecauseLogged };
+}
+
+/**
+ * Takes out of INCIDENT_TICKETS the rows whose Report Tagging field has been CLEARED in Jira.
+ *
+ * Untagging is how the manager retracts an incident after a closer look, and without this the row
+ * lives forever: the forward sync's JQL is `cf[10262] IS NOT EMPTY`, so an untagged ticket simply
+ * stops being returned, and an upsert-only pass cannot tell "no longer tagged" apart from "not in
+ * this page of results".
+ *
+ * Deliberately a REVERSE check - it asks Jira about the keys already stored - rather than a "delete
+ * anything this run didn't see" sweep over the forward pass's results. The forward pass is capped
+ * (INCIDENT_SYNC_MAX_ISSUES, plus a wall-clock budget) and legitimately stops early, so a seen-set
+ * sweep would delete most of the list on any capped run, and all of a team's list whenever
+ * params.team narrowed the run. Asking by key is independent of how far the scan got, costs one
+ * keys-only search per 100 stored tickets, and is safe to interrupt part-way: every row it has
+ * already resolved stays resolved.
+ *
+ * A ticket that already has an incident log is NOT deleted - the same rule as
+ * pruneIncidentTicketsBefore_ and for the same reason: the log is manager-written feedback carrying
+ * an evaluation deduction, and a 7am trigger must not be able to destroy it. It is stamped with
+ * untagged_at instead, which the page badges with a Remove action, so that deletion stays a
+ * decision somebody makes.
+ *
+ * Re-tagging is handled in the same pass: a key Jira confirms as still tagged has any previous
+ * untagged_at cleared, so an untag done by mistake is fully reversible by re-tagging in Jira.
+ */
+function sweepUntaggedIncidentTickets_(sheet, teams, deadline) {
+  const fieldId = INCIDENT_REPORT_TAGGING_FIELD.replace('customfield_', '');
+
+  const loggedKeys = {};
+  sheetToObjects_(getOrCreateIncidentLogsSheet_(getManagerDataSpreadsheet_()))
+    .forEach((l) => { loggedKeys[l.issue_key] = true; });
+
+  const rowsByTeam = {};
+  sheetToObjects_(sheet).forEach((r) => {
+    const key = String(r.team_key || '');
+    if (!rowsByTeam[key]) rowsByTeam[key] = [];
+    rowsByTeam[key].push(r);
+  });
+
+  const doomed = [];
+  const errors = [];
+  let checked = 0;
+  let flagged = 0;
+  let restored = 0;
+  let capped = false;
+
+  teams.forEach((team) => {
+    const rows = rowsByTeam[team.team_key] || [];
+
+    for (let i = 0; i < rows.length; i += INCIDENT_SWEEP_BATCH_SIZE) {
+      if (Date.now() > deadline) { capped = true; return; }
+      const batch = rows.slice(i, i + INCIDENT_SWEEP_BATCH_SIZE);
+
+      let stillTagged;
+      try {
+        stillTagged = fetchStillTaggedKeys_(team, batch.map((r) => r.issue_key), fieldId);
+      } catch (err) {
+        // A failed batch must NOT be read as "none of these are tagged" - that conclusion deletes
+        // the batch. Report it and leave every row in it exactly as it is; the next run retries.
+        errors.push({
+          team_key: team.team_key,
+          error: `untagged sweep: ${String(err && err.message ? err.message : err)}`,
+        });
+        return;
+      }
+      checked += batch.length;
+
+      batch.forEach((row) => {
+        const wasFlagged = !!String(row.untagged_at || '');
+
+        if (stillTagged[row.issue_key]) {
+          if (wasFlagged) {
+            updateSheetRow_(sheet, row._row, Object.assign(stripRowMeta_(row), { untagged_at: '' }));
+            restored++;
+          }
+          return;
+        }
+
+        if (loggedKeys[row.issue_key]) {
+          // Already flagged: leave the original timestamp alone, so "untagged since" doesn't reset
+          // on every sync and the row can't look newly retracted every morning.
+          if (!wasFlagged) {
+            updateSheetRow_(sheet, row._row, Object.assign(stripRowMeta_(row), { untagged_at: nowIso_() }));
+            flagged++;
+          }
+          return;
+        }
+
+        doomed.push(row._row);
+      });
+    }
+  });
+
+  // Bottom-up, same as pruneIncidentTicketsBefore_: deleteRow shifts every row below it up by one,
+  // so descending order is what keeps the collected indices valid mid-loop. Collected across all
+  // teams and deleted once at the end, since the in-loop updateSheetRow_ calls don't move rows.
+  doomed.sort((a, b) => b - a).forEach((rowIndex) => sheet.deleteRow(rowIndex));
+
+  return {
+    checked: checked,
+    removed: doomed.length,
+    flagged: flagged,
+    restored: restored,
+    errors: errors,
+    capped: capped,
+  };
+}
+
+/**
+ * {issue_key -> true} for the subset of `keys` that STILL carry the Report Tagging field. Keys the
+ * result omits are the untagged ones - that inversion is the whole point of the call.
+ *
+ * `fields: ['summary']` rather than no field list: jiraSearchIssues_ defaults to `*all` when given
+ * none, which would pull every field of every ticket for a check that reads nothing but issue.key.
+ *
+ * `key in (...)` is a hard HTTP 400 if ANY key in the list no longer exists in Jira (a deleted or
+ * moved issue), which would strand the whole batch - the same error every run, and the other 99
+ * keys in it never resolved. So that specific error is answered by splitting the batch and retrying
+ * each half, down to a single key, at which point the key itself is the problem: the issue is gone
+ * from Jira, and "not tagged" is the correct conclusion for it.
+ *
+ * Every OTHER failure is rethrown, deliberately. Absorbing a 401, or a 5xx that survived
+ * jiraFetchWithRetry_'s backoff, would turn an outage into a mass deletion. In particular a project
+ * where customfield_10262 isn't available answers 400 too, and its message names the FIELD rather
+ * than a key - hence isMissingIssueKeyError_ rather than a bare status check. (sync() also refuses
+ * to sweep a team whose forward pass errored, which catches that case before it ever reaches here;
+ * this is the second of those two guards.)
+ */
+function fetchStillTaggedKeys_(team, keys, fieldId) {
+  if (!keys.length) return {};
+
+  const found = {};
+  const jql = `project = ${team.jira_project_key} AND key in (${keys.join(',')})`
+    + ` AND cf[${fieldId}] IS NOT EMPTY`;
+
+  try {
+    let pageToken;
+    while (true) {
+      const page = jiraSearchIssues_(jql, pageToken, INCIDENT_SWEEP_BATCH_SIZE, ['summary']);
+      page.issues.forEach((issue) => { found[issue.key] = true; });
+      if (!page.nextPageToken || page.issues.length === 0 || page.nextPageToken === pageToken) break;
+      pageToken = page.nextPageToken;
+    }
+    return found;
+  } catch (err) {
+    if (!isMissingIssueKeyError_(err)) throw err;
+    if (keys.length === 1) return {};
+    const mid = Math.ceil(keys.length / 2);
+    return Object.assign(
+      fetchStillTaggedKeys_(team, keys.slice(0, mid), fieldId),
+      fetchStillTaggedKeys_(team, keys.slice(mid), fieldId)
+    );
+  }
+}
+
+/**
+ * True if `err` is Jira rejecting a JQL `key in (...)` list because one of the keys doesn't exist -
+ * "An issue with key 'ABC-123' does not exist for field 'key'." Matched on the field name as well
+ * as the status so it cannot swallow the OTHER 400 this JQL can produce, which is the custom field
+ * being unavailable on the project ("Field 'cf[10262]' does not exist or you do not have permission
+ * to view it") and which must never be read as "these tickets are untagged".
+ */
+function isMissingIssueKeyError_(err) {
+  const message = String(err && err.message ? err.message : err);
+  return /HTTP 400\b/.test(message)
+    && /does not exist/i.test(message)
+    && /for field ['"]?key/i.test(message);
 }
 
 /** The team's configured owner field (Assigned SE / Assigned COD), falling back to Jira's own assignee. */
@@ -3234,6 +3520,7 @@ function getOrCreateIncidentTicketsSheet_(ss) {
   // finds no column, and drops the value silently on every write.
   appendColumnIfMissing_(sheet, 'validator_source');
   appendColumnIfMissing_(sheet, 'validator_override');
+  appendColumnIfMissing_(sheet, 'untagged_at');
   return sheet;
 }
 
@@ -4176,7 +4463,13 @@ function jiraFetchWithRetry_(url, options) {
     }
 
     const code = response.getResponseCode();
-    if (code >= 200 && code < 300) return JSON.parse(response.getContentText());
+    if (code >= 200 && code < 300) {
+      // A successful PUT answers 204 with an EMPTY body, and JSON.parse('') throws — so an empty
+      // 2xx is returned as null rather than parsed. Only jiraUpdateIssueFields_ hits this path;
+      // every read endpoint returns a body.
+      const text = response.getContentText();
+      return text ? JSON.parse(text) : null;
+    }
 
     if (JIRA_RETRYABLE_STATUS_CODES.indexOf(code) !== -1 && attempt < JIRA_MAX_RETRIES) {
       Utilities.sleep(1000 * Math.pow(2, attempt));
@@ -4222,6 +4515,27 @@ function jiraSearchIssues_(jql, pageToken, maxResults, fields) {
     payload: JSON.stringify(payload),
   });
   return { issues: result.issues || [], nextPageToken: result.nextPageToken || '' };
+}
+
+/**
+ * Sets fields on ONE issue — PUT /rest/api/3/issue/{key}. Pass null as a value to clear a field.
+ *
+ * The ONLY write this integration makes to Jira, and it exists for exactly one caller:
+ * IncidentsApi.removeTicket clearing Report Tagging (customfield_10262) on a ticket that turned out
+ * not to be a valid incident. It is here rather than inlined there so the fact that this client can
+ * write at all is visible in one place — everything else in this file reads, and it should stay
+ * that way.
+ *
+ * Retrying is safe: the only call sets a field to a fixed value, so a replayed request lands on the
+ * same state. Jira returns 204 with no body, so a successful call is simply one that doesn't throw.
+ */
+function jiraUpdateIssueFields_(issueKey, fields) {
+  const base = getScriptProperty_('JIRA_BASE_URL');
+  jiraFetchWithRetry_(`${base}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+    method: 'put',
+    contentType: 'application/json',
+    payload: JSON.stringify({ fields: fields }),
+  });
 }
 
 /** Fetches the FULL changelog for one issue, transparently paginating (maxResults=100/page). */

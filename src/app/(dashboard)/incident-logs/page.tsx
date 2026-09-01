@@ -119,8 +119,9 @@ export default async function IncidentLogsPage({
           <PageTitle page="incidents" />
           <p className="text-sm text-neutral-500 mt-1 max-w-2xl">
             Tickets you tagged with <span className="font-medium text-neutral-700">Report Tagging</span> in Jira,
-            with the severity and feedback that feed each person&apos;s evaluation. Feedback stays here —
-            nothing is written back to Jira.
+            with the severity and feedback that feed each person&apos;s evaluation. Clear that field in Jira
+            and a sync takes the ticket off this page; &ldquo;not an incident&rdquo; on a row does the same from
+            this end, by clearing the field for you. Your feedback stays here — it is never written to Jira.
             {windowStart && (
               <> Incidents are tracked from <span className="font-medium text-neutral-700">{windowStart}</span> onwards.</>
             )}

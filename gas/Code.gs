@@ -62,6 +62,9 @@ function handleRequest_(e, method) {
         // — same shape as 'rto' + bulkUpsert above.
         if (params.action === 'sync') return jsonResponse_({ ok: true, data: IncidentsApi.sync(params) });
         if (params.action === 'setValidator') return jsonResponse_({ ok: true, data: IncidentsApi.setValidator(body) });
+        // Deletes an incident TICKET (and its logs), and clears Report Tagging in Jira so the sync
+        // cannot hand it back. Not dispatchCrud_'s 'delete', which targets an incident LOG by id.
+        if (params.action === 'removeTicket') return jsonResponse_({ ok: true, data: IncidentsApi.removeTicket(body) });
         return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, IncidentsApi) });
 
       case 'ticket-projects':
