@@ -1,8 +1,11 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
-import { getTeamByKey } from "@/lib/teams";
+import { getTeamByKey, backlogAgingAssigneeLabel } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
+import { getAutomatedTicketCount } from "@/lib/automated-tickets";
+import { AUTOMATION_LABELS_COOKIE, resolveAutomationLabels } from "@/lib/automation-labels";
 import { resolveFilters } from "@/lib/date-ranges";
 import { formatMinutesDecimalValue, formatDaysValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
@@ -22,9 +25,21 @@ export default async function TeamDashboardPage({
   if (!team) notFound();
 
   const { range, period, issueType } = resolveFilters(searchParams);
-  const [metrics, insight] = await Promise.all([
+
+  // Automated tickets are defined on the Assigned SE field, so the card only exists for teams
+  // that own their tickets through it (SE/ST). Skipped entirely elsewhere rather than fetched and
+  // hidden — a team without the field has nothing to count.
+  const hasAssignedSe = backlogAgingAssigneeLabel(team) === "Assigned SE";
+  // The same cookie the drill-down reads, so the card counts the population she configured there
+  // rather than the built-in default. Without this the card and the page it links to disagree the
+  // moment she edits the automation-label catalogue.
+  const automationLabels = resolveAutomationLabels(cookies().get(AUTOMATION_LABELS_COOKIE)?.value);
+  const [metrics, insight, automatedCount] = await Promise.all([
     getTicketMetrics(team.team_key, range, period, issueType),
     getInsight(`TEAM:${team.team_key}`),
+    hasAssignedSe
+      ? getAutomatedTicketCount(team.team_key, range, period, issueType, automationLabels)
+      : Promise.resolve(0),
   ]);
 
   const issueTypes = team.issue_types_csv
@@ -104,6 +119,15 @@ export default async function TeamDashboardPage({
           }
           href={`/${team.team_key.toLowerCase()}/backlog-aging?${filterQuery}`}
         />
+        {hasAssignedSe && (
+          <MetricCard
+            label="Automated Tickets"
+            value={formatNumber(automatedCount)}
+            sublabel={`of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved`}
+            tooltip="Tickets resolved in the period that no person on the team owns — Assigned SE is blank or set to the automation account — plus any ticket carrying one of your catalogued automation labels. Archived and Rejected tickets are excluded, since nobody did the work on them. Jira's own assignee is not used to decide this. Click through for the labels behind them, their lead and cycle times, and the ticket list."
+            href={`/${team.team_key.toLowerCase()}/automated?${filterQuery}`}
+          />
+        )}
         {team.has_fcr_escalation && (
           <>
             <MetricCard

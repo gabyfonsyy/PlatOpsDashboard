@@ -56,6 +56,21 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/**
+ * The only fields the span definitions in `basisFor` actually read.
+ *
+ * Named separately from TicketRow so another report can compute the SAME lead and cycle spans off
+ * its own row shape (see lib/automated-tickets.ts) instead of re-deriving the formulas. TicketRow
+ * satisfies it structurally, so every call site in this file is unaffected.
+ */
+export type SpanFields = {
+  created: string;
+  resolved_datetime: string | null;
+  first_out_of_backlog_todo: string | null;
+  cycle_time_start: string | null;
+  cycle_time_end: string | null;
+};
+
 type TicketRow = {
   issue_key: string;
   issue_type: string | null;
@@ -170,7 +185,7 @@ async function fetchSpanRowsParallel(
  * is what the period is reporting on — filtering those by resolution date would both drop
  * unresolved tickets that were reviewed and pull in spans that closed months earlier.
  */
-function basisFor(metric: LeadCycleTimeMetric, hasPeerReviewTracking: boolean) {
+export function basisFor(metric: LeadCycleTimeMetric, hasPeerReviewTracking: boolean) {
   if (metric === "lead") {
     return {
       dateColumn: "resolved_datetime" as const,
@@ -179,10 +194,10 @@ function basisFor(metric: LeadCycleTimeMetric, hasPeerReviewTracking: boolean) {
       description: hasPeerReviewTracking
         ? "Time from ticket creation to resolution, across tickets resolved in the period."
         : "Time from ticket creation to when it moved to Ready for Checking or Cancelled.",
-      duration: (r: TicketRow) =>
+      duration: (r: SpanFields) =>
         r.created && r.resolved_datetime ? minutesBetween(r.created, r.resolved_datetime) : null,
       startedAt: () => "",
-      endedAt: (r: TicketRow) => r.resolved_datetime || "",
+      endedAt: (r: SpanFields) => r.resolved_datetime || "",
     };
   }
   if (hasPeerReviewTracking) {
@@ -194,10 +209,10 @@ function basisFor(metric: LeadCycleTimeMetric, hasPeerReviewTracking: boolean) {
       endColumnLabel: "Reached Review",
       description:
         "Time from when a ticket moved out of Backlog/To Do to the most recent time it reached For Peer Review (For Checking or For Product Team for Investigations), Archived, or Rejected. Counted as soon as it reaches that stage, independent of resolution.",
-      duration: (r: TicketRow) =>
+      duration: (r: SpanFields) =>
         r.cycle_time_start && r.cycle_time_end ? minutesBetween(r.cycle_time_start, r.cycle_time_end) : null,
-      startedAt: (r: TicketRow) => r.cycle_time_start || "",
-      endedAt: (r: TicketRow) => r.cycle_time_end || "",
+      startedAt: (r: SpanFields) => r.cycle_time_start || "",
+      endedAt: (r: SpanFields) => r.cycle_time_end || "",
     };
   }
   return {
@@ -206,12 +221,12 @@ function basisFor(metric: LeadCycleTimeMetric, hasPeerReviewTracking: boolean) {
     endColumnLabel: "Resolved",
     description:
       "Time from when a ticket moved out of Backlog/To Do to when it moved to Ready for Checking or Cancelled.",
-    duration: (r: TicketRow) =>
+    duration: (r: SpanFields) =>
       r.first_out_of_backlog_todo && r.resolved_datetime
         ? minutesBetween(r.first_out_of_backlog_todo, r.resolved_datetime)
         : null,
-    startedAt: (r: TicketRow) => r.first_out_of_backlog_todo || "",
-    endedAt: (r: TicketRow) => r.resolved_datetime || "",
+    startedAt: (r: SpanFields) => r.first_out_of_backlog_todo || "",
+    endedAt: (r: SpanFields) => r.resolved_datetime || "",
   };
 }
 
