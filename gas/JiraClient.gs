@@ -32,7 +32,13 @@ function jiraFetchWithRetry_(url, options) {
     }
 
     const code = response.getResponseCode();
-    if (code >= 200 && code < 300) return JSON.parse(response.getContentText());
+    if (code >= 200 && code < 300) {
+      // A successful PUT answers 204 with an EMPTY body, and JSON.parse('') throws — so an empty
+      // 2xx is returned as null rather than parsed. Only jiraUpdateIssueFields_ hits this path;
+      // every read endpoint returns a body.
+      const text = response.getContentText();
+      return text ? JSON.parse(text) : null;
+    }
 
     if (JIRA_RETRYABLE_STATUS_CODES.indexOf(code) !== -1 && attempt < JIRA_MAX_RETRIES) {
       Utilities.sleep(1000 * Math.pow(2, attempt));
@@ -78,6 +84,27 @@ function jiraSearchIssues_(jql, pageToken, maxResults, fields) {
     payload: JSON.stringify(payload),
   });
   return { issues: result.issues || [], nextPageToken: result.nextPageToken || '' };
+}
+
+/**
+ * Sets fields on ONE issue — PUT /rest/api/3/issue/{key}. Pass null as a value to clear a field.
+ *
+ * The ONLY write this integration makes to Jira, and it exists for exactly one caller:
+ * IncidentsApi.removeTicket clearing Report Tagging (customfield_10262) on a ticket that turned out
+ * not to be a valid incident. It is here rather than inlined there so the fact that this client can
+ * write at all is visible in one place — everything else in this file reads, and it should stay
+ * that way.
+ *
+ * Retrying is safe: the only call sets a field to a fixed value, so a replayed request lands on the
+ * same state. Jira returns 204 with no body, so a successful call is simply one that doesn't throw.
+ */
+function jiraUpdateIssueFields_(issueKey, fields) {
+  const base = getScriptProperty_('JIRA_BASE_URL');
+  jiraFetchWithRetry_(`${base}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+    method: 'put',
+    contentType: 'application/json',
+    payload: JSON.stringify({ fields: fields }),
+  });
 }
 
 /** Fetches the FULL changelog for one issue, transparently paginating (maxResults=100/page). */

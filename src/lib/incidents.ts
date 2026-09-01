@@ -118,6 +118,12 @@ export type IncidentTicket = {
   validator_override?: string;
   /** What the changelog derivation produced, kept visible under any override. */
   validator_derived?: string;
+  /**
+   * Set by the sync when Report Tagging has been cleared in Jira on a ticket the sweep could not
+   * delete because it already carries logs. Blank on every normal row, and cleared again if the
+   * ticket is re-tagged. Its presence means "the manager retracted this; the logs are still here".
+   */
+  untagged_at?: string;
 };
 
 /** One person's log against one incident. A ticket can have a Doer log and a Validator log. */

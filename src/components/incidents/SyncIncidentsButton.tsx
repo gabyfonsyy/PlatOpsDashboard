@@ -19,6 +19,14 @@ type SyncResult = {
   outOfWindow?: number;
   prunedBefore?: number;
   prunedKeptBecauseLogged?: number;
+  /** Stored tickets the sweep was able to re-check against Jira this run. */
+  untaggedChecked?: number;
+  /** Untagged in Jira and deleted outright — they had no log to lose. */
+  untaggedRemoved?: number;
+  /** Untagged in Jira but kept, because they carry logs. Badged on the page for you to confirm. */
+  untaggedFlagged?: number;
+  /** Previously untagged, tagged again in Jira — the flag was cleared. */
+  untaggedRestored?: number;
 };
 
 /**
@@ -26,6 +34,11 @@ type SyncResult = {
  * (syncIncidentTickets in gas/Triggers.gs) does this on a schedule; this is the "I just tagged
  * one, show it now" path, because the whole point of the tag is that it's applied by hand and
  * the manager is often tagging and writing up in the same sitting.
+ *
+ * A run is also what REMOVES tickets whose Report Tagging has been cleared in Jira — untagging is
+ * how an incident is retracted, so the same button covers both directions and its summary has to
+ * say which happened. A removal is reported even at zero: "nothing was removed" is information on
+ * a page where a vanished row would otherwise be unexplained.
  *
  * The result is summarised on screen rather than swallowed: per-team JQL failures are returned
  * by the backend instead of thrown (one team's project missing the field must not block the
@@ -97,6 +110,25 @@ export function SyncIncidentsButton({ team }: { team?: string }) {
               {result.prunedBefore ? ` · ${result.prunedBefore} pre-window row${result.prunedBefore === 1 ? "" : "s"} removed` : ""}
             </span>
           )}
+          {/* The retraction half of the sync. Only rendered when something actually changed —
+              a "0 removed" line on every run would be noise, and the counts above already say
+              the run happened. */}
+          {result.untaggedRemoved || result.untaggedFlagged || result.untaggedRestored ? (
+            <span className="block text-neutral-400">
+              {result.untaggedRemoved
+                ? `${result.untaggedRemoved} untagged in Jira, removed`
+                : null}
+              {result.untaggedRemoved && (result.untaggedFlagged || result.untaggedRestored) ? " · " : ""}
+              {result.untaggedFlagged ? (
+                <span className="text-amber-600">
+                  {result.untaggedFlagged} untagged but kept — {result.untaggedFlagged === 1 ? "it has" : "they have"} logs,
+                  see the badge below
+                </span>
+              ) : null}
+              {result.untaggedFlagged && result.untaggedRestored ? " · " : ""}
+              {result.untaggedRestored ? `${result.untaggedRestored} re-tagged, back in the list` : null}
+            </span>
+          ) : null}
           {result.prunedKeptBecauseLogged ? (
             <span className="block text-neutral-400">
               {result.prunedKeptBecauseLogged} older ticket
