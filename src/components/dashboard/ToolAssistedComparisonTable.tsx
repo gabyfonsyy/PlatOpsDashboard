@@ -1,5 +1,6 @@
-import type { CycleStats } from "@/lib/tool-assisted";
-import { formatDurationBreakdown, formatNumber, formatPercent } from "@/lib/format";
+import { BACKEND_EXECUTION_ISSUE_TYPES, type CycleStats } from "@/lib/tool-assisted";
+import { DurationCell } from "@/components/dashboard/DurationCell";
+import { formatNumber, formatPercent } from "@/lib/format";
 
 /**
  * The head-to-head: the same three measures for tool-assisted tickets and for everything else,
@@ -19,18 +20,18 @@ export function ToolAssistedComparisonTable({
   label: string;
   toolAssisted: CycleStats;
   others: CycleStats;
-  fasterBy: { actual: number | null; peerReview: number | null; avgOfTwo: number | null };
+  fasterBy: { actual: number | null; peerReview: number | null; combined: number | null };
 }) {
   const rows = [
     {
-      measure: "Actual effort",
+      measure: "Cycle time (doer)",
       note: "out of To Do → For Peer Review",
       tool: toolAssisted.actual,
       other: others.actual,
       gap: fasterBy.actual,
     },
     {
-      measure: "Peer review",
+      measure: "Cycle time (reviewer)",
       note: "in For Peer Review → On Hold / For Checking",
       tool: toolAssisted.peerReview,
       other: others.peerReview,
@@ -43,7 +44,8 @@ export function ToolAssistedComparisonTable({
       <div className="px-4 py-3 border-b border-neutral-200/70">
         <h2 className="text-sm font-semibold text-neutral-900">Cycle time, stage by stage</h2>
         <p className="text-xs text-neutral-500 mt-0.5">
-          Tickets labeled &quot;{label}&quot; against every other in-scope ST ticket created in the period.
+          Tickets labeled &quot;{label}&quot; against the rest of the team&apos;s backend execution work in
+          the period. Durations in days.
         </p>
       </div>
 
@@ -53,7 +55,12 @@ export function ToolAssistedComparisonTable({
             <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
               <th className="px-4 py-2">Stage</th>
               <th className="px-4 py-2 text-right">Tool-Assisted</th>
-              <th className="px-4 py-2 text-right">Other Tickets</th>
+              <th className="px-4 py-2 text-right">
+                Other Backend Work
+                <span className="block normal-case tracking-normal font-normal text-neutral-400">
+                  not tool-assisted
+                </span>
+              </th>
               <th className="px-4 py-2 text-right">Faster By</th>
             </tr>
           </thead>
@@ -65,18 +72,14 @@ export function ToolAssistedComparisonTable({
                   <span className="block text-xs text-neutral-400">{r.note}</span>
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
-                  <span className="block font-semibold text-neutral-900 tabular-nums">
-                    {formatDurationBreakdown(r.tool.avgMinutes) ?? "—"}
-                  </span>
-                  <span className="block text-xs text-neutral-400 tabular-nums">
+                  <DurationCell minutes={r.tool.avgMinutes} strong />
+                  <span className="block text-[11px] text-neutral-400 tabular-nums">
                     {formatNumber(r.tool.count)} measured
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
-                  <span className="block text-neutral-700 tabular-nums">
-                    {formatDurationBreakdown(r.other.avgMinutes) ?? "—"}
-                  </span>
-                  <span className="block text-xs text-neutral-400 tabular-nums">
+                  <DurationCell minutes={r.other.avgMinutes} />
+                  <span className="block text-[11px] text-neutral-400 tabular-nums">
                     {formatNumber(r.other.count)} measured
                   </span>
                 </td>
@@ -98,27 +101,27 @@ export function ToolAssistedComparisonTable({
 
             <tr className="align-top bg-neutral-50/40">
               <td className="px-4 py-3">
-                <span className="block font-medium text-neutral-900">Average of the two</span>
+                <span className="block font-medium text-neutral-900">Total cycle time</span>
                 <span className="block text-xs text-neutral-400">
-                  mean of the two stage averages above
+                  doer + reviewer, end to end
                 </span>
               </td>
-              <td className="px-4 py-3 text-right font-semibold text-neutral-900 tabular-nums whitespace-nowrap">
-                {formatDurationBreakdown(toolAssisted.avgOfTwoMinutes) ?? "—"}
+              <td className="px-4 py-3 text-right whitespace-nowrap">
+                <DurationCell minutes={toolAssisted.combinedAvgMinutes} strong />
               </td>
-              <td className="px-4 py-3 text-right text-neutral-700 tabular-nums whitespace-nowrap">
-                {formatDurationBreakdown(others.avgOfTwoMinutes) ?? "—"}
+              <td className="px-4 py-3 text-right whitespace-nowrap">
+                <DurationCell minutes={others.combinedAvgMinutes} />
               </td>
               <td
                 className={`px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap ${
-                  fasterBy.avgOfTwo === null
+                  fasterBy.combined === null
                     ? "text-neutral-300"
-                    : fasterBy.avgOfTwo >= 0
+                    : fasterBy.combined >= 0
                       ? "text-emerald-600"
                       : "text-red-600"
                 }`}
               >
-                {formatPercent(fasterBy.avgOfTwo)}
+                {formatPercent(fasterBy.combined)}
               </td>
             </tr>
           </tbody>
@@ -126,9 +129,19 @@ export function ToolAssistedComparisonTable({
       </div>
 
       <p className="px-4 py-2 text-xs text-neutral-400 border-t border-neutral-200/70">
-        The two stages have different denominators — a ticket can have execution time measured and no
-        completed review yet — so &quot;measured&quot; is stated per row and the average of the two is
-        the mean of the two averages, not a per-ticket figure.
+        <span className="font-medium text-neutral-500">
+          Both columns cover backend execution only
+        </span>{" "}
+        — ST tickets of type {BACKEND_EXECUTION_ISSUE_TYPES.join(", ")}, created in the period, with at
+        least one stage measurable. Investigations, Data Generation, External Support Request, Team Viewer
+        and everything else are out of scope: their review path ends somewhere else, so their cycle time
+        isn&apos;t the same measurement. Even so, the right-hand column is a MIX of backend work rather
+        than the same jobs the tool covers, so part of any gap here is what the tickets were, not the
+        tool. The like-for-like answer, same labels either side, is in &quot;Before the tool vs now&quot;
+        below. The two stages have different denominators — a ticket can
+        have doer time measured with no completed review yet — so &quot;measured&quot; is stated per row,
+        and the total is the sum of the two stage averages rather than an average of per-ticket totals,
+        which would drop every ticket still mid-review.
         {toolAssisted.peerReviewExcludedCycles + others.peerReviewExcludedCycles > 0 && (
           <>
             {" "}
