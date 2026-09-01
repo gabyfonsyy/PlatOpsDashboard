@@ -3,18 +3,22 @@ import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
 
 /**
- * Tool-Assisted Efficiency — does the tooling given to SEs actually shorten the work, and where is
- * the remaining time going?
+ * Tool-Assisted Efficiency — does the tooling given to SEs actually shorten the work, and which of
+ * the two stages is it shortening?
  *
  * TWO cycle times per ticket, measured separately because they belong to different people and only
  * one of them is something a tool can shorten:
  *
- *   ACTUAL EFFORT   moved out of Backlog/To Do (`first_out_of_backlog_todo`) -> entered For Peer
- *                   Review (`cycle_time_end`). The doer's execution time. This is the original
- *                   metric this page reported, unchanged, so the numbers stay comparable.
+ *   DOER      moved out of Backlog/To Do (`first_out_of_backlog_todo`) -> entered For Peer Review
+ *             (`cycle_time_end`). Execution time. This is the original metric this page reported,
+ *             unchanged, so the numbers stay comparable.
  *
- *   PEER REVIEW     time spent IN For Peer Review, from `peer_review_cycles_json` — summed over the
- *                   cycles that exited to On Hold or For Checking. The reviewer's time.
+ *   REVIEWER  time spent IN For Peer Review, from `peer_review_cycles_json` — summed over the cycles
+ *             that exited to On Hold or For Checking.
+ *
+ *   TOTAL     doer + reviewer. A SUM, not a mean: it answers "how long does one of these take end to
+ *             end", which a mean cannot. It replaced an average-of-the-two, which was half the real
+ *             elapsed time and read as if it were the whole thing.
  *
  * Both come from fields JiraSync.gs already stores, so nothing here needs a changelog fetch or a
  * re-sync.
@@ -64,6 +68,32 @@ export const TOOL_ASSISTED_CATEGORIES: { category: ToolAssistedCategory; labels:
   { category: "Feature Flags", labels: ["update-featureflag"] },
 ];
 
+/**
+ * Process labels: they record HOW a ticket was handled — escalated, expedited, followed up, closed
+ * for non-response, auto-processed, routed by queue age — not WHAT the work was.
+ *
+ * Hidden from the Misc category's label line only. Misc's whole purpose is to surface candidate work
+ * types for the next category worth naming, and these were crowding out the real candidates: the
+ * line led with automation-done, expedite and jira_escalated, none of which describes a piece of
+ * work a tool could take over.
+ *
+ * They do NOT change any count or average. A Misc ticket carrying only process labels still counts
+ * in Misc; it simply contributes nothing to the candidate list. The full label set stays on the
+ * ticket row's hover title, so nothing is actually hidden from view.
+ */
+export const TOOL_ASSISTED_PROCESS_LABELS = [
+  "jira_escalated",
+  "ffup-1",
+  "ffup-2",
+  "expedite",
+  "autoclose-nonresponse",
+  "automation-done",
+  "acc-d1se",
+  "acc-d2l3",
+  "acc-overdue",
+  "crf",
+];
+
 export const TOOL_ASSISTED_CATEGORY_NAMES: ToolAssistedCategory[] = [
   ...TOOL_ASSISTED_CATEGORIES.map((c) => c.category),
   "Misc",
@@ -77,14 +107,58 @@ export function categoryTone(category: string): "success" | "warning" | "danger"
   return "neutral";
 }
 
+/**
+ * The four SEs this report attributes execution to. Anyone else in `assigned_se` is off-roster and
+ * shows up in `assignedSeIssues` instead of quietly becoming a row — a page that invents SEs from
+ * whatever a field happens to contain is how a bot account ends up ranked against people.
+ */
+export const TOOL_ASSISTED_SE_ROSTER = [
+  "Angelo Fajardo",
+  "Jasper Razo",
+  "Mark Jayson Manosca",
+  "Gaby Fonseca",
+];
+
+/**
+ * The DESIGNATED reviewers — the only three whose peer-review time is counted.
+ *
+ * Same allowlist, same names and the same reasoning as INCIDENT_VALIDATOR_NAMES_DEFAULT in
+ * gas/IncidentsApi.gs, whose attribution id is literally 'peer-review-entry-assignee+allowlist':
+ * the reviewer is derived from the CHANGELOG (whoever held the ticket when it entered For Peer
+ * Review) and then has to survive the allowlist. Without the second half, the changelog hands back
+ * whoever happened to be assigned and the review time lands on someone who never reviewed anything.
+ *
+ * Note this is three names, not four: Gaby is on the doer roster but is not a designated reviewer,
+ * so her review column is empty by design rather than by accident.
+ */
+export const TOOL_ASSISTED_REVIEWERS = [
+  "Angelo Fajardo",
+  "Jasper Razo",
+  "Mark Jayson Manosca",
+];
+
+/** Case- and whitespace-insensitive match returning the CANONICAL spelling, or "" if off-list. */
+function canonicalName(name: string | null | undefined, list: string[]): string {
+  const wanted = String(name || "").trim().toLowerCase();
+  if (!wanted) return "";
+  return list.find((n) => n.toLowerCase() === wanted) || "";
+}
+
 /** Which stage a ticket, an SE or a work type spends most of its time in. */
 export type Stage = "Actual effort" | "Peer review";
 
 export type ToolAssistedTicket = {
   issueKey: string;
   issueType: string;
-  /** The doer — `assigned_se`. Whose time the actual-effort number measures. */
+  /**
+   * The doer, canonicalised against TOOL_ASSISTED_SE_ROSTER. Empty when `assigned_se` is blank or
+   * names someone off-roster — those tickets are listed in `assignedSeIssues` rather than attributed.
+   */
   assignee: string;
+  /** Exactly what `assigned_se` held, for the data-quality helper to show. */
+  assignedSeRaw: string;
+  /** Jira's own `assignee` field. NOT used for attribution — only shown as a repair hint. */
+  jiraAssignee: string;
   labels: string;
   product: string;
   hasLabel: boolean;
@@ -92,17 +166,6 @@ export type ToolAssistedTicket = {
   category: ToolAssistedCategory | null;
   /** The specific category label matched, e.g. "cp-sa" — what a tool feature would target. */
   primaryLabel: string;
-  /**
-   * The work-type dimension for the "what should the tool cover next" ranking: the category label
-   * when the ticket carries one — INCLUDING tickets that are NOT tool-assisted, which is precisely
-   * the coverage gap worth seeing — and the issue type when it doesn't.
-   *
-   * Not simply "the ticket's first label": most ST tickets carry process labels
-   * (autoclose-nonresponse, automation-done, jira_escalated, ffup-1) that record how the ticket was
-   * handled, not what the work was. Ranking on those produced a top row of
-   * "Sprout HR / autoclose-nonresponse, 1,570 tickets" — true, and actionable by nobody.
-   */
-  workTypeLabel: string;
   created: string;
   todoExitAt: string | null;
   peerReviewAt: string | null;
@@ -113,8 +176,11 @@ export type ToolAssistedTicket = {
   peerReviewCycleCount: number;
   /** Reviewers on the qualifying cycles (reviewerAtEntry), deduped. */
   reviewers: string[];
-  /** Mean of the two above — only when the ticket actually has both. */
-  avgCycleMinutes: number | null;
+  /**
+   * Doer + reviewer for this ticket. Null unless it has BOTH — a sum with a missing term would be
+   * indistinguishable from a genuinely quick ticket, which is the one error worth refusing to make.
+   */
+  totalCycleMinutes: number | null;
   /** Where this ticket's time actually went. Null unless both measures exist. */
   dominantStage: Stage | null;
 };
@@ -133,11 +199,14 @@ export type CycleStats = {
   actual: Measure;
   peerReview: Measure;
   /**
-   * The average of the two averages — NOT a per-ticket figure and NOT the end-to-end total.
-   * Defined this way on purpose: a per-ticket mean would silently drop every ticket missing one of
-   * the two measures, and the two measures have genuinely different denominators.
+   * Doer average + reviewer average — the typical end-to-end cycle time for the group.
+   *
+   * Built from the two group averages rather than from per-ticket totals on purpose: the two stages
+   * have genuinely different denominators (a ticket can have execution measured with no closed
+   * review yet), and averaging per-ticket totals would silently drop every one of those tickets.
+   * When only one stage has data, that stage alone is reported rather than nothing.
    */
-  avgOfTwoMinutes: number | null;
+  combinedAvgMinutes: number | null;
   peerReviewCycleCount: number;
   /** Cycles that ran but exited somewhere other than On Hold / For Checking. */
   peerReviewExcludedCycles: number;
@@ -146,7 +215,6 @@ export type CycleStats = {
 export type CategoryBreakdown = {
   category: ToolAssistedCategory;
   stats: CycleStats;
-  byIssueType: { issueType: string; stats: CycleStats }[];
   /** Which specific labels showed up in this category, commonest first. */
   labels: { label: string; ticketCount: number }[];
 };
@@ -162,17 +230,6 @@ export type SeBreakdown = {
   dominantStage: Stage | null;
 };
 
-export type WorkTypeBreakdown = {
-  product: string;
-  label: string;
-  ticketCount: number;
-  toolAssistedCount: number;
-  actual: Measure;
-  peerReview: Measure;
-  totalMinutes: number;
-  dominantStage: Stage | null;
-};
-
 export type ToolAssistedReport = {
   team: string;
   range: string;
@@ -181,7 +238,7 @@ export type ToolAssistedReport = {
   toolAssisted: CycleStats & { tickets: ToolAssistedTicket[] };
   others: CycleStats;
   /** Fraction faster, per measure. Positive = tool-assisted is quicker. Null = not comparable. */
-  fasterBy: { actual: number | null; peerReview: number | null; avgOfTwo: number | null };
+  fasterBy: { actual: number | null; peerReview: number | null; combined: number | null };
   byCategory: CategoryBreakdown[];
   /** Across every in-scope ticket: is the time going into execution or into review? */
   bottleneck: {
@@ -192,7 +249,13 @@ export type ToolAssistedReport = {
     peerReviewShare: number | null;
   };
   bySe: SeBreakdown[];
-  byWorkType: WorkTypeBreakdown[];
+  /**
+   * Tool-assisted tickets left out of `bySe` because their Assigned SE is blank or off-roster.
+   *
+   * A count, not a list. The full repair table was removed as out of scope, but the number has to
+   * survive: without it the SE table silently under-reports and looks complete while doing it.
+   */
+  unattributedToolAssisted: number;
 };
 
 const EMPTY_MEASURE: Measure = { count: 0, avgMinutes: null, totalMinutes: 0, maxMinutes: null };
@@ -201,7 +264,7 @@ const EMPTY_STATS: CycleStats = {
   ticketCount: 0,
   actual: EMPTY_MEASURE,
   peerReview: EMPTY_MEASURE,
-  avgOfTwoMinutes: null,
+  combinedAvgMinutes: null,
   peerReviewCycleCount: 0,
   peerReviewExcludedCycles: 0,
 };
@@ -213,7 +276,7 @@ const EMPTY_REPORT: ToolAssistedReport = {
   label: TOOL_ASSISTED_LABEL,
   toolAssisted: { ...EMPTY_STATS, tickets: [] },
   others: EMPTY_STATS,
-  fasterBy: { actual: null, peerReview: null, avgOfTwo: null },
+  fasterBy: { actual: null, peerReview: null, combined: null },
   byCategory: [],
   bottleneck: {
     stage: null,
@@ -223,26 +286,43 @@ const EMPTY_REPORT: ToolAssistedReport = {
     peerReviewShare: null,
   },
   bySe: [],
-  byWorkType: [],
+  unattributedToolAssisted: 0,
 };
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-// Ported from gas/JiraSync.gs's CYCLE_TIME_INVESTIGATION_ISSUE_TYPES/cycleTimeEndStatusForIssueType_ —
-// Investigations end at "For Checking"/"For Product Team" instead of "For Peer Review", so
-// cycle_time_end wouldn't mean the same thing for those; excluded from this comparison.
-const CYCLE_TIME_INVESTIGATION_ISSUE_TYPES = [
-  "data generation",
-  "external support request",
-  "investigation",
-  "team viewer",
+/**
+ * The issue types this page measures: BACKEND EXECUTION work, and nothing else.
+ *
+ * An explicit allowlist, not "everything except investigations". The comparison group used to be
+ * every non-investigation ST ticket, which let unrelated work into it — the tool cannot plausibly
+ * affect a Technical Story, so its cycle time is noise in a table about the tool. Naming the five
+ * types also means a NEW issue type has to be admitted deliberately instead of appearing in the
+ * baseline the day someone first files one.
+ *
+ * Strictly narrower than the old rule, which matters for correctness: all five end their review path
+ * at For Peer Review, so `cycle_time_end` still means the same thing for every ticket here. Anything
+ * added to this list MUST also end at For Peer Review (see cycleTimeEndStatusesForIssueType_ in
+ * gas/JiraSync.gs) or the doer figure silently changes meaning — Investigations, Data Generation,
+ * External Support Request and Team Viewer end at For Checking and must never be added.
+ *
+ * Measured impact when introduced: tool-assisted 171 -> 171 (nothing lost), comparison group
+ * 4,778 -> 4,770 (8 Technical Story tickets).
+ */
+export const BACKEND_EXECUTION_ISSUE_TYPES = [
+  "Backend Changes",
+  "Company Policy",
+  "Data Deletion",
+  "Task",
+  "Account Creation",
 ];
 
-function cycleTimeEndStatusForIssueType(issueType: string | null): string {
-  const type = (issueType || "").toLowerCase();
-  return CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.includes(type) ? "for checking" : "for peer review";
+const BACKEND_EXECUTION_LOOKUP = BACKEND_EXECUTION_ISSUE_TYPES.map((t) => t.toLowerCase());
+
+function isBackendExecution(issueType: string | null): boolean {
+  return BACKEND_EXECUTION_LOOKUP.indexOf((issueType || "").toLowerCase()) !== -1;
 }
 
 type PeerReviewCycleRaw = {
@@ -260,6 +340,7 @@ type TicketRow = {
   first_out_of_backlog_todo: string | null;
   cycle_time_end: string | null;
   assigned_se: string | null;
+  assignee_display_name: string | null;
   labels: string | null;
   product: string | null;
   peer_review_cycles_json: PeerReviewCycleRaw[] | null;
@@ -276,7 +357,7 @@ async function fetchStTicketsCreatedBetween(startDate: string, endDate: string):
     getSupabaseClient()
       .from("tickets")
       .select(
-        "issue_key,issue_type,created,first_out_of_backlog_todo,cycle_time_end,assigned_se,labels,product,peer_review_cycles_json"
+        "issue_key,issue_type,created,first_out_of_backlog_todo,cycle_time_end,assigned_se,assignee_display_name,labels,product,peer_review_cycles_json"
       )
       .eq("team_key", "ST")
       .gte("created", rangeStartUtc.toISOString())
@@ -341,8 +422,10 @@ function peerReviewFor(cycles: PeerReviewCycleRaw[] | null): {
     cycleCount++;
     // reviewerAtEntry ONLY, never `reviewer` — see the attribution note in lib/peer-review.ts:
     // `reviewer` is the assignee when the cycle CLOSED, which is usually the person who picked the
-    // ticket up at the next stage, not the reviewer at all.
-    reviewers.add(c.reviewerAtEntry || "(unassigned)");
+    // ticket up at the next stage, not the reviewer at all. Then the allowlist: a changelog name
+    // outside the three designated reviewers is dropped rather than credited.
+    const reviewer = canonicalName(c.reviewerAtEntry, TOOL_ASSISTED_REVIEWERS);
+    if (reviewer) reviewers.add(reviewer);
   }
 
   return {
@@ -376,10 +459,10 @@ function statsFor(tickets: ToolAssistedTicket[]): CycleStats {
     ticketCount: tickets.length,
     actual,
     peerReview,
-    avgOfTwoMinutes:
+    combinedAvgMinutes:
       actual.avgMinutes !== null && peerReview.avgMinutes !== null
-        ? round2((actual.avgMinutes + peerReview.avgMinutes) / 2)
-        : // With only one of the two measured, that one IS the average of what's known. Reporting
+        ? round2(actual.avgMinutes + peerReview.avgMinutes)
+        : // With only one stage measured, that stage alone is the whole of what's known. Reporting
           // null instead would blank the headline on a period where every ticket is mid-review.
           actual.avgMinutes ?? peerReview.avgMinutes,
     peerReviewCycleCount: tickets.reduce((sum, t) => sum + t.peerReviewCycleCount, 0),
@@ -416,29 +499,22 @@ function buildCategoryBreakdowns(tickets: ToolAssistedTicket[]): CategoryBreakdo
   return TOOL_ASSISTED_CATEGORY_NAMES.map((category) => {
     const inCategory = tickets.filter((t) => t.category === category);
 
-    const issueTypes = Array.from(new Set(inCategory.map((t) => t.issueType || "(none)")));
-    const byIssueType = issueTypes
-      .map((issueType) => ({
-        issueType,
-        stats: statsFor(inCategory.filter((t) => (t.issueType || "(none)") === issueType)),
-      }))
-      .sort((a, b) => b.stats.ticketCount - a.stats.ticketCount);
-
     const labelCounts: Record<string, number> = {};
     for (const t of inCategory) {
       // The specific matched label is the interesting one; Misc has none by definition, so it
       // reports the raw labels it carried instead — that list is the candidate set for the next
-      // category we name.
+      // category we name, which is why the process labels are stripped out of it.
       const keys = t.primaryLabel
         ? [t.primaryLabel]
-        : splitLabels(t.labels).filter((l) => l !== TOOL_ASSISTED_LABEL);
+        : splitLabels(t.labels).filter(
+            (l) => l !== TOOL_ASSISTED_LABEL && TOOL_ASSISTED_PROCESS_LABELS.indexOf(l) === -1
+          );
       for (const key of keys) labelCounts[key] = (labelCounts[key] ?? 0) + 1;
     }
 
     return {
       category,
       stats: statsFor(inCategory),
-      byIssueType,
       labels: Object.entries(labelCounts)
         .map(([label, ticketCount]) => ({ label, ticketCount }))
         .sort((a, b) => b.ticketCount - a.ticketCount),
@@ -456,9 +532,10 @@ function buildSeBreakdowns(tickets: ToolAssistedTicket[]): SeBreakdown[] {
   const reviewerMinutes: Record<string, number[]> = {};
 
   for (const t of tickets) {
-    if (t.actualCycleMinutes !== null) {
-      const name = t.assignee || "(unassigned)";
-      (doerMinutes[name] ??= []).push(t.actualCycleMinutes);
+    // `assignee` is already canonicalised to the roster, so an off-roster or blank Assigned SE
+    // contributes nothing here. It is not lost: it is in assignedSeIssues, to be corrected in Jira.
+    if (t.actualCycleMinutes !== null && t.assignee) {
+      (doerMinutes[t.assignee] ??= []).push(t.actualCycleMinutes);
     }
     if (t.peerReviewMinutes !== null && t.reviewers.length) {
       // Split across reviewers when a ticket had more than one review cycle with different people,
@@ -470,9 +547,11 @@ function buildSeBreakdowns(tickets: ToolAssistedTicket[]): SeBreakdown[] {
     }
   }
 
-  const names = Array.from(new Set([...Object.keys(doerMinutes), ...Object.keys(reviewerMinutes)]));
-
-  return names
+  // The roster is the ROW SOURCE, in its declared order — not "whoever appeared in the data", which
+  // is what previously let a bot account be ranked against people. Anyone with nothing in EITHER role
+  // for the period is then dropped: on a short period that is most of the roster, and rows of dashes
+  // push the people who did the work down the table.
+  return TOOL_ASSISTED_SE_ROSTER
     .map((name) => {
       const asDoer = measure(doerMinutes[name] ?? []);
       const asReviewer = measure(reviewerMinutes[name] ?? []);
@@ -484,46 +563,280 @@ function buildSeBreakdowns(tickets: ToolAssistedTicket[]): SeBreakdown[] {
         dominantStage: dominantStageOfTotals(asDoer.totalMinutes, asReviewer.totalMinutes),
       };
     })
+    .filter((se) => se.asDoer.count > 0 || se.asReviewer.count > 0)
     .sort((a, b) => b.totalMinutes - a.totalMinutes);
 }
 
 /**
- * product + label, over EVERY in-scope ticket rather than just the tool-assisted ones — the point is
- * to find the combinations still eating time, which by definition includes work the tool doesn't
- * cover yet. `toolAssistedCount` is what separates "the tool is slow here" from "there is no tool
- * here", and those two need opposite responses.
+ * BEFORE vs NOW, per label category — did introducing the tool actually change the numbers for the
+ * work it covers?
+ *
+ * The page's main comparison sets tool-assisted tickets against every other ST ticket, which mixes
+ * work types: Company Policy work and Backend Changes are not the same job, so part of any gap is
+ * just the mix. This compares like with like — cp-attendance against cp-attendance — and adds the
+ * dimension the main comparison cannot have: time.
+ *
+ * THE CUTOFF IS THE TOOL'S RELEASE DATE, ONE DATE FOR ALL THREE CATEGORIES (TOOL_RELEASED_ON).
+ *
+ * It was originally DERIVED per category, as the creation date of that category's first tool-assisted
+ * ticket. That was wrong, and the way it was wrong is worth keeping written down: first USE is not
+ * release. All three categories shipped in July 2026, but Webconfig's first tagged ticket is
+ * 2026-08-24 — so the derivation put its cutoff seven weeks late, which silently slid its baseline
+ * window to March-August and made its "before" period a different span from the other two.
+ *
+ * A release date cannot be inferred from usage and has to be stated. `toolFirstUsedOn` is still
+ * computed and shown, because the gap between release and first use is real information about
+ * adoption — Webconfig sat unused for seven weeks — it just must not drive the arithmetic.
+ *
+ * THREE groups, not two, and the third is the important one:
+ *
+ *   before      same-label tickets created before the cutoff. The baseline.
+ *   assisted    tool-assisted tickets. "Now, with the tool."
+ *   unassisted  same-label tickets created AFTER the cutoff that nobody used the tool on.
+ *
+ * Without `unassisted` a before/after difference proves nothing: the team could simply have got
+ * faster, or the ticket mix could have shifted. `unassisted` is the control group — it lived through
+ * the same period without the tool, so "assisted beat before AND beat unassisted" is a claim about
+ * the tool, while "both improved equally" is a claim about the period.
+ *
+ * THE BASELINE COLUMN IGNORES THE PERIOD FILTER; THE OTHER TWO FOLLOW IT. A baseline that moved when
+ * you changed the month would not be a baseline — it is fixed at the six months before release. With
+ * Tool and Manual are period-scoped like every other section, so the table answers "how is the
+ * selected period doing against a fixed reference", which is the question a moving baseline cannot
+ * answer at all.
+ *
+ * THE BASELINE IS A TRAILING WINDOW, not all history, and that is a correctness fix rather than a
+ * convenience. All three measures come from changelog extraction, which was only backfilled over a
+ * recent window, so 2024 same-label tickets are 0% measurable and 2025 only 1-5%. The few older
+ * tickets that DO carry cycle data are not a sample of their period — a 2025 ticket has the data
+ * only because something re-synced it recently, which selects for stale and reopened work. Measured:
+ * the 23 Company Policies stragglers from 2025 average 0.85d of effort against 2026's 0.32d, and the
+ * 4 Feature Flags ones average 3.77d against 0.38d, with median created->updated lags of 263 and 84
+ * days versus about 10. None of them has review data at all.
+ *
+ * Including them inflated the effort baseline and so OVERSTATED the tool's benefit (Feature Flags
+ * read as 52% faster on a 0.45d baseline; the dense-coverage baseline is 0.38d, i.e. 47%). A window
+ * of the BASELINE_WINDOW_MONTHS immediately before each cutoff excludes them by construction rather
+ * than by an arbitrary rule, and is also the fairest reading of "before": the period the tool was
+ * actually introduced against.
  */
-function buildWorkTypeBreakdowns(tickets: ToolAssistedTicket[]): WorkTypeBreakdown[] {
-  const groups: Record<string, { product: string; label: string; tickets: ToolAssistedTicket[] }> = {};
+/**
+ * How far back each category's baseline reaches from its own cutoff.
+ *
+ * Six months is long enough to average out a quiet fortnight and short enough to stay inside the
+ * window where changelog coverage is dense (~95% of 2026 same-label tickets are measurable, against
+ * 1-5% of 2025's). Widening this is only sound AFTER a changelog backfill over the older years —
+ * otherwise it just readmits the selection bias documented above.
+ */
+export const BASELINE_WINDOW_MONTHS = 6;
 
-  for (const t of tickets) {
-    const product = t.product || "(no product)";
-    // JSON rather than a delimiter string: a product or label containing the delimiter would
-    // silently merge two different rows, and there is no separator both safe and readable.
-    const key = JSON.stringify([product, t.workTypeLabel]);
-    (groups[key] ??= { product, label: t.workTypeLabel, tickets: [] }).tickets.push(t);
+/**
+ * When the tool was released, for every category — the line between "before" and "with the tool".
+ *
+ * A real-world fact, so it lives here as a constant rather than being guessed from the data: see the
+ * note at the top of this section on why deriving it from first use was wrong. With the 6-month
+ * window this makes every category's baseline January-June 2026, which is also how the team thinks
+ * about it. Verified against the data: no tool-assisted ST ticket exists before this date (earliest
+ * is 2026-07-03), so nothing tagged can leak into the baseline.
+ *
+ * If a category is ever released separately, this becomes a per-category map — not a derivation.
+ */
+export const TOOL_RELEASED_ON = "2026-07-01";
+
+/** `iso` shifted back by `months`, as a 'yyyy-MM-dd' string. */
+function monthsBefore(iso: string, months: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() - months);
+  return d.toISOString().slice(0, 10);
+}
+
+export type BaselineGroup = {
+  ticketCount: number;
+  actual: Measure;
+  peerReview: Measure;
+  /** Doer average + reviewer average. See CycleStats.combinedAvgMinutes for why it's built that way. */
+  combinedAvgMinutes: number | null;
+};
+
+export type BaselineComparison = {
+  category: ToolAssistedCategory;
+  /** True when the selected period ends before the tool shipped, so both live columns are empty. */
+  periodPredatesRelease: boolean;
+  /** Creation date of the first tool-assisted ticket in this category, 'yyyy-MM-dd'. */
+  toolFirstUsedOn: string;
+  /** Start of the baseline window — the cutoff minus BASELINE_WINDOW_MONTHS. */
+  baselineWindowFrom: string;
+  /**
+   * The span the baseline group's tickets actually cover inside that window, earliest to latest.
+   * Shown on screen so "before" can never be misread as all history.
+   */
+  beforeFrom: string;
+  beforeTo: string;
+  before: BaselineGroup;
+  assisted: BaselineGroup;
+  unassisted: BaselineGroup;
+  /** Improvement fractions, assisted vs baseline. Positive = faster with the tool. */
+  improvement: { actual: number | null; peerReview: number | null; combined: number | null };
+  /** The same fractions for the control group, so a period-wide shift is visible as such. */
+  controlImprovement: { actual: number | null; peerReview: number | null; combined: number | null };
+};
+
+type BaselineRow = {
+  issue_key: string;
+  issue_type: string | null;
+  created: string;
+  labels: string | null;
+  first_out_of_backlog_todo: string | null;
+  cycle_time_end: string | null;
+  peer_review_cycles_json: PeerReviewCycleRaw[] | null;
+};
+
+/**
+ * Every ST ticket carrying any category label or the tool-assisted label, across all history.
+ *
+ * Filtered SERVER-side with an ilike-per-label `or`, which cuts ~40,000 ST tickets down to under
+ * 4,000. `labels` is a comma-joined text column rather than an array, so ilike is the only available
+ * predicate — it is a prefilter only, and exact label matching still happens in JS below, so a
+ * substring collision (cp-ot matching a hypothetical cp-other) cannot produce a wrong figure.
+ */
+async function fetchBaselineTickets(): Promise<BaselineRow[]> {
+  const wanted = [
+    ...TOOL_ASSISTED_CATEGORIES.flatMap((c) => c.labels),
+    TOOL_ASSISTED_LABEL,
+  ];
+  const orFilter = wanted.map((l) => `labels.ilike.*${l}*`).join(",");
+
+  return fetchAllRows<BaselineRow>((from, to) =>
+    getSupabaseClient()
+      .from("tickets")
+      .select(
+        "issue_key,issue_type,created,labels,first_out_of_backlog_todo,cycle_time_end,peer_review_cycles_json"
+      )
+      .eq("team_key", "ST")
+      .or(orFilter)
+      .range(from, to)
+  );
+}
+
+function baselineGroup(
+  rows: { actual: number | null; review: number | null }[]
+): BaselineGroup {
+  const actual = measure(rows.map((r) => r.actual).filter((v): v is number => v !== null));
+  const peerReview = measure(rows.map((r) => r.review).filter((v): v is number => v !== null));
+  return {
+    ticketCount: rows.length,
+    actual,
+    peerReview,
+    combinedAvgMinutes:
+      actual.avgMinutes !== null && peerReview.avgMinutes !== null
+        ? round2(actual.avgMinutes + peerReview.avgMinutes)
+        : actual.avgMinutes ?? peerReview.avgMinutes,
+  };
+}
+
+/** Fraction faster than the baseline. Positive = quicker now. Null unless both sides have a figure. */
+function improvedBy(now: number | null, before: number | null): number | null {
+  if (now === null || before === null || before === 0) return null;
+  return (before - now) / before;
+}
+
+export async function getToolAssistedBaselineComparison(
+  range: string,
+  period: string
+): Promise<BaselineComparison[]> {
+  try {
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const rows = await fetchBaselineTickets();
+
+    // Measured once per ticket, then reused by whichever group it lands in.
+    const measured = rows
+      .filter((r) => isBackendExecution(r.issue_type))
+      .map((r) => {
+        const review = peerReviewFor(r.peer_review_cycles_json);
+        return {
+          created: toManilaDateString(r.created) || "",
+          labels: splitLabels(r.labels),
+          actual:
+            r.first_out_of_backlog_todo && r.cycle_time_end
+              ? round2(minutesBetween(r.first_out_of_backlog_todo, r.cycle_time_end))
+              : null,
+          review: review.minutes,
+        };
+      })
+      // A ticket with neither measure cannot move any average; keeping it would only inflate counts.
+      .filter((t) => t.created && (t.actual !== null || t.review !== null));
+
+    const out: BaselineComparison[] = [];
+
+    for (const group of TOOL_ASSISTED_CATEGORIES) {
+      const sameLabel = measured.filter((t) => group.labels.some((l) => t.labels.includes(l)));
+
+      // ALL-TIME, not period-scoped: this only decides whether the category has ever used the tool,
+      // and supplies the adoption date below. Scoping it would make a category vanish from the table
+      // in any month nobody happened to use the tool, which reads as "this category doesn't exist".
+      const assistedEver = sameLabel.filter((t) => t.labels.includes(TOOL_ASSISTED_LABEL));
+      if (!assistedEver.length) continue;
+
+      // Reported, never used as the cutoff — see the note above.
+      const toolFirstUsedOn = assistedEver.reduce(
+        (min, t) => (t.created < min ? t.created : min),
+        assistedEver[0].created
+      );
+
+      const inPeriod = (t: { created: string }) => t.created >= startDate && t.created <= endDate;
+      const assisted = assistedEver.filter(inPeriod);
+
+      const baselineWindowFrom = monthsBefore(TOOL_RELEASED_ON, BASELINE_WINDOW_MONTHS);
+      // The tool-assisted exclusion is belt and braces: no tagged ticket predates the release, so the
+      // date test already covers it, but stating it means the baseline stays clean if that ever
+      // changes (a backdated ticket, a corrected created date) instead of quietly absorbing one.
+      const before = sameLabel.filter(
+        (t) =>
+          !t.labels.includes(TOOL_ASSISTED_LABEL) &&
+          t.created >= baselineWindowFrom &&
+          t.created < TOOL_RELEASED_ON
+      );
+      const unassisted = sameLabel.filter(
+        (t) =>
+          t.created >= TOOL_RELEASED_ON && !t.labels.includes(TOOL_ASSISTED_LABEL) && inPeriod(t)
+      );
+
+      const beforeStats = baselineGroup(before);
+      const assistedStats = baselineGroup(assisted);
+      const unassistedStats = baselineGroup(unassisted);
+
+      const beforeDates = before.map((t) => t.created).sort();
+
+      out.push({
+        category: group.category,
+        periodPredatesRelease: endDate < TOOL_RELEASED_ON,
+        toolFirstUsedOn,
+        baselineWindowFrom,
+        beforeFrom: beforeDates[0] || "",
+        beforeTo: beforeDates[beforeDates.length - 1] || "",
+        before: beforeStats,
+        assisted: assistedStats,
+        unassisted: unassistedStats,
+        improvement: {
+          actual: improvedBy(assistedStats.actual.avgMinutes, beforeStats.actual.avgMinutes),
+          peerReview: improvedBy(assistedStats.peerReview.avgMinutes, beforeStats.peerReview.avgMinutes),
+          combined: improvedBy(assistedStats.combinedAvgMinutes, beforeStats.combinedAvgMinutes),
+        },
+        controlImprovement: {
+          actual: improvedBy(unassistedStats.actual.avgMinutes, beforeStats.actual.avgMinutes),
+          peerReview: improvedBy(
+            unassistedStats.peerReview.avgMinutes,
+            beforeStats.peerReview.avgMinutes
+          ),
+          combined: improvedBy(unassistedStats.combinedAvgMinutes, beforeStats.combinedAvgMinutes),
+        },
+      });
+    }
+
+    return out;
+  } catch {
+    return [];
   }
-
-  return Object.values(groups)
-    .map((g) => {
-      const actual = measure(
-        g.tickets.map((t) => t.actualCycleMinutes).filter((v): v is number => v !== null)
-      );
-      const peerReview = measure(
-        g.tickets.map((t) => t.peerReviewMinutes).filter((v): v is number => v !== null)
-      );
-      return {
-        product: g.product,
-        label: g.label,
-        ticketCount: g.tickets.length,
-        toolAssistedCount: g.tickets.filter((t) => t.hasLabel).length,
-        actual,
-        peerReview,
-        totalMinutes: round2(actual.totalMinutes + peerReview.totalMinutes),
-        dominantStage: dominantStageOfTotals(actual.totalMinutes, peerReview.totalMinutes),
-      };
-    })
-    .sort((a, b) => b.totalMinutes - a.totalMinutes);
 }
 
 export async function getToolAssistedCycleTimeReport(
@@ -539,7 +852,7 @@ export async function getToolAssistedCycleTimeReport(
       if (!r.created) return false;
       const createdDate = toManilaDateString(r.created);
       if (!createdDate || createdDate < startDate || createdDate > endDate) return false;
-      return cycleTimeEndStatusForIssueType(r.issue_type) === "for peer review";
+      return isBackendExecution(r.issue_type);
     });
 
     let excludedCyclesToolAssisted = 0;
@@ -562,16 +875,18 @@ export async function getToolAssistedCycleTimeReport(
       return {
         issueKey: r.issue_key,
         issueType: r.issue_type || "",
-        assignee: r.assigned_se || "(unassigned)",
+        // Canonicalised against the roster: "" here means the ticket is unattributable, so it
+        // contributes to no SE row and is counted in `unattributedToolAssisted` instead.
+        assignee: canonicalName(r.assigned_se, TOOL_ASSISTED_SE_ROSTER),
+        assignedSeRaw: String(r.assigned_se || ""),
+        jiraAssignee: String(r.assignee_display_name || ""),
         labels: r.labels || "",
         product: r.product || "",
         hasLabel,
         // Categorising a non-tool-assisted ticket would invite reading the composition table as a
-        // breakdown of all work; it is specifically a breakdown of what the TOOL is used for. The
-        // match is still computed for every ticket — workTypeLabel below needs it.
+        // breakdown of all work; it is specifically a breakdown of what the TOOL is used for.
         category: hasLabel ? category : null,
         primaryLabel: hasLabel ? primaryLabel : "",
-        workTypeLabel: primaryLabel || r.issue_type || "(no type)",
         created: r.created,
         todoExitAt: r.first_out_of_backlog_todo,
         peerReviewAt: r.cycle_time_end,
@@ -579,9 +894,9 @@ export async function getToolAssistedCycleTimeReport(
         peerReviewMinutes: review.minutes,
         peerReviewCycleCount: review.cycleCount,
         reviewers: review.reviewers,
-        avgCycleMinutes:
+        totalCycleMinutes:
           actualCycleMinutes !== null && review.minutes !== null
-            ? round2((actualCycleMinutes + review.minutes) / 2)
+            ? round2(actualCycleMinutes + review.minutes)
             : null,
         dominantStage: dominantStageOf(actualCycleMinutes, review.minutes),
       };
@@ -598,8 +913,8 @@ export async function getToolAssistedCycleTimeReport(
       // Longest first: the table is read to find what to fix, not to browse.
       .sort(
         (a, b) =>
-          (b.avgCycleMinutes ?? b.actualCycleMinutes ?? b.peerReviewMinutes ?? 0) -
-          (a.avgCycleMinutes ?? a.actualCycleMinutes ?? a.peerReviewMinutes ?? 0)
+          (b.totalCycleMinutes ?? b.actualCycleMinutes ?? b.peerReviewMinutes ?? 0) -
+          (a.totalCycleMinutes ?? a.actualCycleMinutes ?? a.peerReviewMinutes ?? 0)
       );
     const otherTickets = measurable.filter((t) => !t.hasLabel);
 
@@ -626,7 +941,7 @@ export async function getToolAssistedCycleTimeReport(
       fasterBy: {
         actual: fasterBy(toolAssistedStats.actual.avgMinutes, otherStats.actual.avgMinutes),
         peerReview: fasterBy(toolAssistedStats.peerReview.avgMinutes, otherStats.peerReview.avgMinutes),
-        avgOfTwo: fasterBy(toolAssistedStats.avgOfTwoMinutes, otherStats.avgOfTwoMinutes),
+        combined: fasterBy(toolAssistedStats.combinedAvgMinutes, otherStats.combinedAvgMinutes),
       },
       byCategory: buildCategoryBreakdowns(toolAssistedTickets),
       bottleneck: {
@@ -638,8 +953,10 @@ export async function getToolAssistedCycleTimeReport(
         actualShare: grandTotal ? actualTotalMinutes / grandTotal : null,
         peerReviewShare: grandTotal ? peerReviewTotalMinutes / grandTotal : null,
       },
-      bySe: buildSeBreakdowns(measurable),
-      byWorkType: buildWorkTypeBreakdowns(measurable),
+      // Tool-assisted tickets ONLY. The page is about the tool, and mixing every ST ticket in here
+      // made this the one table answering a different question from the rest of the page.
+      bySe: buildSeBreakdowns(toolAssistedTickets),
+      unattributedToolAssisted: toolAssistedTickets.filter((t) => !t.assignee).length,
     };
   } catch {
     return { ...EMPTY_REPORT, range, period };

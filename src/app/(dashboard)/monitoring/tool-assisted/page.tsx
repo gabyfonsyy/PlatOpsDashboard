@@ -1,4 +1,7 @@
-import { getToolAssistedCycleTimeReport } from "@/lib/tool-assisted";
+import {
+  getToolAssistedCycleTimeReport,
+  getToolAssistedBaselineComparison,
+} from "@/lib/tool-assisted";
 import { resolveFilters } from "@/lib/date-ranges";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
@@ -6,8 +9,8 @@ import { ToolAssistedTable } from "@/components/dashboard/ToolAssistedTable";
 import { ToolAssistedComparisonTable } from "@/components/dashboard/ToolAssistedComparisonTable";
 import { ToolAssistedCompositionTable } from "@/components/dashboard/ToolAssistedCompositionTable";
 import { ToolAssistedSeTable } from "@/components/dashboard/ToolAssistedSeTable";
-import { ToolAssistedWorkTypeTable } from "@/components/dashboard/ToolAssistedWorkTypeTable";
-import { formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
+import { ToolAssistedBaselineTable } from "@/components/dashboard/ToolAssistedBaselineTable";
+import { formatDaysValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
 
 export default async function ToolAssistedPage({
   searchParams,
@@ -15,7 +18,12 @@ export default async function ToolAssistedPage({
   searchParams: Record<string, string | string[] | undefined>;
 }) {
   const { range, period } = resolveFilters(searchParams);
-  const report = await getToolAssistedCycleTimeReport(range, period);
+  // Independent queries — the baseline table reads its own, wider slice of history (its Baseline
+  // column is fixed regardless of the filter), so there is no reason to await them in sequence.
+  const [report, baseline] = await Promise.all([
+    getToolAssistedCycleTimeReport(range, period),
+    getToolAssistedBaselineComparison(range, period),
+  ]);
 
   const { toolAssisted, others, fasterBy, bottleneck } = report;
 
@@ -25,12 +33,13 @@ export default async function ToolAssistedPage({
         <div>
           <h1>Tool-Assisted Efficiency</h1>
           <p className="text-sm text-neutral-500 mt-1 max-w-3xl">
-            Two cycle times per ticket: the <span className="font-medium text-neutral-700">actual effort</span>{" "}
-            (out of To Do → For Peer Review) and the{" "}
-            <span className="font-medium text-neutral-700">peer review</span> (in For Peer Review → On
-            Hold or For Checking). Tickets labeled &quot;{report.label}&quot; are measured against every
-            other in-scope ST ticket, so the comparison also shows which of the two stages the tool is
-            actually shortening.
+            Two cycle times per ticket — <span className="font-medium text-neutral-700">doer</span>{" "}
+            (out of To Do → For Peer Review) and{" "}
+            <span className="font-medium text-neutral-700">reviewer</span> (in For Peer Review → On Hold
+            or For Checking) — plus their sum as the total. Tickets labeled &quot;{report.label}&quot; are
+            measured against the rest of the team&apos;s backend execution work, so the comparison also
+            shows which of the two stages the tool is actually shortening. All durations are in days, with
+            the days/hours/minutes equivalent underneath.
           </p>
         </div>
         <FilterBar />
@@ -38,30 +47,44 @@ export default async function ToolAssistedPage({
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
-          label="Tool-Assisted Avg"
-          value={formatDurationBreakdown(toolAssisted.avgOfTwoMinutes) ?? "—"}
-          sublabel={`${formatNumber(toolAssisted.ticketCount)} ticket${toolAssisted.ticketCount === 1 ? "" : "s"} · ${formatNumber(toolAssisted.peerReviewCycleCount)} review cycle${toolAssisted.peerReviewCycleCount === 1 ? "" : "s"}`}
-          tooltip={`Mean of the two stage averages for "${report.label}"-labeled tickets created in the period. Not a per-ticket figure — the two stages have different denominators.`}
+          label="Tool-Assisted Total"
+          value={formatDaysValue(toolAssisted.combinedAvgMinutes)}
+          sublabel={
+            [
+              formatDurationBreakdown(toolAssisted.combinedAvgMinutes),
+              `${formatNumber(toolAssisted.ticketCount)} ticket${toolAssisted.ticketCount === 1 ? "" : "s"}`,
+            ]
+              .filter(Boolean)
+              .join(" · ")
+          }
+          tooltip={`Average doer time plus average reviewer time for "${report.label}"-labeled tickets created in the period, in days — the typical end-to-end cycle. Built from the two stage averages rather than per-ticket totals, because the two stages have different denominators.`}
         />
         <MetricCard
-          label="Other Tickets Avg"
-          value={formatDurationBreakdown(others.avgOfTwoMinutes) ?? "—"}
-          sublabel={`${formatNumber(others.ticketCount)} ticket${others.ticketCount === 1 ? "" : "s"} · ${formatNumber(others.peerReviewCycleCount)} review cycle${others.peerReviewCycleCount === 1 ? "" : "s"}`}
-          tooltip="Same definition, for every other in-scope ST ticket created in the period."
+          label="Other Backend Total"
+          value={formatDaysValue(others.combinedAvgMinutes)}
+          sublabel={
+            [
+              formatDurationBreakdown(others.combinedAvgMinutes),
+              `${formatNumber(others.ticketCount)} ticket${others.ticketCount === 1 ? "" : "s"}`,
+            ]
+              .filter(Boolean)
+              .join(" · ")
+          }
+          tooltip="Same definition, for the team's other backend execution tickets created in the period (Backend Changes, Company Policy, Data Deletion, Task, Account Creation), in days."
         />
         <MetricCard
           label="Faster By"
-          value={formatPercent(fasterBy.avgOfTwo)}
+          value={formatPercent(fasterBy.combined)}
           sublabel={
-            fasterBy.avgOfTwo === null
+            fasterBy.combined === null
               ? "not enough data yet"
-              : fasterBy.avgOfTwo >= 0
+              : fasterBy.combined >= 0
                 ? "vs. tickets without the tool"
                 : "slower than tickets without the tool"
           }
-          tooltip="(Other avg − Tool-assisted avg) ÷ Other avg, on the average of the two stages. The per-stage figures are in the table below — the tool can only shorten execution, so that row is the honest one."
+          tooltip="(Other total − Tool-assisted total) ÷ Other total, on the end-to-end cycle time. The per-stage figures are in the table below — the tool can only shorten the doer's half, so that row is the honest one."
           // The one unambiguously good state on this page gets the ambient drift in ADHD View.
-          className={fasterBy.avgOfTwo !== null && fasterBy.avgOfTwo > 0 ? "adhd-happy" : undefined}
+          className={fasterBy.combined !== null && fasterBy.combined > 0 ? "adhd-happy" : undefined}
         />
         <MetricCard
           label="Bottleneck"
@@ -84,11 +107,14 @@ export default async function ToolAssistedPage({
 
       <ToolAssistedCompositionTable byCategory={report.byCategory} />
 
-      {/* The two "where is the time" tables. Full width each rather than side by side: both are wide
-          enough that a two-column row would put each into its own horizontal scroll. */}
-      <ToolAssistedWorkTypeTable byWorkType={report.byWorkType} />
+      {/* After the composition table: that one says what the categories ARE, this one says whether
+          the tool changed them. */}
+      <ToolAssistedBaselineTable comparisons={baseline} />
 
-      <ToolAssistedSeTable bySe={report.bySe} />
+      <ToolAssistedSeTable
+        bySe={report.bySe}
+        unattributed={report.unattributedToolAssisted}
+      />
 
       <ToolAssistedTable tickets={toolAssisted.tickets} jiraBaseUrl={process.env.JIRA_BASE_URL} />
     </div>

@@ -38,8 +38,8 @@ export function formatMinutesDecimalValue(minutes: number | null | undefined): s
 }
 
 /**
- * Duration expressed in DAYS regardless of magnitude, always 3 decimals (e.g. 180 min ->
- * "0.125", 3384 min -> "2.350"). Unlike formatMinutesDecimalValue, the unit never switches,
+ * Duration expressed in DAYS regardless of magnitude, always 2 decimals (e.g. 180 min ->
+ * "0.13", 3384 min -> "2.35"). Unlike formatMinutesDecimalValue, the unit never switches,
  * so a 3-hour average and a 3-day average sit on the same scale and stay comparable when the
  * period filter moves. Pairs with formatDurationBreakdown as the sublabel, which carries the
  * human-readable "3h". Returns the fixed string directly so trailing zeros survive.
