@@ -11,7 +11,7 @@ const RAW_TICKET_HEADERS = [
   'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
   'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
-  'cycle_time_start', 'cycle_time_end', 'labels',
+  'cycle_time_start', 'cycle_time_end', 'labels', 'priority',
 ];
 
 function syncAllTeams() {
@@ -156,6 +156,10 @@ function mapIssueToRawRow_(team, issue, resolved) {
     peer_review_cycles_json: '[]',
     cycle_time_start: '',
     cycle_time_end: '',
+    // Jira's native Priority field, e.g. 'P1 (Very Urgent)' — backs the P1 SLA Compliance
+    // scorecard (lib/p1-sla.ts). extractJiraFieldValue_ handles its {id,name,iconUrl} shape via
+    // the 'name' branch, same as issuetype/status.
+    priority: extractJiraFieldValue_(fields.priority),
   };
 }
 
@@ -433,29 +437,43 @@ function cycleTimeEndStatusesForIssueType_(issueType) {
  * SE/ST cycle-time definition (replaces backlog-exit -> resolution for teams with
  * has_peer_review_tracking): the span from when the ticket first moved OUT of Backlog/To Do
  * (`backlogExitFallback`, i.e. `first_out_of_backlog_todo` — a fixed point per ticket) to the
- * most recent transition into ANY of `endStatuses` (see cycleTimeEndStatusesForIssueType_).
- * `cycleTimeEnd` is overwritten every time a later matching transition is seen while walking the
- * changelog chronologically, so a ticket that bounces On Hold -> In Progress -> endStatus again
- * automatically recomputes using the LATEST matching entry — no separate "bounce" case needed,
- * and a ticket that reaches its review status and is LATER archived/rejected correctly picks up
- * the later (archived/rejected) timestamp instead. The start does NOT track "In Progress"
- * re-entries — it's always the ticket's original backlog-exit moment, regardless of how many
- * times it later cycles back through review.
+ * end of `endStatuses` (see cycleTimeEndStatusesForIssueType_), which splits into two cases:
+ *
+ * - Handoff statuses (For Peer Review / For Checking / For Product Team) can legitimately be
+ *   re-entered after more work, so `cycleTimeEnd` is overwritten every time a LATER matching
+ *   transition is seen while walking the changelog chronologically — a ticket that bounces
+ *   On Hold -> In Progress -> handoff again automatically recomputes using the latest entry.
+ * - CYCLE_TIME_UNIVERSAL_END_STATUSES (archived/rejected) are terminal: once a ticket reaches
+ *   either one, it's done. A LATER move between them, or from a handoff status into one of them
+ *   after the ticket had already gone terminal, is a reclassification of an already-finished
+ *   ticket (e.g. Archived -> Rejected weeks later) — not more work — so only the FIRST terminal
+ *   transition counts, and it wins outright over any handoff timestamp. A ticket that reaches its
+ *   review status and is only LATER archived/rejected (no prior terminal transition) still picks
+ *   up that archived/rejected timestamp — this is the same case the old "latest wins" rule
+ *   handled, since the first terminal transition and the latest are the same event there.
+ *
+ * The start does NOT track "In Progress" re-entries — it's always the ticket's original
+ * backlog-exit moment, regardless of how many times it later cycles back through review.
  */
 function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatuses) {
   let cycleTimeEnd = null;
+  let terminalAt = null;
 
   for (let i = 0; i < changelog.length; i++) {
     const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
     if (!statusItem) continue;
 
     const toStatus = (statusItem.toString || '').toLowerCase();
-    if (endStatuses.indexOf(toStatus) !== -1) {
+    if (endStatuses.indexOf(toStatus) === -1) continue;
+
+    if (CYCLE_TIME_UNIVERSAL_END_STATUSES.indexOf(toStatus) !== -1) {
+      if (!terminalAt) terminalAt = changelog[i].created;
+    } else if (!terminalAt) {
       cycleTimeEnd = changelog[i].created;
     }
   }
 
-  return { startAt: backlogExitFallback || null, endAt: cycleTimeEnd };
+  return { startAt: backlogExitFallback || null, endAt: terminalAt || cycleTimeEnd };
 }
 
 /**

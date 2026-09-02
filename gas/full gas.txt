@@ -1388,6 +1388,13 @@ function deleteStHoldingTrigger_() {
  * peer-review extraction logic changes, to re-derive historical rows under the new logic) —
  * safe to just re-run: it deletes its own cursor on completion rather than a permanent
  * done-flag, so nothing needs resetting first.
+ *
+ * Needs a re-run after the 2026-09-02 fix to extractReviewCycleTimeRange_: previously a LATER
+ * transition between two terminal statuses (e.g. Archived -> Rejected, discovered via ST-85420)
+ * overwrote cycle_time_end with the reclassification date instead of keeping the original
+ * completion date, inflating cycle time for any ticket reclassified well after it first went
+ * archived/rejected. This rebackfill re-derives cycle_time_end (and cycle_time_start,
+ * peer_review_cycles_json) under the corrected first-terminal-wins logic.
  */
 const ST_PEER_REVIEW_BACKFILL_SINCE = '2025-01-01';
 const ST_PEER_REVIEW_CURSOR_KEY = 'ST_PEER_REVIEW_REBACKFILL_CURSOR';
@@ -1858,6 +1865,157 @@ function deleteLabelsRebackfillTrigger_() {
     .forEach((t) => ScriptApp.deleteTrigger(t));
 }
 
+/**
+ * Lightweight re-backfill for the `priority` column (added after most tickets were already
+ * synced — see migrateAddPriorityColumn in Setup.gs). Same shape as runLabelsRebackfill/
+ * runDueDateRebackfill: pulls only `created` + `priority` per ticket and patches just the
+ * priority cell in the existing RAW row, self-continuing across executions via per-team Script
+ * Property cursors. Run once from the editor after migrateAddPriorityColumn. Needed for the P1
+ * SLA Compliance report (lib/p1-sla.ts) to see tickets synced before this column existed — going
+ * forward, the regular sync fills it in on its own. Safe to re-run (clear the DONE_ props to
+ * force a full redo).
+ */
+const PRIORITY_REBACKFILL_CURSOR_PREFIX = 'PRIORITY_REBACKFILL_CURSOR_';
+const PRIORITY_REBACKFILL_DONE_PREFIX = 'PRIORITY_REBACKFILL_DONE_';
+
+function runPriorityRebackfill() {
+  const props = PropertiesService.getScriptProperties();
+  const teams = getActiveTeamsConfig_();
+
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    if (props.getProperty(PRIORITY_REBACKFILL_DONE_PREFIX + team.team_key)) continue;
+
+    const pageToken = props.getProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key) || undefined;
+    const jql = buildJqlBackfillFull_(team);
+
+    let page;
+    try {
+      page = jiraSearchIssues_(jql, pageToken, 100, ['created', 'priority']);
+    } catch (err) {
+      deletePriorityRebackfillTrigger_();
+      if (isExpiredPageTokenError_(err)) {
+        props.deleteProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key);
+        notifyFailure_(
+          `runPriorityRebackfill: page token expired for ${team.jira_project_key}, cursor reset`,
+          `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runPriorityRebackfill manually to restart ${team.jira_project_key} from the beginning.`
+        );
+        return;
+      }
+      notifyFailure_(`runPriorityRebackfill: Jira fetch failed for ${team.jira_project_key}`, err);
+      ScriptApp.newTrigger('runPriorityRebackfill').timeBased().after(5000).create();
+      return;
+    }
+
+    if (page.nextPageToken && page.nextPageToken === pageToken) {
+      notifyFailure_(`runPriorityRebackfill stalled for ${team.jira_project_key}`, 'nextPageToken did not advance — check Jira response.');
+      deletePriorityRebackfillTrigger_();
+      return;
+    }
+
+    // Group this page's priority updates by the ticket's created-year (RAW tabs are sharded by it).
+    const updatesByYear = {};
+    page.issues.forEach((issue) => {
+      const created = issue.fields && issue.fields.created;
+      if (!created) return;
+      const year = new Date(created).getFullYear();
+      (updatesByYear[year] = updatesByYear[year] || {})[issue.key] =
+        extractJiraFieldValue_(issue.fields.priority);
+    });
+    Object.keys(updatesByYear).forEach((year) => applyPriorityUpdates_(team.team_key, year, updatesByYear[year]));
+
+    if (page.nextPageToken && page.issues.length > 0) {
+      props.setProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key, page.nextPageToken);
+      deletePriorityRebackfillTrigger_();
+      ScriptApp.newTrigger('runPriorityRebackfill').timeBased().after(1000).create();
+      return;
+    }
+
+    props.setProperty(PRIORITY_REBACKFILL_DONE_PREFIX + team.team_key, nowIso_());
+    props.deleteProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key);
+  }
+
+  deletePriorityRebackfillTrigger_();
+  sendAlertEmail_(
+    'Priority re-backfill complete',
+    'All active teams have had RAW priority populated from Jira, in the Sheets (RAW_<team>_<year> tabs). ' +
+    'Now run runSupabaseMigration() (SupabaseMigration.gs) to push it into Supabase — see applyPriorityUpdates_ ' +
+    'for why this step deliberately does not dual-write Supabase itself.'
+  );
+}
+
+/**
+ * Patches the priority cell for the given issue keys in one RAW_<team>_<year> tab (single batched
+ * write). Sheets ONLY — deliberately does not also dual-write Supabase, unlike the regular
+ * incremental sync path (upsertRawTicketRow_ -> dualWriteTicketToSupabase_). Two things were tried
+ * and both failed, worth recording so a future change doesn't repeat them:
+ *
+ *   1. A partial {issue_key, priority} upsert. Confirmed by direct testing 2026-09-02: Postgres's
+ *      `INSERT ... ON CONFLICT DO UPDATE` validates NOT NULL constraints (and applies column
+ *      defaults) on the CANDIDATE insert row REGARDLESS of whether a conflict occurs and the
+ *      UPDATE branch is taken instead — so a partial upsert against `tickets` (many NOT NULL
+ *      columns with no default) fails with a NOT NULL violation even for a row confirmed to
+ *      already exist. A same-row-existence check doesn't make this safe; it's not possible to fix
+ *      by checking existence first.
+ *   2. A full row via sheetToObjects_ (every column) per ticket, to make the upsert always valid.
+ *      Correct in principle, but sheetToObjects_ reads the WHOLE year tab — repeating that read on
+ *      every ~100-issue JQL page (there can be 400+ pages for one team) made each execution slow
+ *      enough that Jira's nextPageToken expired before the next chained trigger could fire,
+ *      stalling the backfill entirely (confirmed twice, same failure point both times).
+ *
+ * The fix is architectural, not a cleverer patch: migrateTicketsYearToSupabase_ (SupabaseMigration.gs)
+ * already does exactly what full-row correctness requires — one sheetToObjects_ read per (team,
+ * year), not per page — because it runs ONCE per tab as its own migration step, not once per JQL
+ * page. So this function stays Sheets-only and fast (matching applyDueDateUpdates_/
+ * applyLabelsUpdates_), and runPriorityRebackfill's completion email says to run
+ * runSupabaseMigration() afterward to push the now-complete Sheets data into Supabase in one pass
+ * per tab — safe to re-run, every upsert already targets issue_key via on_conflict.
+ */
+function applyPriorityUpdates_(teamKey, year, keyToPriority) {
+  const sheet = getOrCreateRawTab_(teamKey, year);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const keyCol = headers.indexOf('issue_key');
+  const priorityCol = headers.indexOf('priority');
+  if (keyCol === -1 || priorityCol === -1) return;
+
+  const keys = sheet.getRange(2, keyCol + 1, lastRow - 1, 1).getValues();
+  const priorities = sheet.getRange(2, priorityCol + 1, lastRow - 1, 1).getValues();
+  let changed = false;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i][0];
+    if (k && Object.prototype.hasOwnProperty.call(keyToPriority, k)) {
+      priorities[i][0] = keyToPriority[k];
+      changed = true;
+    }
+  }
+  if (changed) sheet.getRange(2, priorityCol + 1, priorities.length, 1).setValues(priorities);
+}
+
+/**
+ * Clears the DONE_/CURSOR_ properties for every active team so the next runPriorityRebackfill call
+ * does a full redo instead of skipping teams already marked complete — needed after the
+ * applyPriorityUpdates_ fix above, since any team that finished (or partially finished) under the
+ * old partial-upsert logic may have silently failed the Supabase side for some tickets. Mirrors
+ * resetDeDevResolvedRebackfill exactly. Run this once, then run runPriorityRebackfill.
+ */
+function resetPriorityRebackfill() {
+  const props = PropertiesService.getScriptProperties();
+  getActiveTeamsConfig_().forEach((team) => {
+    props.deleteProperty(PRIORITY_REBACKFILL_DONE_PREFIX + team.team_key);
+    props.deleteProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key);
+  });
+  deletePriorityRebackfillTrigger_();
+  Logger.log('resetPriorityRebackfill: cleared. Run runPriorityRebackfill next.');
+}
+
+function deletePriorityRebackfillTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runPriorityRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
 
 // ================================================================
 // BacklogAgingApi.gs
@@ -2158,6 +2316,7 @@ function getTeamsConfig_() {
     has_cancellation_reason: parseBool_(r.has_cancellation_reason),
     has_in_progress_tracking: parseBool_(r.has_in_progress_tracking),
     has_peer_review_tracking: parseBool_(r.has_peer_review_tracking),
+    has_p1_sla_tracking: parseBool_(r.has_p1_sla_tracking),
     backlog_status_names_csv: String(r.backlog_status_names_csv || ''),
     issue_types_csv: String(r.issue_types_csv || ''),
     color_accent: String(r.color_accent || '#18A558'),
@@ -2429,9 +2588,10 @@ var IncidentsApi = {
       t.validator_override = String(t.validator_override || '');
       t.validator = t.validator_override || t.validator_derived;
       // Surfaced so the page can badge a ticket whose Jira tag has been cleared but which the
-      // sweep refused to delete because it already carries logs. Normalised to a string — an
-      // untouched cell reads back as an empty string, not undefined.
-      t.untagged_at = String(t.untagged_at || '');
+      // sweep refused to delete because it already carries logs. Through toDisplayDate_ like every
+      // other date here: it was written as an ISO timestamp, but Sheets may have coerced the cell
+      // to a Date, and the page only ever shows the day.
+      t.untagged_at = toDisplayDate_(t.untagged_at);
       return t;
     });
     let logs = sheetToObjects_(getOrCreateIncidentLogsSheet_(ss)).map(stripRowMeta_).map((l) => {
@@ -4556,7 +4716,7 @@ function jiraGetChangelog_(issueKey) {
 
 /** The field IDs every team config needs pulled from Jira, deduped, plus always-needed standard fields. */
 function buildJiraFieldList_(teamConfig) {
-  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels'];
+  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels', 'priority'];
   const custom = [
     teamConfig.resolved_date_field_id,
     teamConfig.assignee_field_id,
@@ -4588,7 +4748,7 @@ const RAW_TICKET_HEADERS = [
   'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
   'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
-  'cycle_time_start', 'cycle_time_end', 'labels',
+  'cycle_time_start', 'cycle_time_end', 'labels', 'priority',
 ];
 
 function syncAllTeams() {
@@ -4733,6 +4893,10 @@ function mapIssueToRawRow_(team, issue, resolved) {
     peer_review_cycles_json: '[]',
     cycle_time_start: '',
     cycle_time_end: '',
+    // Jira's native Priority field, e.g. 'P1 (Very Urgent)' — backs the P1 SLA Compliance
+    // scorecard (lib/p1-sla.ts). extractJiraFieldValue_ handles its {id,name,iconUrl} shape via
+    // the 'name' branch, same as issuetype/status.
+    priority: extractJiraFieldValue_(fields.priority),
   };
 }
 
@@ -5010,29 +5174,43 @@ function cycleTimeEndStatusesForIssueType_(issueType) {
  * SE/ST cycle-time definition (replaces backlog-exit -> resolution for teams with
  * has_peer_review_tracking): the span from when the ticket first moved OUT of Backlog/To Do
  * (`backlogExitFallback`, i.e. `first_out_of_backlog_todo` — a fixed point per ticket) to the
- * most recent transition into ANY of `endStatuses` (see cycleTimeEndStatusesForIssueType_).
- * `cycleTimeEnd` is overwritten every time a later matching transition is seen while walking the
- * changelog chronologically, so a ticket that bounces On Hold -> In Progress -> endStatus again
- * automatically recomputes using the LATEST matching entry — no separate "bounce" case needed,
- * and a ticket that reaches its review status and is LATER archived/rejected correctly picks up
- * the later (archived/rejected) timestamp instead. The start does NOT track "In Progress"
- * re-entries — it's always the ticket's original backlog-exit moment, regardless of how many
- * times it later cycles back through review.
+ * end of `endStatuses` (see cycleTimeEndStatusesForIssueType_), which splits into two cases:
+ *
+ * - Handoff statuses (For Peer Review / For Checking / For Product Team) can legitimately be
+ *   re-entered after more work, so `cycleTimeEnd` is overwritten every time a LATER matching
+ *   transition is seen while walking the changelog chronologically — a ticket that bounces
+ *   On Hold -> In Progress -> handoff again automatically recomputes using the latest entry.
+ * - CYCLE_TIME_UNIVERSAL_END_STATUSES (archived/rejected) are terminal: once a ticket reaches
+ *   either one, it's done. A LATER move between them, or from a handoff status into one of them
+ *   after the ticket had already gone terminal, is a reclassification of an already-finished
+ *   ticket (e.g. Archived -> Rejected weeks later) — not more work — so only the FIRST terminal
+ *   transition counts, and it wins outright over any handoff timestamp. A ticket that reaches its
+ *   review status and is only LATER archived/rejected (no prior terminal transition) still picks
+ *   up that archived/rejected timestamp — this is the same case the old "latest wins" rule
+ *   handled, since the first terminal transition and the latest are the same event there.
+ *
+ * The start does NOT track "In Progress" re-entries — it's always the ticket's original
+ * backlog-exit moment, regardless of how many times it later cycles back through review.
  */
 function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatuses) {
   let cycleTimeEnd = null;
+  let terminalAt = null;
 
   for (let i = 0; i < changelog.length; i++) {
     const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
     if (!statusItem) continue;
 
     const toStatus = (statusItem.toString || '').toLowerCase();
-    if (endStatuses.indexOf(toStatus) !== -1) {
+    if (endStatuses.indexOf(toStatus) === -1) continue;
+
+    if (CYCLE_TIME_UNIVERSAL_END_STATUSES.indexOf(toStatus) !== -1) {
+      if (!terminalAt) terminalAt = changelog[i].created;
+    } else if (!terminalAt) {
       cycleTimeEnd = changelog[i].created;
     }
   }
 
-  return { startAt: backlogExitFallback || null, endAt: cycleTimeEnd };
+  return { startAt: backlogExitFallback || null, endAt: terminalAt || cycleTimeEnd };
 }
 
 /**
@@ -6458,6 +6636,44 @@ function migrateAddLabelsColumn() {
   });
 }
 
+/**
+ * One-time migration: adds `priority` to every existing RAW_<team>_<year> tab
+ * (setupJiraDataSpreadsheet_/getOrCreateRawTab_ only add it to a brand-new tab, via
+ * RAW_TICKET_HEADERS in JiraSync.gs). Backs the P1 SLA Compliance report (lib/p1-sla.ts) —
+ * Jira's native Priority field, e.g. 'P1 (Very Urgent)'. Only populated going forward by the
+ * regular sync; run runPriorityRebackfill (Backfill.gs) afterward to fill it in for tickets
+ * already synced before this column existed. Safe to re-run.
+ */
+function migrateAddPriorityColumn() {
+  const ss = getJiraDataSpreadsheet_();
+  getActiveTeamsConfig_().forEach((team) => {
+    getAllRawYearsForTeam_(team.team_key).forEach((year) => {
+      const sheet = ss.getSheetByName(`RAW_${team.team_key}_${year}`);
+      if (appendColumnIfMissing_(sheet, 'priority')) {
+        Logger.log(`RAW_${team.team_key}_${year}: added priority.`);
+      } else {
+        Logger.log(`RAW_${team.team_key}_${year}: priority already present.`);
+      }
+    });
+  });
+}
+
+/**
+ * One-time migration: adds `has_p1_sla_tracking` to an already-provisioned TEAMS_CONFIG
+ * (setupJiraDataSpreadsheet_ only adds it to a brand-new tab). Only adds the header — set TRUE
+ * manually for the ST row afterward (leave blank/FALSE for DE/DEV), same as
+ * migrateAddPeerReviewTracking. Gates the "P1 SLA Compliance" scorecard card. Safe to re-run.
+ */
+function migrateAddP1SlaTrackingColumn() {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('TEAMS_CONFIG');
+  if (!sheet) { Logger.log('TEAMS_CONFIG not found.'); return; }
+  if (appendColumnIfMissing_(sheet, 'has_p1_sla_tracking')) {
+    Logger.log('TEAMS_CONFIG: added has_p1_sla_tracking — now set it to TRUE for the ST row.');
+  } else {
+    Logger.log('TEAMS_CONFIG: has_p1_sla_tracking already present.');
+  }
+}
+
 function setupJiraDataSpreadsheet_() {
   const ss = SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_JIRA'));
   const currentYear = new Date().getFullYear();
@@ -7018,6 +7234,7 @@ function mapRawTicketRowToSupabase_(teamKey, r) {
     cycle_time_start: toTimestampOrNull_(r.cycle_time_start),
     cycle_time_end: toTimestampOrNull_(r.cycle_time_end),
     labels: toStringOrNull_(r.labels),
+    priority: toStringOrNull_(r.priority),
   };
 }
 

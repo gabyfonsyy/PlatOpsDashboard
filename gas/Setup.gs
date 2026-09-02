@@ -221,6 +221,44 @@ function migrateAddLabelsColumn() {
   });
 }
 
+/**
+ * One-time migration: adds `priority` to every existing RAW_<team>_<year> tab
+ * (setupJiraDataSpreadsheet_/getOrCreateRawTab_ only add it to a brand-new tab, via
+ * RAW_TICKET_HEADERS in JiraSync.gs). Backs the P1 SLA Compliance report (lib/p1-sla.ts) —
+ * Jira's native Priority field, e.g. 'P1 (Very Urgent)'. Only populated going forward by the
+ * regular sync; run runPriorityRebackfill (Backfill.gs) afterward to fill it in for tickets
+ * already synced before this column existed. Safe to re-run.
+ */
+function migrateAddPriorityColumn() {
+  const ss = getJiraDataSpreadsheet_();
+  getActiveTeamsConfig_().forEach((team) => {
+    getAllRawYearsForTeam_(team.team_key).forEach((year) => {
+      const sheet = ss.getSheetByName(`RAW_${team.team_key}_${year}`);
+      if (appendColumnIfMissing_(sheet, 'priority')) {
+        Logger.log(`RAW_${team.team_key}_${year}: added priority.`);
+      } else {
+        Logger.log(`RAW_${team.team_key}_${year}: priority already present.`);
+      }
+    });
+  });
+}
+
+/**
+ * One-time migration: adds `has_p1_sla_tracking` to an already-provisioned TEAMS_CONFIG
+ * (setupJiraDataSpreadsheet_ only adds it to a brand-new tab). Only adds the header — set TRUE
+ * manually for the ST row afterward (leave blank/FALSE for DE/DEV), same as
+ * migrateAddPeerReviewTracking. Gates the "P1 SLA Compliance" scorecard card. Safe to re-run.
+ */
+function migrateAddP1SlaTrackingColumn() {
+  const sheet = getManagerDataSpreadsheet_().getSheetByName('TEAMS_CONFIG');
+  if (!sheet) { Logger.log('TEAMS_CONFIG not found.'); return; }
+  if (appendColumnIfMissing_(sheet, 'has_p1_sla_tracking')) {
+    Logger.log('TEAMS_CONFIG: added has_p1_sla_tracking — now set it to TRUE for the ST row.');
+  } else {
+    Logger.log('TEAMS_CONFIG: has_p1_sla_tracking already present.');
+  }
+}
+
 function setupJiraDataSpreadsheet_() {
   const ss = SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_JIRA'));
   const currentYear = new Date().getFullYear();

@@ -1,5 +1,7 @@
 import Link from "next/link";
-import { ChevronRight, Info } from "lucide-react";
+import { ChevronRight, Info, TrendingUp, TrendingDown } from "lucide-react";
+import { Badge } from "@/components/ui/Badge";
+import type { BadgeTone } from "@/lib/sla-status";
 
 export function MetricCard({
   label,
@@ -8,6 +10,8 @@ export function MetricCard({
   tooltip,
   href,
   className,
+  badge,
+  trend,
 }: {
   label: string;
   value: string;
@@ -17,6 +21,13 @@ export function MetricCard({
   href?: string;
   /** Extra classes on the card shell — e.g. `adhd-happy` to give a good-news card ambient drift. */
   className?: string;
+  /** Optional status pill next to the label — e.g. "Healthy"/"At Risk" for an SLA rate. Reuses the
+   * existing Badge tones rather than a bespoke color. */
+  badge?: { label: string; tone: BadgeTone };
+  /** Optional direction + magnitude vs a comparison period, shown under the value. `positive`
+   * colors the arrow/text success-green regardless of direction (a metric where "up" is bad, e.g.
+   * overdue count, should pass direction="down" with positive=true). */
+  trend?: { direction: "up" | "down" | "flat"; label: string; positive: boolean | null };
 }) {
   const body = (
     <>
@@ -35,10 +46,22 @@ export function MetricCard({
             </span>
           </span>
         )}
+        {badge && <Badge tone={badge.tone}>{badge.label}</Badge>}
         {href && <ChevronRight className="w-3.5 h-3.5 text-neutral-300 ml-auto" />}
       </div>
       <p className="text-2xl font-semibold text-neutral-900 mt-1">{value}</p>
       {sublabel && <p className="text-xs text-neutral-400 mt-1">{sublabel}</p>}
+      {trend && (
+        <p
+          className={`text-xs mt-1 flex items-center gap-1 ${
+            trend.positive === null ? "text-neutral-400" : trend.positive ? "text-emerald-700" : "text-red-600"
+          }`}
+        >
+          {trend.direction === "up" && <TrendingUp className="w-3 h-3" />}
+          {trend.direction === "down" && <TrendingDown className="w-3 h-3" />}
+          {trend.label}
+        </p>
+      )}
     </>
   );
 

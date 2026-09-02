@@ -67,6 +67,39 @@ export function formatDurationBreakdown(minutes: number | null | undefined): str
   return parts.join(" ");
 }
 
+/**
+ * Duration expressed in DAYS, always 2 decimals, rounded UP (ceiling) rather than to nearest —
+ * for the Cycle Time scorecard specifically, where understating a cycle time reads as the
+ * process being faster than it actually was. Unlike formatDaysValue (nearest), 90 min -> "0.07"
+ * both ways, but 129.5 min (0.0899...d) -> "0.09" here vs "0.09" there only by coincidence;
+ * the difference shows at e.g. 1441 min: formatDaysValue -> "1.00", this -> "1.01".
+ */
+export function formatDaysValueCeil(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined) return "—";
+  return (Math.ceil((minutes / 1440) * 100) / 100).toFixed(2);
+}
+
+/**
+ * Full breakdown of a duration into days/hours/minutes/seconds for the Cycle Time scorecard
+ * subnote — pairs with formatDaysValueCeil. Unlike formatDurationBreakdown (whole minutes only),
+ * this keeps the sub-minute remainder as seconds rather than rounding it away, so the sublabel's
+ * total matches the headline's ceiling-rounded days rather than silently dropping seconds.
+ */
+export function formatDurationBreakdownWithSeconds(minutes: number | null | undefined): string | undefined {
+  if (minutes === null || minutes === undefined) return undefined;
+  const totalSeconds = Math.round(minutes * 60);
+  const d = Math.floor(totalSeconds / 86400);
+  const h = Math.floor((totalSeconds % 86400) / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const parts: string[] = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (s || parts.length === 0) parts.push(`${s}s`);
+  return parts.join(" ");
+}
+
 export function formatPercent(value: number | null | undefined, decimals = 1): string {
   if (value === null || value === undefined) return "—";
   return `${(value * 100).toFixed(decimals)}%`;

@@ -32,6 +32,11 @@ export default async function LeadCycleTimePage({
   const query = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}) }).toString();
   const metricLabel = metric === "cycle" ? "Cycle Time" : "Lead Time";
 
+  // Only ST's Cycle Time decomposes into actual-work + peer-review — see getLeadCycleTimeReport.
+  // Everywhere else combinedAvgMinutes just equals avgMinutes, so the "Overall Avg" card's value
+  // is unaffected by this flag; it only controls whether the two breakdown cards render.
+  const showPeerReviewSplit = metric === "cycle" && team.has_peer_review_tracking;
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
@@ -49,13 +54,33 @@ export default async function LeadCycleTimePage({
         <FilterBar issueTypes={issueTypes} />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-1 sm:grid-cols-3 gap-4 ${showPeerReviewSplit ? "lg:grid-cols-6" : "lg:grid-cols-4"}`}>
         <MetricCard
           label={`Overall Avg ${metricLabel}`}
-          value={formatMinutesDecimalValue(report.avgMinutes)}
-          sublabel={`${formatDurationBreakdown(report.avgMinutes) ?? "—"} · ${formatNumber(report.count)} tickets`}
-          tooltip={`Average across every ticket counted in the period. ${report.description} Shown in days/hours/minutes.`}
+          value={formatMinutesDecimalValue(report.combinedAvgMinutes)}
+          sublabel={`${formatDurationBreakdown(report.combinedAvgMinutes) ?? "—"} · ${formatNumber(report.count)} tickets`}
+          tooltip={
+            showPeerReviewSplit
+              ? `Actual-work average plus peer-review average — the same figure the team-page scorecard shows. ${report.description} Shown in days/hours/minutes.`
+              : `Average across every ticket counted in the period. ${report.description} Shown in days/hours/minutes.`
+          }
         />
+        {showPeerReviewSplit && (
+          <MetricCard
+            label="Avg Actual Work"
+            value={formatMinutesDecimalValue(report.avgMinutes)}
+            sublabel={`${formatDurationBreakdown(report.avgMinutes) ?? "—"} · ${formatNumber(report.count)} tickets`}
+            tooltip="Average time from when a ticket left Backlog/To Do to when it reached review — the same span this card measured before the peer-review time was split out."
+          />
+        )}
+        {showPeerReviewSplit && (
+          <MetricCard
+            label="Avg Peer Review"
+            value={formatMinutesDecimalValue(report.peerReviewAvgMinutes)}
+            sublabel={`${formatDurationBreakdown(report.peerReviewAvgMinutes) ?? "—"} · ${formatNumber(report.peerReviewCount)} tickets`}
+            tooltip="Average time spent IN For Peer Review, summed per ticket across cycles that exited to On Hold or For Checking, over the same tickets counted in Overall Avg Cycle Time."
+          />
+        )}
         <MetricCard
           label={`Highest by ${report.assigneeLabel}`}
           value={report.byAssignee[0]?.key ?? "—"}
