@@ -3,13 +3,14 @@ import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getTeamByKey } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
-import { getLeadCycleTimeReport, type LeadCycleTimeMetric } from "@/lib/lead-cycle-time";
+import { getLeadCycleTimeReport, getLeadTimeDeepDive, type LeadCycleTimeMetric } from "@/lib/lead-cycle-time";
 import { resolveFilters } from "@/lib/date-ranges";
 import { formatMinutesDecimalValue, formatDurationBreakdown, formatNumber } from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { LeadCycleTimeTicketsTable } from "@/components/dashboard/LeadCycleTimeTicketsTable";
 import { LeadCycleTimeRankTable } from "@/components/dashboard/LeadCycleTimeRankTable";
+import { LeadTimeDeepDive } from "@/components/dashboard/LeadTimeDeepDive";
 
 export default async function LeadCycleTimePage({
   params,
@@ -23,31 +24,59 @@ export default async function LeadCycleTimePage({
 
   const { range, period, issueType } = resolveFilters(searchParams);
   const metric: LeadCycleTimeMetric = searchParams.metric === "cycle" ? "cycle" : "lead";
-  const report = await getLeadCycleTimeReport(team.team_key, range, period, metric, issueType);
 
   const issueTypes = team.issue_types_csv
     ? team.issue_types_csv.split(",").map((s) => s.trim()).filter(Boolean)
     : [];
-
   const query = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}) }).toString();
-  const metricLabel = metric === "cycle" ? "Cycle Time" : "Lead Time";
+
+  const backLink = (
+    <Link
+      href={`/${team.team_key.toLowerCase()}?${query}`}
+      className="inline-flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-900 transition-colors mb-2"
+    >
+      <ArrowLeft className="w-4 h-4" />
+      Back to {teamLabel(team.team_name)}
+    </Link>
+  );
+
+  // ------------------------------------------------------------------ Lead Time (rebuilt deep-dive)
+  if (metric === "lead") {
+    const report = await getLeadTimeDeepDive(team.team_key, range, period, issueType);
+
+    return (
+      <div className="flex flex-col gap-6">
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="max-w-2xl">
+            {backLink}
+            <h1>{teamLabel(team.team_name)} — Lead Time</h1>
+            <p className="text-sm text-neutral-500 mt-1">
+              Work delivery time, flow efficiency, bottlenecks, and long-running work. {report.description} Only tickets resolved in the
+              selected period are counted — a ticket still open isn&apos;t included until it finishes.
+            </p>
+          </div>
+          <FilterBar issueTypes={issueTypes} />
+        </div>
+
+        <LeadTimeDeepDive report={report} jiraBaseUrl={process.env.JIRA_BASE_URL} />
+      </div>
+    );
+  }
+
+  // --------------------------------------------------------------------------- Cycle Time (unchanged)
+  const report = await getLeadCycleTimeReport(team.team_key, range, period, metric, issueType);
+  const metricLabel = "Cycle Time";
 
   // Only ST's Cycle Time decomposes into actual-work + peer-review — see getLeadCycleTimeReport.
   // Everywhere else combinedAvgMinutes just equals avgMinutes, so the "Overall Avg" card's value
   // is unaffected by this flag; it only controls whether the two breakdown cards render.
-  const showPeerReviewSplit = metric === "cycle" && team.has_peer_review_tracking;
+  const showPeerReviewSplit = team.has_peer_review_tracking;
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
-          <Link
-            href={`/${team.team_key.toLowerCase()}?${query}`}
-            className="inline-flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-900 transition-colors mb-2"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Back to {teamLabel(team.team_name)}
-          </Link>
+          {backLink}
           <h1>{teamLabel(team.team_name)} — {metricLabel} Deep-Dive</h1>
           <p className="text-sm text-neutral-500 mt-1">{report.description}</p>
         </div>

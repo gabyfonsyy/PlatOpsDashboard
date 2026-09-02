@@ -1,6 +1,7 @@
 import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
+import { ANALYSIS_EXCLUDED_LABELS } from "@/lib/ticket-breakdowns";
 
 /**
  * Tool-Assisted Efficiency — does the tooling given to SEs actually shorten the work, and which of
@@ -80,19 +81,11 @@ export const TOOL_ASSISTED_CATEGORIES: { category: ToolAssistedCategory; labels:
  * They do NOT change any count or average. A Misc ticket carrying only process labels still counts
  * in Misc; it simply contributes nothing to the candidate list. The full label set stays on the
  * ticket row's hover title, so nothing is actually hidden from view.
+ *
+ * Sourced from ANALYSIS_EXCLUDED_LABELS (lib/ticket-breakdowns.ts) rather than a separate list here
+ * — as of 2026-09-02 that list is the sitewide default for "process, not subject matter" labels, so
+ * this page shouldn't drift from it.
  */
-export const TOOL_ASSISTED_PROCESS_LABELS = [
-  "jira_escalated",
-  "ffup-1",
-  "ffup-2",
-  "expedite",
-  "autoclose-nonresponse",
-  "automation-done",
-  "acc-d1se",
-  "acc-d2l3",
-  "acc-overdue",
-  "crf",
-];
 
 export const TOOL_ASSISTED_CATEGORY_NAMES: ToolAssistedCategory[] = [
   ...TOOL_ASSISTED_CATEGORIES.map((c) => c.category),
@@ -507,7 +500,7 @@ function buildCategoryBreakdowns(tickets: ToolAssistedTicket[]): CategoryBreakdo
       const keys = t.primaryLabel
         ? [t.primaryLabel]
         : splitLabels(t.labels).filter(
-            (l) => l !== TOOL_ASSISTED_LABEL && TOOL_ASSISTED_PROCESS_LABELS.indexOf(l) === -1
+            (l) => l !== TOOL_ASSISTED_LABEL && ANALYSIS_EXCLUDED_LABELS.indexOf(l) === -1
           );
       for (const key of keys) labelCounts[key] = (labelCounts[key] ?? 0) + 1;
     }
