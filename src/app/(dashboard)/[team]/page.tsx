@@ -5,9 +5,19 @@ import { getTeamByKey, backlogAgingAssigneeLabel } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
 import { getAutomatedTicketCount } from "@/lib/automated-tickets";
+import { getP1SlaReport } from "@/lib/p1-sla";
+import { slaStatusForRate, STATUS_LABEL, STATUS_TONE } from "@/lib/sla-status";
 import { AUTOMATION_LABELS_COOKIE, resolveAutomationLabels } from "@/lib/automation-labels";
 import { resolveFilters } from "@/lib/date-ranges";
-import { formatMinutesDecimalValue, formatDaysValue, formatDurationBreakdown, formatPercent, formatNumber } from "@/lib/format";
+import {
+  formatMinutesDecimalValue,
+  formatDaysValue,
+  formatDaysValueCeil,
+  formatDurationBreakdown,
+  formatDurationBreakdownWithSeconds,
+  formatPercent,
+  formatNumber,
+} from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { MetricsSeriesChart } from "@/components/dashboard/MetricsSeriesChart";
@@ -34,12 +44,13 @@ export default async function TeamDashboardPage({
   // rather than the built-in default. Without this the card and the page it links to disagree the
   // moment she edits the automation-label catalogue.
   const automationLabels = resolveAutomationLabels(cookies().get(AUTOMATION_LABELS_COOKIE)?.value);
-  const [metrics, insight, automatedCount] = await Promise.all([
+  const [metrics, insight, automatedCount, p1Sla] = await Promise.all([
     getTicketMetrics(team.team_key, range, period, issueType),
     getInsight(`TEAM:${team.team_key}`),
     hasAssignedSe
       ? getAutomatedTicketCount(team.team_key, range, period, issueType, automationLabels)
       : Promise.resolve(0),
+    team.has_p1_sla_tracking ? getP1SlaReport(team.team_key, range, period, issueType) : Promise.resolve(null),
   ]);
 
   const issueTypes = team.issue_types_csv
@@ -90,12 +101,12 @@ export default async function TeamDashboardPage({
         />
         <MetricCard
           label="Cycle Time"
-          value={formatDaysValue(metrics.cycleTimeAvgMinutes)}
-          sublabel={formatDurationBreakdown(metrics.cycleTimeAvgMinutes)}
+          value={formatDaysValueCeil(metrics.cycleTimeAvgMinutes)}
+          sublabel={formatDurationBreakdownWithSeconds(metrics.cycleTimeAvgMinutes)}
           tooltip={
             team.has_peer_review_tracking
-              ? "Average time from when a ticket left Backlog/To Do to the most recent time it reached review, counted independent of resolution. Shown in days. Click through for the deep-dive."
-              : "Average time from when the ticket moved out of Backlog/To Do until it moved to Ready for Checking or Cancelled, across tickets resolved in the period. Shown in days. Click through for the deep-dive (top assignee/product/label, longest tickets)."
+              ? "Average actual-work time (out of Backlog/To Do to reaching review) plus average peer-review time, counted independent of resolution. Shown in days, rounded up to 2 decimals. Click through for the actual-work and peer-review averages as separate values."
+              : "Average time from when the ticket moved out of Backlog/To Do until it moved to Ready for Checking or Cancelled, across tickets resolved in the period. Shown in days, rounded up to 2 decimals. Click through for the deep-dive (top assignee/product/label, longest tickets)."
           }
           href={`/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=cycle`}
         />
@@ -145,6 +156,21 @@ export default async function TeamDashboardPage({
               href={`/${team.team_key.toLowerCase()}/escalation?${filterQuery}`}
             />
           </>
+        )}
+        {team.has_p1_sla_tracking && p1Sla && (
+          <MetricCard
+            label="P1 SLA Compliance"
+            value={formatPercent(p1Sla.onTimeRate)}
+            sublabel={`${formatNumber(p1Sla.onTimeCount)} of ${formatNumber(p1Sla.decided)} decided`}
+            badge={
+              (() => {
+                const status = slaStatusForRate(p1Sla.onTimeRate);
+                return status ? { label: STATUS_LABEL[status], tone: STATUS_TONE[status] } : undefined;
+              })()
+            }
+            tooltip={`P1 (Very Urgent) tickets created in the period, resolved on/before due date ÷ (resolved + open-and-already-overdue). Filtered by CREATE date, not resolved date — a ticket still open and not yet due is excluded until its outcome is known. Click through for the full pulse: trend, why tickets overdue, where the problems concentrate, and which open P1s are at risk right now.`}
+            href={`/${team.team_key.toLowerCase()}/p1-sla?${filterQuery}`}
+          />
         )}
         {team.has_holding_reason && (
           <MetricCard

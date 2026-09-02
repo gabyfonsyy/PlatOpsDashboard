@@ -34,7 +34,8 @@ create table teams_config (
   active boolean not null default true,
   sort_order integer not null default 0,
   has_in_progress_tracking boolean not null default false,
-  has_peer_review_tracking boolean not null default false
+  has_peer_review_tracking boolean not null default false,
+  has_p1_sla_tracking boolean not null default false
 );
 
 create table tickets (
@@ -65,7 +66,9 @@ create table tickets (
   peer_review_cycles_json jsonb,
   cycle_time_start timestamptz,
   cycle_time_end timestamptz,
-  labels text
+  labels text,
+  -- Jira's native Priority field, e.g. 'P1 (Very Urgent)'. Backs the P1 SLA Compliance report.
+  priority text
 );
 
 create index tickets_team_created_idx on tickets (team_key, created);
@@ -73,6 +76,7 @@ create index tickets_team_resolved_idx on tickets (team_key, resolved_datetime);
 create index tickets_team_issue_type_idx on tickets (team_key, issue_type);
 create index tickets_due_date_idx on tickets (due_date);
 create index tickets_assignee_idx on tickets (team_key, assignee_display_name);
+create index tickets_team_priority_idx on tickets (team_key, priority);
 
 create table metrics_daily (
   team_key text not null references teams_config(team_key),

@@ -125,7 +125,7 @@ function jiraGetChangelog_(issueKey) {
 
 /** The field IDs every team config needs pulled from Jira, deduped, plus always-needed standard fields. */
 function buildJiraFieldList_(teamConfig) {
-  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels'];
+  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels', 'priority'];
   const custom = [
     teamConfig.resolved_date_field_id,
     teamConfig.assignee_field_id,

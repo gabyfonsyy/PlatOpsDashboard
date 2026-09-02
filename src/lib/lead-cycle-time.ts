@@ -39,7 +39,24 @@ export type LeadCycleTimeReport = {
   startColumnLabel: string;
   endColumnLabel: string;
   count: number;
+  /**
+   * For ST's Cycle Time specifically, this is the ACTUAL-WORK average only (out of To Do ->
+   * reached review) — the same span this field has always measured. `combinedAvgMinutes` below
+   * is actual + peer review, and IS this same value everywhere else (Lead Time, non-peer-review
+   * teams), so a reader who only looks at combinedAvgMinutes gets the right number regardless of
+   * team/metric.
+   */
   avgMinutes: number | null;
+  /** Average time IN For Peer Review (peer_review_cycles_json). Null except ST's Cycle Time. */
+  peerReviewAvgMinutes: number | null;
+  /** How many tickets contributed to peerReviewAvgMinutes. */
+  peerReviewCount: number;
+  /**
+   * avgMinutes + peerReviewAvgMinutes for ST's Cycle Time — the same number the team-page
+   * scorecard shows (see getLeadCycleTimeAverages), so the card and this deep-dive agree by
+   * construction. Equals avgMinutes everywhere peer review doesn't apply.
+   */
+  combinedAvgMinutes: number | null;
   topTickets: LeadCycleTimeTicket[];
   byAssignee: LeadCycleTimeRankRow[];
   byProduct: LeadCycleTimeRankRow[];
@@ -49,7 +66,8 @@ export type LeadCycleTimeReport = {
 const EMPTY_REPORT: LeadCycleTimeReport = {
   team: "", range: "month", period: "", metric: "lead", issueType: null, assigneeLabel: "Assignee",
   description: "", startColumnLabel: "Started", endColumnLabel: "Ended",
-  count: 0, avgMinutes: null, topTickets: [], byAssignee: [], byProduct: [], byLabel: [],
+  count: 0, avgMinutes: null, peerReviewAvgMinutes: null, peerReviewCount: 0, combinedAvgMinutes: null,
+  topTickets: [], byAssignee: [], byProduct: [], byLabel: [],
 };
 
 function round2(n: number): number {
@@ -71,6 +89,13 @@ export type SpanFields = {
   cycle_time_end: string | null;
 };
 
+/** One entry of a ticket's peer_review_cycles_json — see extractPeerReviewCyclesWithReviewer_ in gas/JiraSync.gs. */
+type PeerReviewCycleRaw = {
+  enteredAt?: string;
+  exitedAt?: string;
+  exitedToStatus?: string;
+};
+
 type TicketRow = {
   issue_key: string;
   issue_type: string | null;
@@ -83,10 +108,33 @@ type TicketRow = {
   labels: string | null;
   assigned_se: string | null;
   assigned_cod: string | null;
+  peer_review_cycles_json?: PeerReviewCycleRaw[] | null;
 };
 
 const SELECT_COLUMNS =
-  "issue_key,issue_type,created,first_out_of_backlog_todo,resolved_datetime,cycle_time_start,cycle_time_end,product,labels,assigned_se,assigned_cod";
+  "issue_key,issue_type,created,first_out_of_backlog_todo,resolved_datetime,cycle_time_start,cycle_time_end,product,labels,assigned_se,assigned_cod,peer_review_cycles_json";
+
+/**
+ * Sums the qualifying peer-review cycles on one ticket — same business rule as
+ * lib/peer-review.ts/lib/tool-assisted.ts's peerReviewFor: only cycles that exited to On Hold or
+ * For Checking count (a cycle that exited some other way, e.g. cancelled, is real but out of
+ * scope here), and an open cycle (no exitedAt yet) has no duration to contribute. Returns null
+ * rather than 0 when there were no qualifying cycles, so "never reviewed" and "reviewed in zero
+ * minutes" stay distinguishable — null is excluded from the average instead of dragging it down.
+ */
+function sumPeerReviewMinutes(cycles: PeerReviewCycleRaw[] | null | undefined): number | null {
+  if (!cycles || !cycles.length) return null;
+  let total = 0;
+  let count = 0;
+  for (const c of cycles) {
+    if (!c.enteredAt || !c.exitedAt) continue;
+    const exitedTo = (c.exitedToStatus || "").toLowerCase();
+    if (exitedTo !== "on hold" && exitedTo !== "for checking") continue;
+    total += minutesBetween(c.enteredAt, c.exitedAt);
+    count++;
+  }
+  return count ? round2(total) : null;
+}
 
 /**
  * Just the columns basisFor's duration()/endedAt() actually read. getLeadCycleTimeAverages runs on
@@ -96,6 +144,14 @@ const SELECT_COLUMNS =
  */
 const SPAN_ONLY_COLUMNS =
   "issue_key,created,first_out_of_backlog_todo,resolved_datetime,cycle_time_start,cycle_time_end";
+
+/**
+ * SPAN_ONLY_COLUMNS plus peer_review_cycles_json, for peer-review teams' Cycle Time decomposition
+ * (getPeerReviewCycleAverages) — the one span-average fetch that also needs the review-cycle
+ * payload. Kept separate from SPAN_ONLY_COLUMNS rather than added there so Lead Time and every
+ * non-peer-review team's fetch stays as small as before.
+ */
+const PEER_REVIEW_SPAN_COLUMNS = `${SPAN_ONLY_COLUMNS},peer_review_cycles_json`;
 
 /** PostgREST's per-response cap. Mirrors SUPABASE_MAX_ROWS_PER_REQUEST in lib/supabase.ts. */
 const PAGE_SIZE = 1000;
@@ -115,7 +171,8 @@ async function fetchSpanRowsParallel(
   dateColumn: string,
   startDate: string,
   endDate: string,
-  issueType?: string
+  issueType?: string,
+  columns: string = SPAN_ONLY_COLUMNS
 ): Promise<TicketRow[]> {
   const rangeStartUtc = new Date(`${startDate}T00:00:00Z`);
   rangeStartUtc.setUTCDate(rangeStartUtc.getUTCDate() - 1);
@@ -134,7 +191,7 @@ async function fetchSpanRowsParallel(
   const build = (head: boolean): any => {
     let q: any = getSupabaseClient()
       .from("tickets")
-      .select(SPAN_ONLY_COLUMNS, head ? { count: "exact", head: true } : undefined)
+      .select(columns, head ? { count: "exact", head: true } : undefined)
       .eq("team_key", teamKey)
       .not(dateColumn, "is", null)
       .gte(dateColumn, rangeStartUtc.toISOString())
@@ -164,6 +221,59 @@ async function fetchSpanRowsParallel(
 }
 
 /**
+ * Cycle Time for a peer-review team (ST), decomposed into actual-work vs. peer-review sums, for
+ * getLeadCycleTimeAverages' scorecard. Mirrors the drill-down's own decomposition in
+ * getLeadCycleTimeReport exactly — same population (cycle_time_end bucketed into the period), same
+ * two per-ticket measures — so the scorecard and the deep-dive it links to can never disagree.
+ *
+ * Separate from the shared RPC-or-fallback path above because peer_review_cycles_json is a jsonb
+ * column: summing it per-ticket is JS-side work, not something the lead_cycle_time_spans RPC (a
+ * plain SQL sum/count) does. Only ST pays this extra fetch; every other team/metric still goes
+ * through the cheap RPC path untouched.
+ */
+async function getPeerReviewCycleAverages(
+  teamKey: string,
+  startDate: string,
+  endDate: string,
+  issueType?: string
+): Promise<{ actualSum: number; actualCount: number; peerReviewSum: number; peerReviewCount: number }> {
+  const rows = await fetchSpanRowsParallel(
+    teamKey,
+    "cycle_time_end",
+    startDate,
+    endDate,
+    issueType,
+    PEER_REVIEW_SPAN_COLUMNS
+  );
+
+  let actualSum = 0;
+  let actualCount = 0;
+  let peerReviewSum = 0;
+  let peerReviewCount = 0;
+
+  for (const r of rows) {
+    const bucket = toManilaDateString(r.cycle_time_end);
+    if (!bucket || bucket < startDate || bucket > endDate) continue;
+
+    if (r.cycle_time_start && r.cycle_time_end) {
+      const minutes = minutesBetween(r.cycle_time_start, r.cycle_time_end);
+      if (isFinite(minutes)) {
+        actualSum += minutes;
+        actualCount++;
+      }
+    }
+
+    const reviewMinutes = sumPeerReviewMinutes(r.peer_review_cycles_json);
+    if (reviewMinutes !== null) {
+      peerReviewSum += reviewMinutes;
+      peerReviewCount++;
+    }
+  }
+
+  return { actualSum, actualCount, peerReviewSum, peerReviewCount };
+}
+
+/**
  * The three numbers this drill-down can be asked for, each defined exactly as gas/Aggregation.gs's
  * computeDailyBucket_ defines the scorecard it hangs off — so clicking a card opens a page that
  * measures the same thing, rather than a same-named number computed a different way.
@@ -174,11 +284,16 @@ async function fetchSpanRowsParallel(
  *                            The START is the same moment as the line above — cycle_time_start is
  *                            populated FROM first_out_of_backlog_todo (extractReviewCycleTimeRange_
  *                            in gas/JiraSync.gs takes it as backlogExitFallback), so only the END
- *                            differs. The end is the most recent transition into the ticket's
- *                            hand-off statuses: For Peer Review for backend-change types, or For
- *                            Checking / For Product Team for Investigations, plus Archived and
- *                            Rejected for every type. That completes the moment the ticket reaches
- *                            the stage, whether or not it is ever resolved.
+ *                            differs. The end is the ticket's hand-off into review: For Peer Review
+ *                            for backend-change types, or For Checking / For Product Team for
+ *                            Investigations — using the MOST RECENT such move, since bouncing back
+ *                            for more work and re-entering review is a genuinely later completion.
+ *                            Archived and Rejected apply on top for every type, but once a ticket
+ *                            reaches either one it's done — a LATER move between them (or back into
+ *                            one after already having gone terminal) is a reclassification, not more
+ *                            work, so that end uses the FIRST time the ticket went archived/rejected
+ *                            instead. Either way it's counted as soon as the ticket reaches that
+ *                            stage, independent of resolution.
  *
  * `dateColumn` is therefore also what the period filters on. Lead and non-peer-review cycle bucket
  * by resolution; ST cycle buckets by cycle_time_end, because a span that closed inside the period
@@ -208,7 +323,7 @@ export function basisFor(metric: LeadCycleTimeMetric, hasPeerReviewTracking: boo
       startColumnLabel: "Moved Out of To Do",
       endColumnLabel: "Reached Review",
       description:
-        "Time from when a ticket moved out of Backlog/To Do to the most recent time it reached For Peer Review (For Checking or For Product Team for Investigations), Archived, or Rejected. Counted as soon as it reaches that stage, independent of resolution.",
+        "Time from when a ticket moved out of Backlog/To Do to when it reached review — the most recent move into For Peer Review (For Checking or For Product Team for Investigations), or, once archived or rejected, the first time that happened. Counted as soon as it reaches that stage, independent of resolution.",
       duration: (r: SpanFields) =>
         r.cycle_time_start && r.cycle_time_end ? minutesBetween(r.cycle_time_start, r.cycle_time_end) : null,
       startedAt: (r: SpanFields) => r.cycle_time_start || "",
@@ -343,6 +458,31 @@ export async function getLeadCycleTimeReport(
       .map(([key, b]) => ({ key, avgMinutes: round2(b.sum / b.count), count: b.count }))
       .sort((a, b) => b.avgMinutes - a.avgMinutes);
 
+    const avgMinutes = withDuration.length
+      ? round2(withDuration.reduce((sum, x) => sum + x.minutes, 0) / withDuration.length)
+      : null;
+
+    // ST's Cycle Time only: decompose the same span into actual-work vs. time spent IN review,
+    // over the SAME ticket population withDuration already selected for the period, so this
+    // number and avgMinutes/topTickets/byAssignee etc. can never disagree about which tickets
+    // are in scope.
+    let peerReviewAvgMinutes: number | null = null;
+    let peerReviewCount = 0;
+    let combinedAvgMinutes = avgMinutes;
+    if (metric === "cycle" && teamConfig.has_peer_review_tracking) {
+      const reviewMinutesList = withDuration
+        .map((x) => sumPeerReviewMinutes(x.row.peer_review_cycles_json))
+        .filter((v): v is number => v !== null);
+      peerReviewCount = reviewMinutesList.length;
+      peerReviewAvgMinutes = peerReviewCount
+        ? round2(reviewMinutesList.reduce((sum, v) => sum + v, 0) / peerReviewCount)
+        : null;
+      combinedAvgMinutes =
+        avgMinutes !== null && peerReviewAvgMinutes !== null
+          ? round2(avgMinutes + peerReviewAvgMinutes)
+          : avgMinutes ?? peerReviewAvgMinutes;
+    }
+
     return {
       team, range, period, metric, issueType: issueType ?? null,
       assigneeLabel: backlogAgingAssigneeLabel(teamConfig),
@@ -350,9 +490,10 @@ export async function getLeadCycleTimeReport(
       startColumnLabel: basis.startColumnLabel,
       endColumnLabel: basis.endColumnLabel,
       count: withDuration.length,
-      avgMinutes: withDuration.length
-        ? round2(withDuration.reduce((sum, x) => sum + x.minutes, 0) / withDuration.length)
-        : null,
+      avgMinutes,
+      peerReviewAvgMinutes,
+      peerReviewCount,
+      combinedAvgMinutes,
       topTickets,
       byAssignee,
       byProduct,
@@ -389,6 +530,11 @@ export async function getLeadCycleTimeAverages(
   const { startDate, endDate } = resolvePeriodToDateRange(range, period);
   const teams = (await getTeams()).filter((t) => teamKeys.includes(t.team_key));
 
+  // Peer-review teams' Cycle Time is actual-work-average + peer-review-average, not a plain span
+  // average (see getPeerReviewCycleAverages) — computed separately below and kept OUT of the RPC/
+  // fallback accumulation for these teams so their cycle_sum/cycle_count never gets double-counted.
+  const peerReviewTeamKeys = new Set(teams.filter((t) => t.has_peer_review_tracking).map((t) => t.team_key));
+
   // Populated synchronously before the first await below, so the concurrent map cannot race two
   // identical fetches for the same key.
   const cache = new Map<string, Promise<TicketRow[]>>();
@@ -421,33 +567,60 @@ export async function getLeadCycleTimeAverages(
   );
 
   if (viaRpc.every((r) => r)) {
-    for (const r of viaRpc as { lead_sum: number; lead_count: number; cycle_sum: number; cycle_count: number }[]) {
+    teams.forEach((teamConfig, i) => {
+      const r = viaRpc[i] as { lead_sum: number; lead_count: number; cycle_sum: number; cycle_count: number };
       totals.lead.sum += Number(r.lead_sum) || 0;
       totals.lead.count += Number(r.lead_count) || 0;
-      totals.cycle.sum += Number(r.cycle_sum) || 0;
-      totals.cycle.count += Number(r.cycle_count) || 0;
-    }
-    return {
-      leadTimeAvgMinutes: totals.lead.count ? round2(totals.lead.sum / totals.lead.count) : null,
-      cycleTimeAvgMinutes: totals.cycle.count ? round2(totals.cycle.sum / totals.cycle.count) : null,
-    };
+      if (!peerReviewTeamKeys.has(teamConfig.team_key)) {
+        totals.cycle.sum += Number(r.cycle_sum) || 0;
+        totals.cycle.count += Number(r.cycle_count) || 0;
+      }
+    });
+  } else {
+    await Promise.all(
+      teams.flatMap((teamConfig) =>
+        (["lead", "cycle"] as const).map(async (metric) => {
+          // Peer-review teams' cycle contribution is handled by the dedicated decomposition below.
+          if (metric === "cycle" && peerReviewTeamKeys.has(teamConfig.team_key)) return;
+          const basis = basisFor(metric, teamConfig.has_peer_review_tracking);
+          const rows = await rowsFor(teamConfig.team_key, basis.dateColumn);
+          for (const r of rows) {
+            const bucket = toManilaDateString(basis.endedAt(r));
+            if (!bucket || bucket < startDate || bucket > endDate) continue;
+            const minutes = basis.duration(r);
+            if (minutes === null || !isFinite(minutes)) continue;
+            totals[metric].sum += minutes;
+            totals[metric].count++;
+          }
+        })
+      )
+    );
   }
 
+  // Peer-review teams' Cycle Time: sum of the actual-work average and the peer-review average.
+  // Folded into totals.cycle using the actual-work ticket count as the weight (falling back to the
+  // peer-review count when a period has review data but no completed actual spans) — the same
+  // ticket-count weighting the RPC/fallback path above already uses for every other team.
   await Promise.all(
-    teams.flatMap((teamConfig) =>
-      (["lead", "cycle"] as const).map(async (metric) => {
-        const basis = basisFor(metric, teamConfig.has_peer_review_tracking);
-        const rows = await rowsFor(teamConfig.team_key, basis.dateColumn);
-        for (const r of rows) {
-          const bucket = toManilaDateString(basis.endedAt(r));
-          if (!bucket || bucket < startDate || bucket > endDate) continue;
-          const minutes = basis.duration(r);
-          if (minutes === null || !isFinite(minutes)) continue;
-          totals[metric].sum += minutes;
-          totals[metric].count++;
+    teams
+      .filter((t) => peerReviewTeamKeys.has(t.team_key))
+      .map(async (teamConfig) => {
+        const { actualSum, actualCount, peerReviewSum, peerReviewCount } = await getPeerReviewCycleAverages(
+          teamConfig.team_key,
+          startDate,
+          endDate,
+          issueType
+        );
+        const actualAvg = actualCount ? actualSum / actualCount : null;
+        const peerReviewAvg = peerReviewCount ? peerReviewSum / peerReviewCount : null;
+        const combinedAvg =
+          actualAvg !== null && peerReviewAvg !== null ? actualAvg + peerReviewAvg : actualAvg ?? peerReviewAvg;
+        const weight = actualCount || peerReviewCount;
+        if (weight && combinedAvg !== null) {
+          totals.cycle.sum += combinedAvg * weight;
+          totals.cycle.count += weight;
         }
       })
-    )
   );
 
   return {

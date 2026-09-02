@@ -42,6 +42,11 @@ export const ANALYSIS_EXCLUDED_LABELS = [
   "decode",
   "routed-secops",
   "triage-complete",
+  // Added for the P1 SLA Compliance report — same rationale: triage-process bookkeeping, not
+  // subject matter.
+  "detailing-revisit",
+  "triage-round-1",
+  "triage-round-2",
 ];
 
 /**

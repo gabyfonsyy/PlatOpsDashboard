@@ -231,6 +231,13 @@ function deleteStHoldingTrigger_() {
  * peer-review extraction logic changes, to re-derive historical rows under the new logic) —
  * safe to just re-run: it deletes its own cursor on completion rather than a permanent
  * done-flag, so nothing needs resetting first.
+ *
+ * Needs a re-run after the 2026-09-02 fix to extractReviewCycleTimeRange_: previously a LATER
+ * transition between two terminal statuses (e.g. Archived -> Rejected, discovered via ST-85420)
+ * overwrote cycle_time_end with the reclassification date instead of keeping the original
+ * completion date, inflating cycle time for any ticket reclassified well after it first went
+ * archived/rejected. This rebackfill re-derives cycle_time_end (and cycle_time_start,
+ * peer_review_cycles_json) under the corrected first-terminal-wins logic.
  */
 const ST_PEER_REVIEW_BACKFILL_SINCE = '2025-01-01';
 const ST_PEER_REVIEW_CURSOR_KEY = 'ST_PEER_REVIEW_REBACKFILL_CURSOR';
@@ -698,5 +705,156 @@ function applyLabelsUpdates_(teamKey, year, keyToLabels) {
 function deleteLabelsRebackfillTrigger_() {
   ScriptApp.getProjectTriggers()
     .filter((t) => t.getHandlerFunction() === 'runLabelsRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
+ * Lightweight re-backfill for the `priority` column (added after most tickets were already
+ * synced — see migrateAddPriorityColumn in Setup.gs). Same shape as runLabelsRebackfill/
+ * runDueDateRebackfill: pulls only `created` + `priority` per ticket and patches just the
+ * priority cell in the existing RAW row, self-continuing across executions via per-team Script
+ * Property cursors. Run once from the editor after migrateAddPriorityColumn. Needed for the P1
+ * SLA Compliance report (lib/p1-sla.ts) to see tickets synced before this column existed — going
+ * forward, the regular sync fills it in on its own. Safe to re-run (clear the DONE_ props to
+ * force a full redo).
+ */
+const PRIORITY_REBACKFILL_CURSOR_PREFIX = 'PRIORITY_REBACKFILL_CURSOR_';
+const PRIORITY_REBACKFILL_DONE_PREFIX = 'PRIORITY_REBACKFILL_DONE_';
+
+function runPriorityRebackfill() {
+  const props = PropertiesService.getScriptProperties();
+  const teams = getActiveTeamsConfig_();
+
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    if (props.getProperty(PRIORITY_REBACKFILL_DONE_PREFIX + team.team_key)) continue;
+
+    const pageToken = props.getProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key) || undefined;
+    const jql = buildJqlBackfillFull_(team);
+
+    let page;
+    try {
+      page = jiraSearchIssues_(jql, pageToken, 100, ['created', 'priority']);
+    } catch (err) {
+      deletePriorityRebackfillTrigger_();
+      if (isExpiredPageTokenError_(err)) {
+        props.deleteProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key);
+        notifyFailure_(
+          `runPriorityRebackfill: page token expired for ${team.jira_project_key}, cursor reset`,
+          `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runPriorityRebackfill manually to restart ${team.jira_project_key} from the beginning.`
+        );
+        return;
+      }
+      notifyFailure_(`runPriorityRebackfill: Jira fetch failed for ${team.jira_project_key}`, err);
+      ScriptApp.newTrigger('runPriorityRebackfill').timeBased().after(5000).create();
+      return;
+    }
+
+    if (page.nextPageToken && page.nextPageToken === pageToken) {
+      notifyFailure_(`runPriorityRebackfill stalled for ${team.jira_project_key}`, 'nextPageToken did not advance — check Jira response.');
+      deletePriorityRebackfillTrigger_();
+      return;
+    }
+
+    // Group this page's priority updates by the ticket's created-year (RAW tabs are sharded by it).
+    const updatesByYear = {};
+    page.issues.forEach((issue) => {
+      const created = issue.fields && issue.fields.created;
+      if (!created) return;
+      const year = new Date(created).getFullYear();
+      (updatesByYear[year] = updatesByYear[year] || {})[issue.key] =
+        extractJiraFieldValue_(issue.fields.priority);
+    });
+    Object.keys(updatesByYear).forEach((year) => applyPriorityUpdates_(team.team_key, year, updatesByYear[year]));
+
+    if (page.nextPageToken && page.issues.length > 0) {
+      props.setProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key, page.nextPageToken);
+      deletePriorityRebackfillTrigger_();
+      ScriptApp.newTrigger('runPriorityRebackfill').timeBased().after(1000).create();
+      return;
+    }
+
+    props.setProperty(PRIORITY_REBACKFILL_DONE_PREFIX + team.team_key, nowIso_());
+    props.deleteProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key);
+  }
+
+  deletePriorityRebackfillTrigger_();
+  sendAlertEmail_(
+    'Priority re-backfill complete',
+    'All active teams have had RAW priority populated from Jira, in the Sheets (RAW_<team>_<year> tabs). ' +
+    'Now run runSupabaseMigration() (SupabaseMigration.gs) to push it into Supabase — see applyPriorityUpdates_ ' +
+    'for why this step deliberately does not dual-write Supabase itself.'
+  );
+}
+
+/**
+ * Patches the priority cell for the given issue keys in one RAW_<team>_<year> tab (single batched
+ * write). Sheets ONLY — deliberately does not also dual-write Supabase, unlike the regular
+ * incremental sync path (upsertRawTicketRow_ -> dualWriteTicketToSupabase_). Two things were tried
+ * and both failed, worth recording so a future change doesn't repeat them:
+ *
+ *   1. A partial {issue_key, priority} upsert. Confirmed by direct testing 2026-09-02: Postgres's
+ *      `INSERT ... ON CONFLICT DO UPDATE` validates NOT NULL constraints (and applies column
+ *      defaults) on the CANDIDATE insert row REGARDLESS of whether a conflict occurs and the
+ *      UPDATE branch is taken instead — so a partial upsert against `tickets` (many NOT NULL
+ *      columns with no default) fails with a NOT NULL violation even for a row confirmed to
+ *      already exist. A same-row-existence check doesn't make this safe; it's not possible to fix
+ *      by checking existence first.
+ *   2. A full row via sheetToObjects_ (every column) per ticket, to make the upsert always valid.
+ *      Correct in principle, but sheetToObjects_ reads the WHOLE year tab — repeating that read on
+ *      every ~100-issue JQL page (there can be 400+ pages for one team) made each execution slow
+ *      enough that Jira's nextPageToken expired before the next chained trigger could fire,
+ *      stalling the backfill entirely (confirmed twice, same failure point both times).
+ *
+ * The fix is architectural, not a cleverer patch: migrateTicketsYearToSupabase_ (SupabaseMigration.gs)
+ * already does exactly what full-row correctness requires — one sheetToObjects_ read per (team,
+ * year), not per page — because it runs ONCE per tab as its own migration step, not once per JQL
+ * page. So this function stays Sheets-only and fast (matching applyDueDateUpdates_/
+ * applyLabelsUpdates_), and runPriorityRebackfill's completion email says to run
+ * runSupabaseMigration() afterward to push the now-complete Sheets data into Supabase in one pass
+ * per tab — safe to re-run, every upsert already targets issue_key via on_conflict.
+ */
+function applyPriorityUpdates_(teamKey, year, keyToPriority) {
+  const sheet = getOrCreateRawTab_(teamKey, year);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const keyCol = headers.indexOf('issue_key');
+  const priorityCol = headers.indexOf('priority');
+  if (keyCol === -1 || priorityCol === -1) return;
+
+  const keys = sheet.getRange(2, keyCol + 1, lastRow - 1, 1).getValues();
+  const priorities = sheet.getRange(2, priorityCol + 1, lastRow - 1, 1).getValues();
+  let changed = false;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i][0];
+    if (k && Object.prototype.hasOwnProperty.call(keyToPriority, k)) {
+      priorities[i][0] = keyToPriority[k];
+      changed = true;
+    }
+  }
+  if (changed) sheet.getRange(2, priorityCol + 1, priorities.length, 1).setValues(priorities);
+}
+
+/**
+ * Clears the DONE_/CURSOR_ properties for every active team so the next runPriorityRebackfill call
+ * does a full redo instead of skipping teams already marked complete — needed after the
+ * applyPriorityUpdates_ fix above, since any team that finished (or partially finished) under the
+ * old partial-upsert logic may have silently failed the Supabase side for some tickets. Mirrors
+ * resetDeDevResolvedRebackfill exactly. Run this once, then run runPriorityRebackfill.
+ */
+function resetPriorityRebackfill() {
+  const props = PropertiesService.getScriptProperties();
+  getActiveTeamsConfig_().forEach((team) => {
+    props.deleteProperty(PRIORITY_REBACKFILL_DONE_PREFIX + team.team_key);
+    props.deleteProperty(PRIORITY_REBACKFILL_CURSOR_PREFIX + team.team_key);
+  });
+  deletePriorityRebackfillTrigger_();
+  Logger.log('resetPriorityRebackfill: cleared. Run runPriorityRebackfill next.');
+}
+
+function deletePriorityRebackfillTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runPriorityRebackfill')
     .forEach((t) => ScriptApp.deleteTrigger(t));
 }
