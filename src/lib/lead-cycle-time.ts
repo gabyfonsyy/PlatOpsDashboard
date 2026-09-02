@@ -1,7 +1,16 @@
 import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
-import { getTeams, backlogAgingAssignee, backlogAgingAssigneeLabel, excludedIssueTypes, isExcludedIssueType } from "@/lib/teams";
+import {
+  getTeams,
+  backlogAgingAssignee,
+  backlogAgingAssigneeLabel,
+  excludedIssueTypes,
+  isExcludedIssueType,
+  type TeamConfig,
+} from "@/lib/teams";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
+import { shiftPeriod, type RangeType } from "@/lib/date-ranges";
 import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
+import { BREAKDOWN_TICKET_LIMIT } from "@/lib/ticket-breakdowns";
 
 export type LeadCycleTimeMetric = "lead" | "cycle";
 
@@ -109,10 +118,15 @@ type TicketRow = {
   assigned_se: string | null;
   assigned_cod: string | null;
   peer_review_cycles_json?: PeerReviewCycleRaw[] | null;
+  /** Lead Time deep-dive only (see getLeadTimeDeepDive) — ignored by the Lead/Cycle Time average
+   * and top-tickets paths above. Same column lib/ticket-breakdowns.ts's On Hold report reads. */
+  total_on_hold_minutes?: number | string | null;
+  /** Lead Time deep-dive only — same shape as lib/p1-sla.ts's holding_reasons_json. */
+  holding_reasons_json?: unknown;
 };
 
 const SELECT_COLUMNS =
-  "issue_key,issue_type,created,first_out_of_backlog_todo,resolved_datetime,cycle_time_start,cycle_time_end,product,labels,assigned_se,assigned_cod,peer_review_cycles_json";
+  "issue_key,issue_type,created,first_out_of_backlog_todo,resolved_datetime,cycle_time_start,cycle_time_end,product,labels,assigned_se,assigned_cod,peer_review_cycles_json,total_on_hold_minutes,holding_reasons_json";
 
 /**
  * Sums the qualifying peer-review cycles on one ticket — same business rule as
@@ -627,4 +641,718 @@ export async function getLeadCycleTimeAverages(
     leadTimeAvgMinutes: totals.lead.count ? round2(totals.lead.sum / totals.lead.count) : null,
     cycleTimeAvgMinutes: totals.cycle.count ? round2(totals.cycle.sum / totals.cycle.count) : null,
   };
+}
+
+// ==================================================================================
+// Lead Time deep-dive (metric === "lead" only) — pulse, trend, distribution, stage
+// breakdown, breakdowns by work type/product, long-running work, and a filterable
+// ticket detail table. Cycle Time keeps using getLeadCycleTimeReport above unchanged.
+//
+// Team-agnostic by construction: every function here takes `team`/`teamConfig` as a
+// parameter and the only per-team variation is has_peer_review_tracking (which only
+// changes basisFor's description text for "lead", never the calculation) — so this
+// applies identically across every team in TEAMS_CONFIG (SE, DBA, DevOps, ST, ...),
+// the same way the rest of this file already does.
+// ==================================================================================
+
+function round4(n: number): number {
+  return Math.round(n * 10000) / 10000;
+}
+
+function pctDelta(current: number | null, previous: number | null): number | null {
+  if (current === null || previous === null || previous === 0) return null;
+  return round4((current - previous) / previous);
+}
+
+/** Linear-interpolation percentile (matches numpy's default) over an ascending-sorted array. */
+function percentile(sortedAsc: number[], p: number): number | null {
+  if (!sortedAsc.length) return null;
+  if (sortedAsc.length === 1) return round2(sortedAsc[0]);
+  const idx = (p / 100) * (sortedAsc.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return round2(sortedAsc[lo]);
+  return round2(sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo));
+}
+
+function medianOf(sortedAsc: number[]): number | null {
+  return percentile(sortedAsc, 50);
+}
+
+/** holding_reasons_json is an array of plain reason strings, same shape lib/p1-sla.ts reads. */
+function holdingReasonsOfRow(json: unknown): string[] {
+  const entries = Array.isArray(json) ? json : [];
+  return entries
+    .map((e) => (typeof e === "string" ? e : String((e as { reason?: unknown })?.reason ?? "")))
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Same day-bucketing scheme as lib/p1-sla.ts's bucketKeyFor/enumerateBuckets — duplicated rather
+ * than imported per this codebase's convention that each report module owns its own small
+ * aggregation helpers (see e.g. every report file's own local round2/round4).
+ */
+function leadTimeBucketKeyFor(range: string, dateIso: string): string {
+  if (range === "year") return dateIso.slice(0, 7);
+  if (range === "quarter") {
+    const d = new Date(`${dateIso}T00:00:00Z`);
+    const day = d.getUTCDay();
+    d.setUTCDate(d.getUTCDate() - ((day + 6) % 7)); // back to Monday
+    return d.toISOString().slice(0, 10);
+  }
+  return dateIso; // week/month ranges: daily
+}
+
+function leadTimeEnumerateBuckets(range: string, startDate: string, endDate: string): string[] {
+  const buckets: string[] = [];
+  const end = new Date(`${endDate}T00:00:00Z`);
+
+  if (range === "year") {
+    const cursor = new Date(`${startDate}T00:00:00Z`);
+    cursor.setUTCDate(1);
+    while (cursor <= end) {
+      buckets.push(cursor.toISOString().slice(0, 7));
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    }
+    return buckets;
+  }
+
+  const cursor = new Date(`${startDate}T00:00:00Z`);
+  const stepDays = range === "quarter" ? 7 : 1;
+  if (range === "quarter") {
+    const day = cursor.getUTCDay();
+    cursor.setUTCDate(cursor.getUTCDate() - ((day + 6) % 7));
+  }
+  while (cursor <= end) {
+    buckets.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + stepDays);
+  }
+  return buckets;
+}
+
+/** Fixed ranges per the brief: <1, 1-2, 3-5, 6-10, 11-20, >20 days. Half-open in days-elapsed. */
+const DISTRIBUTION_BUCKETS: { label: string; minDays: number; maxDays: number | null }[] = [
+  { label: "< 1 day", minDays: 0, maxDays: 1 },
+  { label: "1–2 days", minDays: 1, maxDays: 3 },
+  { label: "3–5 days", minDays: 3, maxDays: 6 },
+  { label: "6–10 days", minDays: 6, maxDays: 11 },
+  { label: "11–20 days", minDays: 11, maxDays: 21 },
+  { label: "> 20 days", minDays: 21, maxDays: null },
+];
+
+export type LeadTimePulse = {
+  count: number;
+  medianMinutes: number | null;
+  avgMinutes: number | null;
+  p75Minutes: number | null;
+  /** Null below a 10-ticket sample — not a meaningful long-tail read on a handful of tickets. */
+  p90Minutes: number | null;
+};
+
+type LeadTimeMetricDelta = { current: number | null; previous: number | null; deltaPct: number | null };
+
+export type LeadTimeComparison = {
+  count: { current: number; previous: number; deltaPct: number | null };
+  medianMinutes: LeadTimeMetricDelta;
+  avgMinutes: LeadTimeMetricDelta;
+  p90Minutes: LeadTimeMetricDelta;
+};
+
+export type LeadTimeInsight = { text: { professional: string; gaby: string }; tone: "positive" | "watch" | "negative" };
+export type LeadTimePositiveHighlight = { label: string; detail: string };
+
+export type LeadTimeTrendPoint = { bucket: string; count: number; medianMinutes: number | null; avgMinutes: number | null };
+
+export type LeadTimeDistributionBucket = { label: string; minDays: number; maxDays: number | null; count: number; share: number | null };
+
+export type LeadTimePercentiles = {
+  p50: number | null;
+  p75: number | null;
+  /** Null below a 10-ticket sample. */
+  p90: number | null;
+  /** Null below a 20-ticket sample. */
+  p95: number | null;
+};
+
+export type LeadTimeBreakdownRow = {
+  key: string;
+  count: number;
+  medianMinutes: number | null;
+  avgMinutes: number | null;
+  p75Minutes: number | null;
+  p90Minutes: number | null;
+  /** Tickets in this group above the report's long-running threshold (see longRunningThreshold). */
+  longRunningCount: number;
+};
+
+export type LeadTimeFlowStage = {
+  key: "backlogWait" | "activeAndReview";
+  label: string;
+  avgMinutes: number | null;
+  medianMinutes: number | null;
+  shareOfLeadTime: number | null;
+  count: number;
+};
+
+export type LeadTimeFlow = {
+  /** False when first_out_of_backlog_todo isn't populated for enough of this period's tickets. */
+  available: boolean;
+  stages: LeadTimeFlowStage[];
+  waitingAvgMinutes: number | null;
+  waitingMedianMinutes: number | null;
+  waitingShareOfLeadTime: number | null;
+  activeAvgMinutes: number | null;
+  activeMedianMinutes: number | null;
+  /** False when total_on_hold_minutes is never populated (all null/zero) for this population. */
+  waitingDataAvailable: boolean;
+};
+
+export type LeadTimeOutlier = {
+  issueKey: string;
+  issueType: string;
+  assignee: string;
+  product: string;
+  labels: string;
+  createdAt: string;
+  resolvedAt: string;
+  minutes: number;
+  vsMedianMinutes: number | null;
+  vsMedianPct: number | null;
+  holdingReasons: string[];
+};
+
+export type LeadTimePattern = {
+  dimension: "Work Type" | "Product";
+  key: string;
+  count: number;
+  medianMinutes: number | null;
+  p90Minutes: number | null;
+};
+
+export type LeadTimeTicketRow = {
+  issueKey: string;
+  issueType: string;
+  assignee: string;
+  product: string;
+  labels: string;
+  createdAt: string;
+  resolvedAt: string;
+  minutes: number;
+  /** Null when total_on_hold_minutes isn't populated for this ticket. */
+  waitingMinutes: number | null;
+  activeMinutes: number | null;
+  vsMedianMinutes: number | null;
+};
+
+export type LeadTimeDeepDiveReport = {
+  team: string;
+  range: string;
+  period: string;
+  issueType: string | null;
+  assigneeLabel: string;
+  description: string;
+  pulse: LeadTimePulse;
+  comparison: LeadTimeComparison | null;
+  insights: LeadTimeInsight[];
+  positiveHighlights: LeadTimePositiveHighlight[];
+  trend: LeadTimeTrendPoint[];
+  distribution: LeadTimeDistributionBucket[];
+  percentiles: LeadTimePercentiles;
+  byWorkType: LeadTimeBreakdownRow[];
+  byProduct: LeadTimeBreakdownRow[];
+  flow: LeadTimeFlow;
+  /** Displayed table — capped to the top 20 by duration. */
+  longRunning: LeadTimeOutlier[];
+  /** True count of tickets above the long-running threshold, uncapped — see longRunning's cap. */
+  longRunningTotalCount: number;
+  patterns: LeadTimePattern[];
+  tickets: LeadTimeTicketRow[];
+  ticketsTotalCount: number;
+};
+
+function emptyDeepDive(team: string, range: string, period: string, issueType?: string): LeadTimeDeepDiveReport {
+  return {
+    team, range, period, issueType: issueType ?? null,
+    assigneeLabel: "Assignee",
+    description: "",
+    pulse: { count: 0, medianMinutes: null, avgMinutes: null, p75Minutes: null, p90Minutes: null },
+    comparison: null,
+    insights: [],
+    positiveHighlights: [],
+    trend: [],
+    distribution: [],
+    percentiles: { p50: null, p75: null, p90: null, p95: null },
+    byWorkType: [],
+    byProduct: [],
+    flow: {
+      available: false, stages: [], waitingAvgMinutes: null, waitingMedianMinutes: null,
+      waitingShareOfLeadTime: null, activeAvgMinutes: null, activeMedianMinutes: null, waitingDataAvailable: false,
+    },
+    longRunning: [],
+    longRunningTotalCount: 0,
+    patterns: [],
+    tickets: [],
+    ticketsTotalCount: 0,
+  };
+}
+
+/** Just enough of one period's Lead Time numbers to diff against another — mirrors lib/p1-sla.ts's summarizePeriod. */
+async function summarizeLeadTimePeriod(
+  team: string,
+  range: string,
+  period: string,
+  issueType: string | undefined,
+  teamConfig: TeamConfig
+): Promise<{ count: number; medianMinutes: number | null; avgMinutes: number | null; p90Minutes: number | null }> {
+  const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+  const basis = basisFor("lead", teamConfig.has_peer_review_tracking);
+  const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
+  const minutes = rows
+    .filter((r) => !isExcludedIssueType(team, r.issue_type))
+    .filter((r) => {
+      const bucketIso = toManilaDateString(basis.endedAt(r));
+      return bucketIso && bucketIso >= startDate && bucketIso <= endDate;
+    })
+    .map((r) => basis.duration(r))
+    .filter((v): v is number => v !== null && isFinite(v));
+  const sorted = minutes.slice().sort((a, b) => a - b);
+  return {
+    count: minutes.length,
+    medianMinutes: medianOf(sorted),
+    avgMinutes: minutes.length ? round2(minutes.reduce((s, v) => s + v, 0) / minutes.length) : null,
+    p90Minutes: minutes.length >= 10 ? percentile(sorted, 90) : null,
+  };
+}
+
+function fmtDaysShort(minutes: number): string {
+  return `${(minutes / 1440).toFixed(1)}d`;
+}
+
+/**
+ * Rules-based, over the report's own already-computed numbers — same pattern as lib/p1-sla.ts's
+ * buildInsights: never free-text/LLM-generated, and a rule only fires when its specific data
+ * condition is true. Ordered: direction, long tail, concentration, waiting/flow, volume
+ * relationship, recurring pattern — capped at 5.
+ */
+/**
+ * Text for each insight condition, in both registers. Professional stays exactly as it always
+ * has; Gaby is the "Gaby voice" tone spec (2026-09-02) — headline first, plain-English "so what",
+ * hedged rather than causal language, light/sparing personality. Both are always computed (it's a
+ * pure string template over numbers already in hand, not a second data fetch) so InsightsPanel
+ * can pick between them on the client with no round trip — see its doc comment for why that
+ * replaced picking the register here. This only ever restyles a condition that already fired — it
+ * does not lower any threshold or add a condition, so "say nothing when nothing stands out" holds
+ * in both registers identically.
+ */
+function buildLeadTimeInsights(report: {
+  pulse: LeadTimePulse;
+  comparison: LeadTimeComparison | null;
+  trend: LeadTimeTrendPoint[];
+  byWorkType: LeadTimeBreakdownRow[];
+  flow: LeadTimeFlow;
+  patterns: LeadTimePattern[];
+  longRunningTotalCount: number;
+}): LeadTimeInsight[] {
+  const insights: LeadTimeInsight[] = [];
+  const c = report.comparison;
+
+  if (c && c.medianMinutes.current !== null && c.medianMinutes.previous !== null && c.medianMinutes.deltaPct !== null && Math.abs(c.medianMinutes.deltaPct) >= 0.05) {
+    const improved = c.medianMinutes.deltaPct < 0; // Lead Time: lower is always the improvement
+    const pct = Math.round(Math.abs(c.medianMinutes.deltaPct) * 1000) / 10;
+    const prev = fmtDaysShort(c.medianMinutes.previous);
+    const curr = fmtDaysShort(c.medianMinutes.current);
+    insights.push({
+      text: {
+        professional: `Median Lead Time ${improved ? "improved" : "increased"} from ${prev} to ${curr} (${improved ? "-" : "+"}${pct}%) vs the previous period.`,
+        gaby: improved
+          ? `**Lead Time is getting better 👀** Median dropped from **${prev} → ${curr}** (${pct}% faster), so the typical ticket is moving quicker than last period.`
+          : `**Lead Time slowed down this period.** Median went from **${prev} → ${curr}** (${pct}% slower) — worth a look at what changed.`,
+      },
+      tone: improved ? "positive" : "negative",
+    });
+  }
+
+  if (report.pulse.medianMinutes !== null && report.pulse.p90Minutes !== null && report.pulse.p90Minutes > report.pulse.medianMinutes * 2) {
+    const p90 = fmtDaysShort(report.pulse.p90Minutes);
+    const median = fmtDaysShort(report.pulse.medianMinutes);
+    insights.push({
+      text: {
+        professional: `P90 Lead Time is ${p90} despite a ${median} median — a long tail of slow-moving work is pulling the average up.`,
+        gaby: `**👀 Most tickets are quick, but a few are dragging things out.** P90 sits at **${p90}** against a **${median}** median — a small group of slow-moving tickets is pulling the tail long.`,
+      },
+      tone: "watch",
+    });
+  }
+
+  const topLongRunning = report.byWorkType.filter((r) => r.longRunningCount > 0).sort((a, b) => b.longRunningCount - a.longRunningCount)[0];
+  // The TRUE count above the long-running threshold, not report.longRunning.length (that array is
+  // capped to the top 20 for the outliers table — using it here could make a work type's own count
+  // exceed the "total" it's being compared against, e.g. "28 of the 20 long-running tickets").
+  const totalLongRunning = report.longRunningTotalCount;
+  if (topLongRunning && totalLongRunning >= 3 && topLongRunning.longRunningCount / totalLongRunning >= 0.4) {
+    insights.push({
+      text: {
+        professional: `"${topLongRunning.key}" accounts for ${topLongRunning.longRunningCount} of the ${totalLongRunning} unusually long-running tickets this period.`,
+        gaby: `**🚩 "${topLongRunning.key}" is doing more than its share of the damage.** It accounts for **${topLongRunning.longRunningCount} of the ${totalLongRunning}** unusually long-running tickets this period — that's the group I'd dig into first.`,
+      },
+      tone: "watch",
+    });
+  }
+
+  if (report.flow.waitingDataAvailable && report.flow.waitingShareOfLeadTime !== null && report.flow.waitingShareOfLeadTime >= 0.25) {
+    const pct = Math.round(report.flow.waitingShareOfLeadTime * 1000) / 10;
+    insights.push({
+      text: {
+        professional: `Waiting/on-hold time accounts for ${pct}% of total Lead Time on average — a high-waiting ticket isn't necessarily slow to work on.`,
+        gaby: `**🫠 A big chunk of Lead Time is just waiting.** Waiting/on-hold makes up **${pct}%** of it on average — translation: a ticket that "took days" might only have had someone actively working it for a fraction of that.`,
+      },
+      tone: "watch",
+    });
+  } else {
+    const backlogStage = report.flow.stages.find((s) => s.key === "backlogWait");
+    if (backlogStage && backlogStage.shareOfLeadTime !== null && backlogStage.shareOfLeadTime >= 0.4) {
+      const pct = Math.round(backlogStage.shareOfLeadTime * 1000) / 10;
+      insights.push({
+        text: {
+          professional: `Backlog/queue time accounts for ${pct}% of total Lead Time — tickets spend meaningful time waiting before work starts.`,
+          gaby: `**⏸️ Tickets are sitting before anyone even starts.** Backlog/queue time is **${pct}%** of Lead Time — that's time spent waiting to be picked up, not being worked.`,
+        },
+        tone: "watch",
+      });
+    }
+  }
+
+  const busiest = report.trend.length > 2 ? report.trend.slice().sort((a, b) => b.count - a.count)[0] : null;
+  if (busiest && busiest.count > 0 && report.pulse.medianMinutes !== null && busiest.medianMinutes !== null && busiest.medianMinutes > report.pulse.medianMinutes * 1.3) {
+    const median = fmtDaysShort(busiest.medianMinutes);
+    insights.push({
+      text: {
+        professional: `Lead Time ran higher during the highest-volume period in this range (${busiest.count} completed, ${median} median) — a possible volume/throughput pattern, not necessarily causal.`,
+        gaby: `**Busier period, slower tickets — could be related.** The highest-volume stretch (**${busiest.count}** completed) also ran a **${median}** median, above the overall pace. Possible volume/throughput effect — not enough here to call it causal, but worth watching.`,
+      },
+      tone: "watch",
+    });
+  }
+
+  if (report.patterns.length) {
+    const p = report.patterns[0];
+    const dimensionLabel = p.dimension === "Work Type" ? "Work type" : "Product";
+    const median = fmtDaysShort(p.medianMinutes ?? 0);
+    const smallSample = p.count < 10;
+    insights.push({
+      text: {
+        professional: `Recurring pattern: ${p.dimension === "Work Type" ? "work type" : "product"} "${p.key}" (${p.count} tickets) runs a ${median} median Lead Time, notably above the overall median.`,
+        gaby: `**A pattern worth knowing about.** ${dimensionLabel} "${p.key}" (**${p.count}** tickets) consistently runs a **${median}** median — notably above the overall pace.${
+          smallSample ? " Small sample, so treat this as a signal rather than a conclusion," : " Worth investigating —"
+        } this is the kind of thing worth digging into if it keeps showing up.`,
+      },
+      tone: "watch",
+    });
+  }
+
+  if (!insights.length && report.pulse.count > 0) {
+    insights.push({
+      text: {
+        professional: "Lead Time is stable and consistent this period — no significant shifts or long-tail concentration detected.",
+        gaby: "**Nothing jumping out this period.** Lead Time's steady — no long tail, no volume spike, no recurring slow pattern. Good news, not much to report.",
+      },
+      tone: "positive",
+    });
+  }
+
+  return insights.slice(0, 5);
+}
+
+function buildLeadTimePositiveHighlights(report: {
+  comparison: LeadTimeComparison | null;
+  byWorkType: LeadTimeBreakdownRow[];
+  byProduct: LeadTimeBreakdownRow[];
+  flow: LeadTimeFlow;
+}): LeadTimePositiveHighlight[] {
+  const highlights: LeadTimePositiveHighlight[] = [];
+  const c = report.comparison;
+
+  if (c && c.medianMinutes.deltaPct !== null && c.medianMinutes.deltaPct <= -0.05) {
+    highlights.push({
+      label: "Faster delivery",
+      detail: `Median Lead Time down ${Math.round(Math.abs(c.medianMinutes.deltaPct) * 1000) / 10}% vs the previous period.`,
+    });
+  }
+
+  const consistent = [...report.byWorkType, ...report.byProduct]
+    .filter((r) => r.count >= 5 && r.medianMinutes !== null && r.medianMinutes > 0 && r.p90Minutes !== null)
+    .sort((a, b) => a.p90Minutes! / a.medianMinutes! - b.p90Minutes! / b.medianMinutes!)[0];
+  if (consistent) {
+    highlights.push({ label: "Most consistent", detail: `${consistent.key} — ${consistent.count} tickets, tight spread between median and P90 Lead Time.` });
+  }
+
+  if (report.flow.waitingDataAvailable && report.flow.waitingShareOfLeadTime !== null && report.flow.waitingShareOfLeadTime < 0.15) {
+    highlights.push({ label: "Low waiting time", detail: `Waiting/on-hold time is only ${Math.round(report.flow.waitingShareOfLeadTime * 1000) / 10}% of total Lead Time.` });
+  }
+
+  return highlights.slice(0, 3);
+}
+
+/**
+ * The Lead Time drill-down's full pulse-to-details report — median/avg/P75/P90, trend, a
+ * distribution histogram, breakdowns by work type and product (median/P75/P90, not just avg),
+ * a Created->backlog-exit->resolved stage split, waiting-vs-active time (from
+ * total_on_hold_minutes), long-running/outlier tickets, recurring patterns, and a filterable
+ * per-ticket table. Same population as getLeadCycleTimeReport's "lead" metric (basisFor("lead",
+ * ...), gated on resolved_datetime falling in the period) so this reconciles with the scorecard
+ * and with Cycle Time's own drill-down by construction.
+ */
+export async function getLeadTimeDeepDive(
+  team: string,
+  range: string,
+  period: string,
+  issueType?: string
+): Promise<LeadTimeDeepDiveReport> {
+  try {
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const teamConfig = (await getTeams()).find((t) => t.team_key === team);
+    if (!teamConfig) throw new Error(`Unknown team: ${team}`);
+
+    const basis = basisFor("lead", teamConfig.has_peer_review_tracking);
+    const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
+
+    const withDuration = rows
+      .filter((r) => !isExcludedIssueType(team, r.issue_type))
+      .filter((r) => {
+        const bucketIso = toManilaDateString(basis.endedAt(r));
+        return bucketIso && bucketIso >= startDate && bucketIso <= endDate;
+      })
+      .map((r) => ({ row: r, minutes: basis.duration(r) }))
+      .filter((x): x is { row: TicketRow; minutes: number } => x.minutes !== null && isFinite(x.minutes));
+
+    const count = withDuration.length;
+    const minutesSorted = withDuration.map((x) => x.minutes).sort((a, b) => a - b);
+
+    const medianMinutes = medianOf(minutesSorted);
+    const avgMinutes = count ? round2(minutesSorted.reduce((s, v) => s + v, 0) / count) : null;
+    const p75Minutes = percentile(minutesSorted, 75);
+    const p90Minutes = count >= 10 ? percentile(minutesSorted, 90) : null;
+    const p95Minutes = count >= 20 ? percentile(minutesSorted, 95) : null;
+
+    const pulse: LeadTimePulse = { count, medianMinutes, avgMinutes, p75Minutes, p90Minutes };
+    const percentiles: LeadTimePercentiles = { p50: medianMinutes, p75: p75Minutes, p90: p90Minutes, p95: p95Minutes };
+
+    const distribution: LeadTimeDistributionBucket[] = DISTRIBUTION_BUCKETS.map((b) => {
+      const c = withDuration.filter((x) => {
+        const days = x.minutes / 1440;
+        return days >= b.minDays && (b.maxDays === null || days < b.maxDays);
+      }).length;
+      return { label: b.label, minDays: b.minDays, maxDays: b.maxDays, count: c, share: count ? round4(c / count) : null };
+    });
+
+    // "Long-running": above P90 when the sample supports one, else 2x the median.
+    const longRunningThreshold = p90Minutes ?? (medianMinutes !== null ? medianMinutes * 2 : null);
+
+    const buckets = leadTimeEnumerateBuckets(range, startDate, endDate);
+    const byBucket = new Map<string, { count: number; sum: number; values: number[] }>();
+    for (const b of buckets) byBucket.set(b, { count: 0, sum: 0, values: [] });
+    for (const x of withDuration) {
+      const iso = toManilaDateString(basis.endedAt(x.row));
+      if (!iso) continue;
+      const b = byBucket.get(leadTimeBucketKeyFor(range, iso));
+      if (!b) continue;
+      b.count++;
+      b.sum += x.minutes;
+      b.values.push(x.minutes);
+    }
+    const trend: LeadTimeTrendPoint[] = buckets.map((key) => {
+      const b = byBucket.get(key)!;
+      return {
+        bucket: key,
+        count: b.count,
+        medianMinutes: medianOf(b.values.slice().sort((a, c) => a - c)),
+        avgMinutes: b.count ? round2(b.sum / b.count) : null,
+      };
+    });
+
+    const breakdownBy = (keyFn: (r: TicketRow) => string): LeadTimeBreakdownRow[] => {
+      const groups = new Map<string, number[]>();
+      for (const x of withDuration) {
+        const key = keyFn(x.row) || "(none)";
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(x.minutes);
+      }
+      return Array.from(groups.entries())
+        .map(([key, values]) => {
+          const sorted = values.slice().sort((a, b) => a - b);
+          return {
+            key,
+            count: values.length,
+            medianMinutes: medianOf(sorted),
+            avgMinutes: round2(values.reduce((s, v) => s + v, 0) / values.length),
+            p75Minutes: percentile(sorted, 75),
+            p90Minutes: values.length >= 10 ? percentile(sorted, 90) : null,
+            longRunningCount: longRunningThreshold !== null ? values.filter((v) => v > longRunningThreshold).length : 0,
+          };
+        })
+        .sort((a, b) => b.count - a.count); // impact (volume) first, not just avg
+    };
+
+    const byWorkType = breakdownBy((r) => r.issue_type || "(none)");
+    const byProduct = breakdownBy((r) => r.product || "(none)");
+
+    // Flow: Created -> first_out_of_backlog_todo -> Resolved. Requires the majority of this
+    // period's tickets to carry first_out_of_backlog_todo, or the split isn't representative.
+    const flowRows = withDuration.filter((x) => x.row.first_out_of_backlog_todo);
+    const flowAvailable = flowRows.length > 0 && flowRows.length >= count * 0.5;
+    const backlogWaitValues = flowAvailable
+      ? flowRows.map((x) => minutesBetween(x.row.created, x.row.first_out_of_backlog_todo!)).filter((v) => isFinite(v) && v >= 0)
+      : [];
+    const activeReviewValues = flowAvailable
+      ? flowRows.map((x) => minutesBetween(x.row.first_out_of_backlog_todo!, x.row.resolved_datetime!)).filter((v) => isFinite(v) && v >= 0)
+      : [];
+    const backlogWaitAvg = backlogWaitValues.length ? round2(backlogWaitValues.reduce((s, v) => s + v, 0) / backlogWaitValues.length) : null;
+    const activeReviewAvg = activeReviewValues.length ? round2(activeReviewValues.reduce((s, v) => s + v, 0) / activeReviewValues.length) : null;
+    const totalFlowAvg = (backlogWaitAvg ?? 0) + (activeReviewAvg ?? 0);
+
+    const stages: LeadTimeFlowStage[] = flowAvailable
+      ? [
+          {
+            key: "backlogWait",
+            label: "Backlog / Queue Time — Created to Moved Out of To Do",
+            avgMinutes: backlogWaitAvg,
+            medianMinutes: medianOf(backlogWaitValues.slice().sort((a, b) => a - b)),
+            shareOfLeadTime: totalFlowAvg ? round4((backlogWaitAvg ?? 0) / totalFlowAvg) : null,
+            count: backlogWaitValues.length,
+          },
+          {
+            key: "activeAndReview",
+            label: "Active + Review Time — Moved Out of To Do to Resolved",
+            avgMinutes: activeReviewAvg,
+            medianMinutes: medianOf(activeReviewValues.slice().sort((a, b) => a - b)),
+            shareOfLeadTime: totalFlowAvg ? round4((activeReviewAvg ?? 0) / totalFlowAvg) : null,
+            count: activeReviewValues.length,
+          },
+        ]
+      : [];
+
+    const holdValues = withDuration
+      .map((x) => (x.row.total_on_hold_minutes !== null && x.row.total_on_hold_minutes !== undefined ? Number(x.row.total_on_hold_minutes) : null))
+      .filter((v): v is number => v !== null && isFinite(v));
+    const waitingDataAvailable = holdValues.some((v) => v > 0);
+    const waitingAvgMinutes = holdValues.length ? round2(holdValues.reduce((s, v) => s + v, 0) / holdValues.length) : null;
+    const waitingMedianMinutes = medianOf(holdValues.slice().sort((a, b) => a - b));
+    const waitingShareOfLeadTime = waitingDataAvailable && waitingAvgMinutes !== null && avgMinutes ? round4(waitingAvgMinutes / avgMinutes) : null;
+    const activeValues = withDuration.map((x) => {
+      const hold = x.row.total_on_hold_minutes !== null && x.row.total_on_hold_minutes !== undefined ? Number(x.row.total_on_hold_minutes) : 0;
+      return Math.max(0, x.minutes - (isFinite(hold) ? hold : 0));
+    });
+    const activeAvgMinutes = waitingDataAvailable && activeValues.length ? round2(activeValues.reduce((s, v) => s + v, 0) / activeValues.length) : null;
+    const activeMedianMinutes = waitingDataAvailable ? medianOf(activeValues.slice().sort((a, b) => a - b)) : null;
+
+    const flow: LeadTimeFlow = {
+      available: flowAvailable,
+      stages,
+      waitingAvgMinutes: waitingDataAvailable ? waitingAvgMinutes : null,
+      waitingMedianMinutes: waitingDataAvailable ? waitingMedianMinutes : null,
+      waitingShareOfLeadTime,
+      activeAvgMinutes,
+      activeMedianMinutes,
+      waitingDataAvailable,
+    };
+
+    const longRunningAll = longRunningThreshold !== null ? withDuration.filter((x) => x.minutes > longRunningThreshold) : [];
+    const longRunningTotalCount = longRunningAll.length;
+    const longRunning: LeadTimeOutlier[] =
+      longRunningThreshold !== null
+        ? longRunningAll
+            .slice()
+            .sort((a, b) => b.minutes - a.minutes)
+            .slice(0, 20)
+            .map((x) => ({
+              issueKey: x.row.issue_key,
+              issueType: x.row.issue_type || "",
+              assignee: backlogAgingAssignee(teamConfig, x.row) || "(unassigned)",
+              product: x.row.product || "(none)",
+              labels: x.row.labels || "",
+              createdAt: x.row.created,
+              resolvedAt: x.row.resolved_datetime || "",
+              minutes: round2(x.minutes),
+              vsMedianMinutes: medianMinutes !== null ? round2(x.minutes - medianMinutes) : null,
+              vsMedianPct: medianMinutes ? round4((x.minutes - medianMinutes) / medianMinutes) : null,
+              holdingReasons: holdingReasonsOfRow(x.row.holding_reasons_json),
+            }))
+        : [];
+
+    const patterns: LeadTimePattern[] = [
+      ...byWorkType
+        .filter((r) => r.count >= 3 && medianMinutes !== null && (r.medianMinutes ?? 0) > medianMinutes * 1.25)
+        .map((r) => ({ dimension: "Work Type" as const, key: r.key, count: r.count, medianMinutes: r.medianMinutes, p90Minutes: r.p90Minutes })),
+      ...byProduct
+        .filter((r) => r.count >= 3 && medianMinutes !== null && (r.medianMinutes ?? 0) > medianMinutes * 1.25)
+        .map((r) => ({ dimension: "Product" as const, key: r.key, count: r.count, medianMinutes: r.medianMinutes, p90Minutes: r.p90Minutes })),
+    ]
+      .sort((a, b) => (b.medianMinutes ?? 0) - (a.medianMinutes ?? 0))
+      .slice(0, 8);
+
+    let comparison: LeadTimeComparison | null = null;
+    try {
+      const prevPeriod = shiftPeriod(range as RangeType, period, -1);
+      const prev = await summarizeLeadTimePeriod(team, range, prevPeriod, issueType, teamConfig);
+      comparison = {
+        count: { current: count, previous: prev.count, deltaPct: pctDelta(count, prev.count) },
+        medianMinutes: { current: medianMinutes, previous: prev.medianMinutes, deltaPct: pctDelta(medianMinutes, prev.medianMinutes) },
+        avgMinutes: { current: avgMinutes, previous: prev.avgMinutes, deltaPct: pctDelta(avgMinutes, prev.avgMinutes) },
+        p90Minutes: { current: p90Minutes, previous: prev.p90Minutes, deltaPct: pctDelta(p90Minutes, prev.p90Minutes) },
+      };
+    } catch {
+      comparison = null;
+    }
+
+    const tickets: LeadTimeTicketRow[] = withDuration
+      .slice()
+      .sort((a, b) => b.minutes - a.minutes)
+      .slice(0, BREAKDOWN_TICKET_LIMIT)
+      .map((x) => {
+        const hold = x.row.total_on_hold_minutes !== null && x.row.total_on_hold_minutes !== undefined ? Number(x.row.total_on_hold_minutes) : null;
+        const holdMinutes = hold !== null && isFinite(hold) ? hold : null;
+        return {
+          issueKey: x.row.issue_key,
+          issueType: x.row.issue_type || "",
+          assignee: backlogAgingAssignee(teamConfig, x.row) || "(unassigned)",
+          product: x.row.product || "(none)",
+          labels: x.row.labels || "",
+          createdAt: x.row.created,
+          resolvedAt: x.row.resolved_datetime || "",
+          minutes: round2(x.minutes),
+          waitingMinutes: holdMinutes !== null ? round2(holdMinutes) : null,
+          activeMinutes: holdMinutes !== null ? round2(Math.max(0, x.minutes - holdMinutes)) : null,
+          vsMedianMinutes: medianMinutes !== null ? round2(x.minutes - medianMinutes) : null,
+        };
+      });
+
+    const report: LeadTimeDeepDiveReport = {
+      team, range, period, issueType: issueType ?? null,
+      assigneeLabel: backlogAgingAssigneeLabel(teamConfig),
+      description: basis.description,
+      pulse,
+      comparison,
+      insights: [],
+      positiveHighlights: [],
+      trend,
+      distribution,
+      percentiles,
+      byWorkType,
+      byProduct,
+      flow,
+      longRunning,
+      longRunningTotalCount,
+      patterns,
+      tickets,
+      ticketsTotalCount: withDuration.length,
+    };
+
+    report.insights = buildLeadTimeInsights(report);
+    report.positiveHighlights = buildLeadTimePositiveHighlights(report);
+
+    return report;
+  } catch {
+    return emptyDeepDive(team, range, period, issueType);
+  }
 }

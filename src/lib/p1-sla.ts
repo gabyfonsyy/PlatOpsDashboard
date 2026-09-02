@@ -462,7 +462,7 @@ function pctDelta(current: number | null, previous: number | null): number | nul
 
 // ------------------------------------------------------------------ Insights
 
-export type P1Insight = { text: string; tone: "positive" | "watch" | "negative" };
+export type P1Insight = { text: { professional: string; gaby: string }; tone: "positive" | "watch" | "negative" };
 
 function formatPp(delta: number): string {
   const points = Math.round(delta * 1000) / 10; // fraction -> percentage points, 1 decimal
@@ -478,6 +478,16 @@ function formatPct(delta: number): string {
  * and a rule only fires when its specific data condition is actually true. Ordered by what a
  * manager should see first: compliance direction, then why, then where, then a positive note if
  * one exists, capped at 5 so this stays a pulse, not a report.
+ */
+/**
+ * Text for each insight condition, in both registers. Professional stays exactly as it always
+ * has; Gaby is the "Gaby voice" tone spec (2026-09-02) — headline first, plain-English "so what",
+ * hedged rather than causal language, light/sparing personality. Both are always computed (it's a
+ * pure string template over numbers already in hand, not a second data fetch) so InsightsPanel
+ * can pick between them on the client with no round trip — see its doc comment for why that
+ * replaced picking the register here. This only ever restyles a condition that already fired — it
+ * does not lower any threshold or add a condition, so "say nothing when nothing stands out" holds
+ * in both registers identically.
  */
 function buildInsights(report: {
   onTimeRate: number | null;
@@ -495,10 +505,15 @@ function buildInsights(report: {
 
   if (c && c.onTimeRate.current !== null && c.onTimeRate.deltaPp !== null && Math.abs(c.onTimeRate.deltaPp) >= 0.005) {
     const improved = c.onTimeRate.deltaPp > 0;
+    const pct = Math.round(c.onTimeRate.current * 1000) / 10;
+    const pp = formatPp(c.onTimeRate.deltaPp);
     insights.push({
-      text: `SLA compliance ${improved ? "improved" : "declined"} to ${Math.round(
-        c.onTimeRate.current * 1000
-      ) / 10}%, ${formatPp(c.onTimeRate.deltaPp)} vs the previous period.`,
+      text: {
+        professional: `SLA compliance ${improved ? "improved" : "declined"} to ${pct}%, ${pp} vs the previous period.`,
+        gaby: improved
+          ? `**🚀 SLA compliance is trending up.** On-time rate hit **${pct}%**, up ${pp} from the previous period — more P1s closing inside SLA.`
+          : `**SLA compliance slipped this period.** On-time rate is down to **${pct}%** (${pp}) — more P1s breaching than last period, worth a look.`,
+      },
       tone: improved ? "positive" : "negative",
     });
   }
@@ -506,52 +521,90 @@ function buildInsights(report: {
   if (report.overdueCount > 0 && report.byHoldingReason.length) {
     const top = report.byHoldingReason[0];
     if (top.share !== null) {
+      const pct = Math.round(top.share * 1000) / 10;
       insights.push({
-        text: `Primary delay reason: "${top.key}" — ${Math.round(top.share * 1000) / 10}% of holds on overdue P1s this period.`,
+        text: {
+          professional: `Primary delay reason: "${top.key}" — ${pct}% of holds on overdue P1s this period.`,
+          gaby: `**🚩 One reason is behind most of the delays.** "${top.key}" accounts for **${pct}%** of holds on overdue P1s — that's the lever most likely to move the needle.`,
+        },
         tone: "watch",
       });
     }
   }
 
   if (report.overdueCount > 0 && report.crossTeamDelayRate !== null && report.crossTeamDelayRate >= 0.3) {
+    const pct = Math.round(report.crossTeamDelayRate * 1000) / 10;
     insights.push({
-      text: `${Math.round(report.crossTeamDelayRate * 1000) / 10}% of SLA breaches involved a dependency on another team, not the team itself.`,
+      text: {
+        professional: `${pct}% of SLA breaches involved a dependency on another team, not the team itself.`,
+        gaby: `**Translation: a chunk of these breaches aren't fully on this team.** **${pct}%** of SLA breaches involved a dependency on another team — worth flagging upstream rather than treating as a team-execution problem.`,
+      },
       tone: "watch",
     });
   }
 
   if (report.patterns.length && report.patterns[0].overdueCount > 0) {
     const p = report.patterns[0];
+    const plural = p.count === 1 ? "" : "s";
+    const smallSample = p.count < 10;
     insights.push({
-      text: `Recurring issue: ${p.product} + "${p.label}" generated ${p.count} P1${p.count === 1 ? "" : "s"} this period, with ${p.overdueCount} breaching SLA.`,
+      text: {
+        professional: `Recurring issue: ${p.product} + "${p.label}" generated ${p.count} P1${plural} this period, with ${p.overdueCount} breaching SLA.`,
+        gaby: `**A pattern worth knowing about.** ${p.product} + "${p.label}" generated **${p.count}** P1${plural} this period, **${p.overdueCount}** of them breaching SLA.${
+          smallSample ? " Small sample, so treat this as a signal rather than a trend, but" : " Worth investigating —"
+        } this is the kind of thing worth digging into if it keeps showing up.`,
+      },
       tone: "watch",
     });
   }
 
   if (c && c.avgResolutionMinutes.current !== null && c.avgResolutionMinutes.deltaPct !== null && c.avgResolutionMinutes.deltaPct <= -0.1) {
+    const pct = formatPct(Math.abs(c.avgResolutionMinutes.deltaPct) * -1).replace("-", "");
     insights.push({
-      text: `Average resolution time is down ${formatPct(Math.abs(c.avgResolutionMinutes.deltaPct) * -1).replace("-", "")} from the previous period.`,
+      text: {
+        professional: `Average resolution time is down ${pct} from the previous period.`,
+        gaby: `**Resolutions are getting faster too.** Average resolution time is down **${pct}** from the previous period.`,
+      },
       tone: "positive",
     });
   }
 
   if (c && c.createdInPeriod.deltaPct !== null && c.createdInPeriod.deltaPct >= 0.25) {
+    const complianceDeclined = c.onTimeRate.deltaPp !== null && c.onTimeRate.deltaPp < 0;
+    const pct = formatPct(c.createdInPeriod.deltaPct);
     insights.push({
-      text: `P1 volume is up ${formatPct(c.createdInPeriod.deltaPct)} vs the previous period (${c.createdInPeriod.current} vs ${c.createdInPeriod.previous}).`,
-      tone: c.onTimeRate.deltaPp !== null && c.onTimeRate.deltaPp < 0 ? "negative" : "watch",
+      text: {
+        professional: `P1 volume is up ${pct} vs the previous period (${c.createdInPeriod.current} vs ${c.createdInPeriod.previous}).`,
+        gaby: `**📈 A lot more P1s came in this period.** Volume is up **${pct}** (**${c.createdInPeriod.current}** vs **${c.createdInPeriod.previous}**)${
+          complianceDeclined ? " — and compliance dipped alongside it, so this is worth a closer look" : ", though compliance held up"
+        }.`,
+      },
+      tone: complianceDeclined ? "negative" : "watch",
     });
   }
 
   const criticalAtRisk = report.atRisk.filter((t) => t.riskTier === "critical").length;
   if (criticalAtRisk > 0) {
+    const plural = criticalAtRisk === 1;
     insights.push({
-      text: `${criticalAtRisk} open P1${criticalAtRisk === 1 ? " is" : "s are"} within 10% of breaching SLA right now — see P1s at Risk.`,
+      text: {
+        professional: `${criticalAtRisk} open P1${plural ? " is" : "s are"} within 10% of breaching SLA right now — see P1s at Risk.`,
+        gaby: `**🚩 Something needs eyes right now.** **${criticalAtRisk}** open P1${plural ? "" : "s"} ${
+          plural ? "is" : "are"
+        } within 10% of breaching SLA — not a "later" problem, check P1s at Risk.`,
+      },
       tone: "negative",
     });
   }
 
   if (!insights.length && report.decided > 0 && report.overdueCount === 0) {
-    insights.push({ text: "Every decided P1 this period resolved on time.", tone: "positive" });
+    insights.push({
+      text: {
+        professional: "Every decided P1 this period resolved on time.",
+        gaby: "**🎉 Clean sheet this period.** Every decided P1 resolved on time — nothing to flag.",
+      },
+      tone: "positive",
+    });
   }
 
   return insights.slice(0, 5);
