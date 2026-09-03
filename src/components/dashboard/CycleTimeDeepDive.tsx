@@ -80,7 +80,16 @@ export function CycleTimeDeepDive({
   const copy = cycleTimeCopy(theme);
   const split = report.hasDoerValidatorSplit;
   const doerOnly = report.workflowModel === "doer-only";
-  const pulseCycleTimeLabel = doerOnly ? copy.investigationCycleTimeLabel : copy.cycleTimeLabel;
+  // Scorecard label follows the selected Work Category, not just the doer/validator shape:
+  // Investigations -> "Investigation Cycle Time" (doer-only, unchanged), Backend Changes ->
+  // "Backend Cycle Time" (still doer+validator, but scoped end-to-end to that category alone),
+  // All SE Work (workCategory null) -> generic "Cycle Time", pooling both categories together.
+  const pulseCycleTimeLabel =
+    report.workCategory === "investigations"
+      ? copy.investigationCycleTimeLabel
+      : report.workCategory === "backend"
+        ? copy.backendCycleTimeLabel
+        : copy.cycleTimeLabel;
   const allSeWork = report.categoryComparison !== null;
 
   const [ticketType, setTicketType] = useState<string | null>(null);
@@ -129,15 +138,17 @@ export function CycleTimeDeepDive({
 
       {/* ============================================================ PULSE */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-        {!split && (
-          <MetricCard
-            label={`Average ${pulseCycleTimeLabel}`}
-            value={`${fmtDaysValue(report.pulse.total.avgMinutes)}d`}
-            sublabel={daysBreakdown(report.pulse.total.avgMinutes)}
-            trend={cycleTimeTrend(c?.totalAvgMinutes)}
-            tooltip={`Mean ${pulseCycleTimeLabel} across completed tickets. A few very slow tickets can pull it upward — read it next to Median.`}
-          />
-        )}
+        <MetricCard
+          label={`Average ${pulseCycleTimeLabel}`}
+          value={`${fmtDaysValue(report.pulse.total.avgMinutes)}d`}
+          sublabel={daysBreakdown(report.pulse.total.avgMinutes)}
+          trend={cycleTimeTrend(c?.totalAvgMinutes)}
+          tooltip={
+            split
+              ? `Mean ${pulseCycleTimeLabel.toLowerCase()} across completed tickets — Doer average + Validator average (see the breakdown above). A few very slow tickets can pull it upward — read it next to Median.`
+              : `Mean ${pulseCycleTimeLabel} across completed tickets. A few very slow tickets can pull it upward — read it next to Median.`
+          }
+        />
         <MetricCard
           label={`Median ${pulseCycleTimeLabel}`}
           value={`${fmtDaysValue(report.pulse.total.medianMinutes)}d`}

@@ -32,6 +32,10 @@ export default async function LeadCycleTimePage({
     : [];
   const query = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}) }).toString();
 
+  const rawWorkCategory = Array.isArray(searchParams.workCategory) ? searchParams.workCategory[0] : searchParams.workCategory;
+  const workCategory: CycleTimeWorkCategory | undefined =
+    rawWorkCategory === "backend" || rawWorkCategory === "investigations" ? rawWorkCategory : undefined;
+
   const backLink = (
     <Link
       href={`/${team.team_key.toLowerCase()}?${query}`}
@@ -44,7 +48,7 @@ export default async function LeadCycleTimePage({
 
   // ------------------------------------------------------------------ Lead Time (rebuilt deep-dive)
   if (metric === "lead") {
-    const report = await getLeadTimeDeepDive(team.team_key, range, period, issueType);
+    const report = await getLeadTimeDeepDive(team.team_key, range, period, issueType, workCategory);
 
     return (
       <div className="flex flex-col gap-6">
@@ -60,16 +64,19 @@ export default async function LeadCycleTimePage({
           <FilterBar issueTypes={issueTypes} />
         </div>
 
+        {report.hasWorkCategorySplit && (
+          <CycleTimeWorkCategoryToggle
+            active={workCategory ?? "all"}
+            labels={{ all: "All SE Work", backend: "Backend Changes", investigations: "Investigations" }}
+          />
+        )}
+
         <LeadTimeDeepDive report={report} jiraBaseUrl={process.env.JIRA_BASE_URL} extraExcludedLabels={extraExcludedLabels} />
       </div>
     );
   }
 
   // ------------------------------------------------------------- Cycle Time (rebuilt deep-dive)
-  const rawWorkCategory = Array.isArray(searchParams.workCategory) ? searchParams.workCategory[0] : searchParams.workCategory;
-  const workCategory: CycleTimeWorkCategory | undefined =
-    rawWorkCategory === "backend" || rawWorkCategory === "investigations" ? rawWorkCategory : undefined;
-
   const report = await getCycleTimeDeepDive(team.team_key, range, period, issueType, workCategory);
 
   const headerBlurb =

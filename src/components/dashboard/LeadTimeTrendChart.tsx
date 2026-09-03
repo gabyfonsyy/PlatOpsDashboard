@@ -13,7 +13,7 @@ function toDays(minutes: number | null): number | null {
  * way SlaTrendChart fuses P1 volume + on-time rate rather than two competing charts. Colors are
  * the theme's own CSS variables so this re-colors itself on theme change with no re-render.
  */
-export function LeadTimeTrendChart({ trend }: { trend: LeadTimeTrendPoint[] }) {
+export function LeadTimeTrendChart({ trend, title }: { trend: LeadTimeTrendPoint[]; title?: string }) {
   if (!trend.length || !trend.some((t) => t.count > 0)) {
     return <div className="card p-8 text-center text-sm text-neutral-400">No completed tickets for this period yet.</div>;
   }
@@ -23,7 +23,7 @@ export function LeadTimeTrendChart({ trend }: { trend: LeadTimeTrendPoint[] }) {
   return (
     <div className="card p-5">
       <div className="flex items-baseline justify-between mb-4">
-        <p className="text-sm font-medium text-neutral-700">Lead Time Over Time</p>
+        <p className="text-sm font-medium text-neutral-700">{title ?? "Lead Time Over Time"}</p>
         <p className="text-xs text-neutral-400">Bars: tickets completed · Lines: median &amp; average Lead Time (days)</p>
       </div>
       <ResponsiveContainer width="100%" height={280}>

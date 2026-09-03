@@ -6,11 +6,11 @@ function fmtDays(minutes: number | null): string {
 }
 
 /** Work types / products with 3+ tickets whose median Lead Time runs notably above the period overall. */
-export function LeadTimePatternsTable({ rows }: { rows: LeadTimePattern[] }) {
+export function LeadTimePatternsTable({ rows, title }: { rows: LeadTimePattern[]; title?: string }) {
   return (
     <div className="card">
       <div className="px-4 py-3 border-b border-neutral-200">
-        <h3 className="text-sm font-semibold text-neutral-900">Recurring Lead Time Patterns</h3>
+        <h3 className="text-sm font-semibold text-neutral-900">{title ?? "Recurring Lead Time Patterns"}</h3>
         <p className="text-xs text-neutral-400 mt-0.5">Work types and products with at least 3 tickets and a median Lead Time notably above the period overall.</p>
       </div>
       <table className="w-full text-sm">
