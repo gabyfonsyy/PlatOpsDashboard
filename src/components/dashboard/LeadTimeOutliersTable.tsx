@@ -21,18 +21,22 @@ export function LeadTimeOutliersTable({
   assigneeLabel,
   jiraBaseUrl,
   totalCount,
+  title,
 }: {
   rows: LeadTimeOutlier[];
   assigneeLabel: string;
   jiraBaseUrl?: string;
   /** True count above the long-running threshold — rows is capped to the 20 longest. */
   totalCount?: number;
+  /** Defaults to "Long-Running Work & Outliers". Pass a scoped title (e.g. "Longest Backend
+   * Changes") when the page is viewing one Work Category — brief section 13. */
+  title?: string;
 }) {
   const truncated = totalCount !== undefined && totalCount > rows.length;
   return (
     <div className="card">
       <div className="px-4 py-3 border-b border-neutral-200">
-        <h3 className="text-sm font-semibold text-neutral-900">Long-Running Work &amp; Outliers</h3>
+        <h3 className="text-sm font-semibold text-neutral-900">{title ?? "Long-Running Work & Outliers"}</h3>
         <p className="text-xs text-neutral-400 mt-0.5">
           Completed tickets significantly above this period&apos;s typical Lead Time — not a measure of individual performance; look for process,
           dependency, or complexity patterns.

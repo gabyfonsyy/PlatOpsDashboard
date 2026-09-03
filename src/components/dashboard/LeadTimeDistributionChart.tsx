@@ -18,11 +18,13 @@ export function LeadTimeDistributionChart({
   percentiles,
   selectedBucket,
   onSelectBucket,
+  title,
 }: {
   distribution: LeadTimeDistributionBucket[];
   percentiles: LeadTimePercentiles;
   selectedBucket?: string | null;
   onSelectBucket?: (label: string | null) => void;
+  title?: string;
 }) {
   const total = distribution.reduce((s, b) => s + b.count, 0);
   if (!total) {
@@ -32,7 +34,7 @@ export function LeadTimeDistributionChart({
   return (
     <div className="card p-5">
       <div className="flex items-baseline justify-between mb-1">
-        <p className="text-sm font-medium text-neutral-700">Lead Time Distribution</p>
+        <p className="text-sm font-medium text-neutral-700">{title ?? "Lead Time Distribution"}</p>
         <p className="text-xs text-neutral-400">{onSelectBucket ? "Click a bar to scope the ticket table below" : "How completed work spreads across Lead Time ranges"}</p>
       </div>
       <ResponsiveContainer width="100%" height={220}>

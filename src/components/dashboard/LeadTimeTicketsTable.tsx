@@ -23,10 +23,12 @@ export function LeadTimeTicketsTable({
   totalCount,
   workTypeFilter,
   productFilter,
+  assigneeFilter,
   bucketFilter,
   distribution,
   onClearFilters,
   extraExcludedLabels,
+  title,
 }: {
   tickets: LeadTimeTicketRow[];
   assigneeLabel: string;
@@ -34,10 +36,12 @@ export function LeadTimeTicketsTable({
   totalCount?: number;
   workTypeFilter?: string | null;
   productFilter?: string | null;
+  assigneeFilter?: string | null;
   bucketFilter?: string | null;
   distribution: LeadTimeDistributionBucket[];
   onClearFilters?: () => void;
   extraExcludedLabels?: string[];
+  title?: string;
 }) {
   const [filters, setFilters] = useState<Record<string, string>>({});
 
@@ -47,13 +51,14 @@ export function LeadTimeTicketsTable({
     return tickets.filter((t) => {
       if (workTypeFilter && t.issueType !== workTypeFilter) return false;
       if (productFilter && t.product !== productFilter) return false;
+      if (assigneeFilter && t.assignee !== assigneeFilter) return false;
       if (bucket) {
         const days = t.minutes / 1440;
         if (days < bucket.minDays || (bucket.maxDays !== null && days >= bucket.maxDays)) return false;
       }
       return true;
     });
-  }, [tickets, workTypeFilter, productFilter, bucket]);
+  }, [tickets, workTypeFilter, productFilter, assigneeFilter, bucket]);
 
   const searchable = useMemo(
     () =>
@@ -87,14 +92,14 @@ export function LeadTimeTicketsTable({
     { key: "product", label: "Product / Labels" },
   ];
 
-  const hasExternalFilter = Boolean(workTypeFilter || productFilter || bucketFilter);
+  const hasExternalFilter = Boolean(workTypeFilter || productFilter || assigneeFilter || bucketFilter);
   const truncated = totalCount !== undefined && totalCount > tickets.length;
 
   return (
     <div className="card">
       <div className="px-4 py-3 border-b border-neutral-200 flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h3 className="text-sm font-semibold text-neutral-900">Lead Time — Ticket Detail</h3>
+          <h3 className="text-sm font-semibold text-neutral-900">{title ?? "Lead Time — Ticket Detail"}</h3>
           <p className="text-xs text-neutral-400 mt-0.5">
             {visible.length} of {tickets.length} shown
             {truncated && ` · longest ${tickets.length} of ${totalCount} in this period`}
@@ -103,6 +108,7 @@ export function LeadTimeTicketsTable({
             <div className="flex flex-wrap gap-1.5 mt-2">
               {workTypeFilter && <span className="inline-flex items-center text-xs bg-sprout-100 text-sprout-700 rounded px-2 py-0.5">Work Type: {workTypeFilter}</span>}
               {productFilter && <span className="inline-flex items-center text-xs bg-sprout-100 text-sprout-700 rounded px-2 py-0.5">Product: {productFilter}</span>}
+              {assigneeFilter && <span className="inline-flex items-center text-xs bg-sprout-100 text-sprout-700 rounded px-2 py-0.5">{assigneeLabel}: {assigneeFilter}</span>}
               {bucketFilter && <span className="inline-flex items-center text-xs bg-sprout-100 text-sprout-700 rounded px-2 py-0.5">{bucketFilter}</span>}
             </div>
           )}

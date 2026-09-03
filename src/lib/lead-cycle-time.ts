@@ -595,6 +595,57 @@ export type LeadTimeBreakdownRow = {
   p90Minutes: number | null;
   /** Tickets in this group above the report's long-running threshold (see longRunningThreshold). */
   longRunningCount: number;
+  /** Set only on byWorkType rows for a peer-review team viewing "All SE Work" (no workCategory
+   * selected) — which work category this issue type belongs to, so the breakdown table can group
+   * Backend Changes and Investigations under their own subheaders instead of interleaving them.
+   * Null everywhere else (byProduct, byAssignee, a non-split team, or a single category already
+   * selected) — mirrors CycleTimeBreakdownRow.category exactly, same reasoning. */
+  category: CycleTimeWorkCategory | null;
+  /** Set only on byAssignee rows for a peer-review team viewing "All SE Work" — this person's
+   * Backend Changes vs. Investigations split (e.g. "78% Backend / 22% Investigations"), so an
+   * individual's Lead Time is never read without knowing what kind of work makes it up (brief
+   * section 19 — comparing a mostly-Investigations person against a mostly-Backend-Changes person
+   * without this context would be misleading). Null everywhere else. */
+  categoryMixLabel: string | null;
+};
+
+/** Backend Changes vs. Investigations vs. Other, at a glance, over the FULL (unfiltered-by-
+ * category) population for the period — mirrors CycleTimeCategorySummary but with Lead Time's own
+ * metric set (median/avg/p75/p90/longest, no doer/validator split — that split lives on the Cycle
+ * Time page, not here). Only populated when hasWorkCategorySplit && workCategory is unset (the
+ * "All SE Work" view) — a single-category view already IS that category's numbers. */
+export type LeadTimeCategorySummary = {
+  category: CycleTimeWorkCategory | "other";
+  label: string;
+  count: number;
+  medianMinutes: number | null;
+  avgMinutes: number | null;
+  p75Minutes: number | null;
+  p90Minutes: number | null;
+  longestMinutes: number | null;
+};
+
+/**
+ * Lead Time's "Active Work" context (brief sections 5/6/12) — the REAL Cycle Time for this same
+ * scope (basisFor("cycle", ...), reusing summarizeCycleTimePeriod so this can never disagree with
+ * the Cycle Time deep-dive it points to), shown here only as a contextual comparison against Lead
+ * Time, never as a second Doer/Validator breakdown (that stays on the Cycle Time page — section 6:
+ * "do not duplicate the Cycle Time analysis").
+ */
+export type LeadTimeActiveWorkContext = {
+  /** "doer-validator" (SE, All Work or Backend Changes) / "doer-only" (SE, Investigations) /
+   * "single" (a team with no peer-review split at all) — same three-way model getCycleTimeDeepDive
+   * uses, so this page's copy can distinguish "Cycle Time" from "Doer Cycle Time" correctly. */
+  workflowModel: "doer-validator" | "doer-only" | "single";
+  cycleAvgMinutes: number | null;
+  cycleMedianMinutes: number | null;
+  /** Null unless workflowModel is "doer-validator". */
+  doerAvgMinutes: number | null;
+  /** Null unless workflowModel is "doer-validator". */
+  validatorAvgMinutes: number | null;
+  /** cycleAvgMinutes / (this scope's) Lead Time avgMinutes, clamped to [0,1]. Null when either
+   * side is missing. The "only ~30% of elapsed time was active work" figure from the brief. */
+  activeSharePct: number | null;
 };
 
 export type LeadTimeFlowStage = {
@@ -663,8 +714,26 @@ export type LeadTimeDeepDiveReport = {
   issueType: string | null;
   assigneeLabel: string;
   description: string;
+  /** True for a peer-review team (SE) — the Work Category dimension (Backend Changes vs.
+   * Investigations) only exists for these teams. False for DBA/DevOps, same as
+   * teamConfig.has_peer_review_tracking. */
+  hasWorkCategorySplit: boolean;
+  /** The category this report is scoped to, or null for "All SE Work" (every category pooled).
+   * Always null for a team without the split. */
+  workCategory: CycleTimeWorkCategory | null;
+  /** Backend Changes vs. Investigations at a glance — ONLY populated for a peer-review team with
+   * workCategory unset (the "All SE Work" view); null otherwise. */
+  categoryComparison: LeadTimeCategorySummary[] | null;
   pulse: LeadTimePulse;
   comparison: LeadTimeComparison | null;
+  /** Real Cycle Time for this same scope, shown as context next to Lead Time — never a second
+   * Doer/Validator breakdown (see LeadTimeActiveWorkContext's doc comment). Null only if the
+   * Cycle Time lookup itself failed. */
+  activeWork: LeadTimeActiveWorkContext | null;
+  /** "Is this a work-time problem or a waiting problem?" (brief section 11) — always computed
+   * when activeWork is available, rendered directly under the Lead Time vs. Active Work
+   * comparison rather than competing for a slot in the generic insights list below. */
+  activeVsWaitingInsight: LeadTimeInsight | null;
   insights: LeadTimeInsight[];
   positiveHighlights: LeadTimePositiveHighlight[];
   trend: LeadTimeTrendPoint[];
@@ -672,6 +741,10 @@ export type LeadTimeDeepDiveReport = {
   percentiles: LeadTimePercentiles;
   byWorkType: LeadTimeBreakdownRow[];
   byProduct: LeadTimeBreakdownRow[];
+  /** Individual (assignee) breakdown — sorted by ticket VOLUME, never by speed, so this can't
+   * read as a "who's slowest" leaderboard (brief section 19). Empty when the population has no
+   * assignable rows. */
+  byAssignee: LeadTimeBreakdownRow[];
   flow: LeadTimeFlow;
   /** Displayed table — capped to the top 20 by duration. */
   longRunning: LeadTimeOutlier[];
@@ -682,13 +755,24 @@ export type LeadTimeDeepDiveReport = {
   ticketsTotalCount: number;
 };
 
-function emptyDeepDive(team: string, range: string, period: string, issueType?: string): LeadTimeDeepDiveReport {
+function emptyDeepDive(
+  team: string,
+  range: string,
+  period: string,
+  issueType?: string,
+  workCategory?: CycleTimeWorkCategory
+): LeadTimeDeepDiveReport {
   return {
     team, range, period, issueType: issueType ?? null,
     assigneeLabel: "Assignee",
     description: "",
+    hasWorkCategorySplit: false,
+    workCategory: workCategory ?? null,
+    categoryComparison: null,
     pulse: { count: 0, medianMinutes: null, avgMinutes: null, p75Minutes: null, p90Minutes: null },
     comparison: null,
+    activeWork: null,
+    activeVsWaitingInsight: null,
     insights: [],
     positiveHighlights: [],
     trend: [],
@@ -696,6 +780,7 @@ function emptyDeepDive(team: string, range: string, period: string, issueType?: 
     percentiles: { p50: null, p75: null, p90: null, p95: null },
     byWorkType: [],
     byProduct: [],
+    byAssignee: [],
     flow: {
       available: false, stages: [], waitingAvgMinutes: null, waitingMedianMinutes: null,
       waitingShareOfLeadTime: null, activeAvgMinutes: null, activeMedianMinutes: null, waitingDataAvailable: false,
@@ -708,19 +793,52 @@ function emptyDeepDive(team: string, range: string, period: string, issueType?: 
   };
 }
 
+/** Backend Changes vs. Investigations vs. Other, over an unfiltered-by-category duration set —
+ * see LeadTimeCategorySummary's doc comment. Shared by getLeadTimeDeepDive's single call site;
+ * pulled out as its own function since the row-shaping logic doesn't belong inline. */
+function buildLeadTimeCategoryComparison(rows: { row: TicketRow; minutes: number }[]): LeadTimeCategorySummary[] {
+  const groups: Record<"backend" | "investigations" | "other", number[]> = { backend: [], investigations: [], other: [] };
+  for (const x of rows) {
+    const cat = cycleTimeWorkCategoryFor(x.row.issue_type);
+    groups[cat ?? "other"].push(x.minutes);
+  }
+  const labelFor = (cat: "backend" | "investigations" | "other") =>
+    cat === "backend" ? "Backend Changes" : cat === "investigations" ? "Investigations" : "Other";
+  return (["backend", "investigations", "other"] as const)
+    .map((cat): LeadTimeCategorySummary | null => {
+      const values = groups[cat];
+      if (!values.length) return null;
+      const sorted = values.slice().sort((a, b) => a - b);
+      return {
+        category: cat,
+        label: labelFor(cat),
+        count: values.length,
+        medianMinutes: medianOf(sorted),
+        avgMinutes: round2(values.reduce((s, v) => s + v, 0) / values.length),
+        p75Minutes: percentile(sorted, 75),
+        p90Minutes: values.length >= 10 ? percentile(sorted, 90) : null,
+        longestMinutes: round2(sorted[sorted.length - 1]),
+      };
+    })
+    .filter((s): s is LeadTimeCategorySummary => s !== null);
+}
+
 /** Just enough of one period's Lead Time numbers to diff against another — mirrors lib/p1-sla.ts's summarizePeriod. */
 async function summarizeLeadTimePeriod(
   team: string,
   range: string,
   period: string,
   issueType: string | undefined,
-  teamConfig: TeamConfig
+  teamConfig: TeamConfig,
+  workCategory?: CycleTimeWorkCategory
 ): Promise<{ count: number; medianMinutes: number | null; avgMinutes: number | null; p90Minutes: number | null }> {
   const { startDate, endDate } = resolvePeriodToDateRange(range, period);
   const basis = basisFor("lead", teamConfig.has_peer_review_tracking);
   const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
+  const effectiveCategory = teamConfig.has_peer_review_tracking ? workCategory : undefined;
   const minutes = rows
     .filter((r) => !isExcludedIssueType(team, r.issue_type))
+    .filter((r) => !effectiveCategory || cycleTimeWorkCategoryFor(r.issue_type) === effectiveCategory)
     .filter((r) => {
       const bucketIso = toManilaDateString(basis.endedAt(r));
       return bucketIso && bucketIso >= startDate && bucketIso <= endDate;
@@ -764,6 +882,9 @@ function buildLeadTimeInsights(report: {
   flow: LeadTimeFlow;
   patterns: LeadTimePattern[];
   longRunningTotalCount: number;
+  /** Only for a peer-review team scoped to Backend Changes — brief section 16: "is a Lead Time
+   * change associated with active work increasing, waiting increasing, or work mix changing?" */
+  categoryTrendDriver?: { currentActiveSharePct: number | null; previousActiveSharePct: number | null };
 }): LeadTimeInsight[] {
   const insights: LeadTimeInsight[] = [];
   const c = report.comparison;
@@ -862,6 +983,27 @@ function buildLeadTimeInsights(report: {
     });
   }
 
+  const driver = report.categoryTrendDriver;
+  if (driver && driver.currentActiveSharePct !== null && driver.previousActiveSharePct !== null) {
+    const deltaPts = Math.round((driver.currentActiveSharePct - driver.previousActiveSharePct) * 1000) / 10;
+    if (Math.abs(deltaPts) >= 8) {
+      const activeUp = deltaPts > 0;
+      const prevPct = Math.round(driver.previousActiveSharePct * 1000) / 10;
+      const currPct = Math.round(driver.currentActiveSharePct * 1000) / 10;
+      insights.push({
+        text: {
+          professional: `Active work's share of Lead Time moved from ${prevPct}% to ${currPct}% vs the previous period — ${
+            activeUp ? "active work is taking up more of the elapsed time" : "waiting/other elapsed time is taking up more of it"
+          }, which likely explains part of the change.`,
+          gaby: activeUp
+            ? `**Execution is eating more of the clock this period.** Active work's share of Lead Time went **${prevPct}% → ${currPct}%** — the work itself, not waiting, is what shifted.`
+            : `**Waiting is eating more of the clock this period.** Active work's share of Lead Time dropped **${prevPct}% → ${currPct}%** — more of the elapsed time is going to waiting/other, not execution.`,
+        },
+        tone: "watch",
+      });
+    }
+  }
+
   if (!insights.length && report.pulse.count > 0) {
     insights.push({
       text: {
@@ -918,16 +1060,25 @@ export async function getLeadTimeDeepDive(
   team: string,
   range: string,
   period: string,
-  issueType?: string
+  issueType?: string,
+  workCategory?: CycleTimeWorkCategory
 ): Promise<LeadTimeDeepDiveReport> {
   try {
     const { startDate, endDate } = resolvePeriodToDateRange(range, period);
     const teamConfig = (await getTeams()).find((t) => t.team_key === team);
     if (!teamConfig) throw new Error(`Unknown team: ${team}`);
 
+    // Work Category only exists for a peer-review team (SE) — a category param from a team
+    // without the split is ignored defensively, same as the Cycle Time deep-dive.
+    const hasWorkCategorySplit = teamConfig.has_peer_review_tracking;
+    const effectiveWorkCategory = hasWorkCategorySplit ? workCategory : undefined;
+
     const basis = basisFor("lead", teamConfig.has_peer_review_tracking);
     const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
 
+    // The FULL period population, before any Work Category filter — kept around only to build
+    // categoryComparison (Backend Changes vs. Investigations always reflects the whole team, even
+    // when the rest of the page is scoped to one category). Everything else below reads `scoped`.
     const withDuration = rows
       .filter((r) => !isExcludedIssueType(team, r.issue_type))
       .filter((r) => {
@@ -937,8 +1088,15 @@ export async function getLeadTimeDeepDive(
       .map((r) => ({ row: r, minutes: basis.duration(r) }))
       .filter((x): x is { row: TicketRow; minutes: number } => x.minutes !== null && isFinite(x.minutes));
 
-    const count = withDuration.length;
-    const minutesSorted = withDuration.map((x) => x.minutes).sort((a, b) => a - b);
+    const categoryComparison =
+      hasWorkCategorySplit && !effectiveWorkCategory ? buildLeadTimeCategoryComparison(withDuration) : null;
+
+    const scoped = effectiveWorkCategory
+      ? withDuration.filter((x) => cycleTimeWorkCategoryFor(x.row.issue_type) === effectiveWorkCategory)
+      : withDuration;
+
+    const count = scoped.length;
+    const minutesSorted = scoped.map((x) => x.minutes).sort((a, b) => a - b);
 
     const medianMinutes = medianOf(minutesSorted);
     const avgMinutes = count ? round2(minutesSorted.reduce((s, v) => s + v, 0) / count) : null;
@@ -950,20 +1108,22 @@ export async function getLeadTimeDeepDive(
     const percentiles: LeadTimePercentiles = { p50: medianMinutes, p75: p75Minutes, p90: p90Minutes, p95: p95Minutes };
 
     const distribution: LeadTimeDistributionBucket[] = DISTRIBUTION_BUCKETS.map((b) => {
-      const c = withDuration.filter((x) => {
+      const c = scoped.filter((x) => {
         const days = x.minutes / 1440;
         return days >= b.minDays && (b.maxDays === null || days < b.maxDays);
       }).length;
       return { label: b.label, minDays: b.minDays, maxDays: b.maxDays, count: c, share: count ? round4(c / count) : null };
     });
 
-    // "Long-running": above P90 when the sample supports one, else 2x the median.
+    // "Long-running": above P90 when the sample supports one, else 2x the median. Threshold is
+    // relative to the SCOPED population, so "long-running" for Investigations means long relative
+    // to other Investigations, not to the pooled All-SE-Work distribution.
     const longRunningThreshold = p90Minutes ?? (medianMinutes !== null ? medianMinutes * 2 : null);
 
     const buckets = leadTimeEnumerateBuckets(range, startDate, endDate);
     const byBucket = new Map<string, { count: number; sum: number; values: number[] }>();
     for (const b of buckets) byBucket.set(b, { count: 0, sum: 0, values: [] });
-    for (const x of withDuration) {
+    for (const x of scoped) {
       const iso = toManilaDateString(basis.endedAt(x.row));
       if (!iso) continue;
       const b = byBucket.get(leadTimeBucketKeyFor(range, iso));
@@ -982,35 +1142,59 @@ export async function getLeadTimeDeepDive(
       };
     });
 
-    const breakdownBy = (keyFn: (r: TicketRow) => string): LeadTimeBreakdownRow[] => {
-      const groups = new Map<string, number[]>();
-      for (const x of withDuration) {
+    const breakdownBy = (
+      keyFn: (r: TicketRow) => string,
+      opts?: { withCategory?: boolean; withCategoryMix?: boolean }
+    ): LeadTimeBreakdownRow[] => {
+      const groups = new Map<string, { values: number[]; rows: TicketRow[] }>();
+      for (const x of scoped) {
         const key = keyFn(x.row) || "(none)";
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key)!.push(x.minutes);
+        if (!groups.has(key)) groups.set(key, { values: [], rows: [] });
+        const g = groups.get(key)!;
+        g.values.push(x.minutes);
+        g.rows.push(x.row);
       }
       return Array.from(groups.entries())
-        .map(([key, values]) => {
-          const sorted = values.slice().sort((a, b) => a - b);
+        .map(([key, g]) => {
+          const sorted = g.values.slice().sort((a, b) => a - b);
+          // Backend Changes / Investigations split for this group — only meaningful on the "All
+          // SE Work" view (a single category already selected makes this redundant per-row).
+          const category = opts?.withCategory ? cycleTimeWorkCategoryFor(key) : null;
+          let categoryMixLabel: string | null = null;
+          if (opts?.withCategoryMix) {
+            const backendCount = g.rows.filter((r) => cycleTimeWorkCategoryFor(r.issue_type) === "backend").length;
+            const investigationsCount = g.rows.filter((r) => cycleTimeWorkCategoryFor(r.issue_type) === "investigations").length;
+            const classified = backendCount + investigationsCount;
+            categoryMixLabel = classified
+              ? `${Math.round((backendCount / classified) * 100)}% Backend / ${Math.round((investigationsCount / classified) * 100)}% Investigations`
+              : null;
+          }
           return {
             key,
-            count: values.length,
+            count: g.values.length,
             medianMinutes: medianOf(sorted),
-            avgMinutes: round2(values.reduce((s, v) => s + v, 0) / values.length),
+            avgMinutes: round2(g.values.reduce((s, v) => s + v, 0) / g.values.length),
             p75Minutes: percentile(sorted, 75),
-            p90Minutes: values.length >= 10 ? percentile(sorted, 90) : null,
-            longRunningCount: longRunningThreshold !== null ? values.filter((v) => v > longRunningThreshold).length : 0,
+            p90Minutes: g.values.length >= 10 ? percentile(sorted, 90) : null,
+            longRunningCount: longRunningThreshold !== null ? g.values.filter((v) => v > longRunningThreshold).length : 0,
+            category,
+            categoryMixLabel,
           };
         })
         .sort((a, b) => b.count - a.count); // impact (volume) first, not just avg
     };
 
-    const byWorkType = breakdownBy((r) => r.issue_type || "(none)");
+    const byWorkType = breakdownBy((r) => r.issue_type || "(none)", { withCategory: hasWorkCategorySplit && !effectiveWorkCategory });
     const byProduct = breakdownBy((r) => r.product || "(none)");
+    // Individual breakdown, sorted by volume (breakdownBy's own convention) not speed — see the
+    // LeadTimeBreakdownRow.categoryMixLabel doc comment for why the mix matters here (brief section 19).
+    const byAssignee = breakdownBy((r) => backlogAgingAssignee(teamConfig, r) || "(unassigned)", {
+      withCategoryMix: hasWorkCategorySplit && !effectiveWorkCategory,
+    });
 
     // Flow: Created -> first_out_of_backlog_todo -> Resolved. Requires the majority of this
     // period's tickets to carry first_out_of_backlog_todo, or the split isn't representative.
-    const flowRows = withDuration.filter((x) => x.row.first_out_of_backlog_todo);
+    const flowRows = scoped.filter((x) => x.row.first_out_of_backlog_todo);
     const flowAvailable = flowRows.length > 0 && flowRows.length >= count * 0.5;
     const backlogWaitValues = flowAvailable
       ? flowRows.map((x) => minutesBetween(x.row.created, x.row.first_out_of_backlog_todo!)).filter((v) => isFinite(v) && v >= 0)
@@ -1043,14 +1227,14 @@ export async function getLeadTimeDeepDive(
         ]
       : [];
 
-    const holdValues = withDuration
+    const holdValues = scoped
       .map((x) => (x.row.total_on_hold_minutes !== null && x.row.total_on_hold_minutes !== undefined ? Number(x.row.total_on_hold_minutes) : null))
       .filter((v): v is number => v !== null && isFinite(v));
     const waitingDataAvailable = holdValues.some((v) => v > 0);
     const waitingAvgMinutes = holdValues.length ? round2(holdValues.reduce((s, v) => s + v, 0) / holdValues.length) : null;
     const waitingMedianMinutes = medianOf(holdValues.slice().sort((a, b) => a - b));
     const waitingShareOfLeadTime = waitingDataAvailable && waitingAvgMinutes !== null && avgMinutes ? round4(waitingAvgMinutes / avgMinutes) : null;
-    const activeValues = withDuration.map((x) => {
+    const activeValues = scoped.map((x) => {
       const hold = x.row.total_on_hold_minutes !== null && x.row.total_on_hold_minutes !== undefined ? Number(x.row.total_on_hold_minutes) : 0;
       return Math.max(0, x.minutes - (isFinite(hold) ? hold : 0));
     });
@@ -1068,7 +1252,7 @@ export async function getLeadTimeDeepDive(
       waitingDataAvailable,
     };
 
-    const longRunningAll = longRunningThreshold !== null ? withDuration.filter((x) => x.minutes > longRunningThreshold) : [];
+    const longRunningAll = longRunningThreshold !== null ? scoped.filter((x) => x.minutes > longRunningThreshold) : [];
     const longRunningTotalCount = longRunningAll.length;
     const longRunning: LeadTimeOutlier[] =
       longRunningThreshold !== null
@@ -1103,20 +1287,85 @@ export async function getLeadTimeDeepDive(
       .slice(0, 8);
 
     let comparison: LeadTimeComparison | null = null;
+    // Only meaningful for a peer-review team — see the "categoryTrendDriver" insight rule.
+    let previousActiveSharePct: number | null = null;
     try {
       const prevPeriod = shiftPeriod(range as RangeType, period, -1);
-      const prev = await summarizeLeadTimePeriod(team, range, prevPeriod, issueType, teamConfig);
+      const prev = await summarizeLeadTimePeriod(team, range, prevPeriod, issueType, teamConfig, effectiveWorkCategory);
       comparison = {
         count: { current: count, previous: prev.count, deltaPct: pctDelta(count, prev.count) },
         medianMinutes: { current: medianMinutes, previous: prev.medianMinutes, deltaPct: pctDelta(medianMinutes, prev.medianMinutes) },
         avgMinutes: { current: avgMinutes, previous: prev.avgMinutes, deltaPct: pctDelta(avgMinutes, prev.avgMinutes) },
         p90Minutes: { current: p90Minutes, previous: prev.p90Minutes, deltaPct: pctDelta(p90Minutes, prev.p90Minutes) },
       };
+      if (hasWorkCategorySplit) {
+        const prevCycle = await summarizeCycleTimePeriod(team, range, prevPeriod, issueType, teamConfig, effectiveWorkCategory);
+        previousActiveSharePct =
+          prevCycle.totalAvgMinutes !== null && prev.avgMinutes ? round4(Math.min(1, prevCycle.totalAvgMinutes / prev.avgMinutes)) : null;
+      }
     } catch {
       comparison = null;
     }
 
-    const tickets: LeadTimeTicketRow[] = withDuration
+    // Active Work context (brief sections 5/6/12) — the REAL Cycle Time for this same scope,
+    // reusing summarizeCycleTimePeriod so this can never disagree with the Cycle Time deep-dive.
+    // Shown only as a contextual comparison against Lead Time, never a second Doer/Validator
+    // breakdown (section 6: "do not duplicate the Cycle Time analysis").
+    let activeWork: LeadTimeActiveWorkContext | null = null;
+    let activeVsWaitingInsight: LeadTimeInsight | null = null;
+    try {
+      const cycleSummary = await summarizeCycleTimePeriod(team, range, period, issueType, teamConfig, effectiveWorkCategory);
+      const workflowModel: LeadTimeActiveWorkContext["workflowModel"] = !hasWorkCategorySplit
+        ? "single"
+        : effectiveWorkCategory === "investigations"
+          ? "doer-only"
+          : "doer-validator";
+      const activeSharePct =
+        cycleSummary.totalAvgMinutes !== null && avgMinutes ? round4(Math.min(1, cycleSummary.totalAvgMinutes / avgMinutes)) : null;
+      activeWork = {
+        workflowModel,
+        cycleAvgMinutes: cycleSummary.totalAvgMinutes,
+        cycleMedianMinutes: cycleSummary.totalMedianMinutes,
+        doerAvgMinutes: cycleSummary.doerAvgMinutes,
+        validatorAvgMinutes: cycleSummary.validatorAvgMinutes,
+        activeSharePct,
+      };
+
+      if (activeSharePct !== null) {
+        const pct = Math.round(activeSharePct * 1000) / 10;
+        const cycleLabel = workflowModel === "doer-only" ? "Active investigation work" : "Cycle Time (active work)";
+        if (pct < 40) {
+          activeVsWaitingInsight = {
+            text: {
+              professional: `${cycleLabel} accounts for only ~${pct}% of Lead Time — most of the elapsed time is happening outside active execution (waiting, queued, or between stages).`,
+              gaby: `**🫠 Waiting is driving elapsed time here, not the work itself.** ${cycleLabel} is only **~${pct}%** of Lead Time — the rest is holding pattern, not hands-on-keyboard time.`,
+            },
+            tone: "watch",
+          };
+        } else if (pct >= 60) {
+          activeVsWaitingInsight = {
+            text: {
+              professional: `${cycleLabel} accounts for ~${pct}% of Lead Time — active work, not waiting, is the main driver of how long tickets take.`,
+              gaby: `**🚀 Active work is what's driving elapsed time here.** ${cycleLabel} makes up **~${pct}%** of Lead Time — this isn't a waiting problem, it's a work-time problem.`,
+            },
+            tone: "watch",
+          };
+        } else {
+          activeVsWaitingInsight = {
+            text: {
+              professional: `${cycleLabel} accounts for ~${pct}% of Lead Time — a mix of active work and waiting/other elapsed time, with neither clearly dominant.`,
+              gaby: `**Elapsed time is a mixed bag here.** ${cycleLabel} is **~${pct}%** of Lead Time — no single driver stands out.`,
+            },
+            tone: "watch",
+          };
+        }
+      }
+    } catch {
+      activeWork = null;
+      activeVsWaitingInsight = null;
+    }
+
+    const tickets: LeadTimeTicketRow[] = scoped
       .slice()
       .sort((a, b) => b.minutes - a.minutes)
       .slice(0, BREAKDOWN_TICKET_LIMIT)
@@ -1142,8 +1391,13 @@ export async function getLeadTimeDeepDive(
       team, range, period, issueType: issueType ?? null,
       assigneeLabel: backlogAgingAssigneeLabel(teamConfig),
       description: basis.description,
+      hasWorkCategorySplit,
+      workCategory: effectiveWorkCategory ?? null,
+      categoryComparison,
       pulse,
       comparison,
+      activeWork,
+      activeVsWaitingInsight,
       insights: [],
       positiveHighlights: [],
       trend,
@@ -1151,20 +1405,24 @@ export async function getLeadTimeDeepDive(
       percentiles,
       byWorkType,
       byProduct,
+      byAssignee,
       flow,
       longRunning,
       longRunningTotalCount,
       patterns,
       tickets,
-      ticketsTotalCount: withDuration.length,
+      ticketsTotalCount: scoped.length,
     };
 
-    report.insights = buildLeadTimeInsights(report);
+    report.insights = buildLeadTimeInsights({
+      ...report,
+      categoryTrendDriver: { currentActiveSharePct: activeWork?.activeSharePct ?? null, previousActiveSharePct },
+    });
     report.positiveHighlights = buildLeadTimePositiveHighlights(report);
 
     return report;
   } catch {
-    return emptyDeepDive(team, range, period, issueType);
+    return emptyDeepDive(team, range, period, issueType, workCategory);
   }
 }
 
