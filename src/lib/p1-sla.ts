@@ -327,11 +327,11 @@ export type P1PatternRow = {
 
 /** Product+label combos appearing on 2+ P1s among DECIDED tickets — a single occurrence isn't a
  * pattern. Sorted by breach count (impact) like problemAreas. */
-function recurringPatterns(decided: Classified[]): P1PatternRow[] {
+function recurringPatterns(decided: Classified[], extraExcluded?: readonly string[]): P1PatternRow[] {
   const combos = new Map<string, { product: string; label: string; count: number; overdue: number }>();
   for (const x of decided) {
     const product = x.row.product || "(none)";
-    for (const label of meaningfulLabels(x.row.labels)) {
+    for (const label of meaningfulLabels(x.row.labels, extraExcluded)) {
       const key = `${product}|${label}`;
       if (!combos.has(key)) combos.set(key, { product, label, count: 0, overdue: 0 });
       const c = combos.get(key)!;
@@ -418,7 +418,7 @@ export type P1TicketRow = {
   holdingReasons: string[];
 };
 
-function toTicketRow(x: Classified, todayIso: string): P1TicketRow {
+function toTicketRow(x: Classified, todayIso: string, extraExcluded?: readonly string[]): P1TicketRow {
   const { row: r, cls } = x;
   const status: P1TicketStatus = !cls.decided ? "pending" : cls.overdue ? "overdue" : "onTime";
   return {
@@ -426,7 +426,7 @@ function toTicketRow(x: Classified, todayIso: string): P1TicketRow {
     issueType: r.issue_type || "",
     assignee: "", // filled in by the caller, which has teamConfig
     product: r.product || "(none)",
-    labels: meaningfulLabels(r.labels).join(", "),
+    labels: meaningfulLabels(r.labels, extraExcluded).join(", "),
     createdAt: r.created,
     dueDate: r.due_date,
     resolvedAt: r.resolved_datetime,
@@ -770,7 +770,8 @@ export async function getP1SlaReport(
   team: string,
   range: string,
   period: string,
-  issueType?: string
+  issueType?: string,
+  extraExcludedLabels?: readonly string[]
 ): Promise<P1SlaReport> {
   try {
     const { startDate, endDate } = resolvePeriodToDateRange(range, period);
@@ -816,7 +817,7 @@ export async function getP1SlaReport(
 
     const labelCounts: Record<string, number> = {};
     for (const r of overdueRows) {
-      for (const label of meaningfulLabels(r.labels)) {
+      for (const label of meaningfulLabels(r.labels, extraExcludedLabels)) {
         labelCounts[label] = (labelCounts[label] || 0) + 1;
       }
     }
@@ -872,7 +873,7 @@ export async function getP1SlaReport(
     const byProduct = problemAreas(decided, (r) => r.product || "(none)");
     const byIssueType = problemAreas(decided, (r) => r.issue_type || "(none)");
     const byAssignee = problemAreas(decided, (r) => backlogAgingAssignee(teamConfig, r) || "(unassigned)");
-    const patterns = recurringPatterns(decided);
+    const patterns = recurringPatterns(decided, extraExcludedLabels);
     const atRisk = atRiskTickets(pending, teamConfig, todayIso);
 
     const sortedTickets = classified
@@ -886,7 +887,7 @@ export async function getP1SlaReport(
       });
 
     const tickets = sortedTickets.slice(0, BREAKDOWN_TICKET_LIMIT).map((x) => ({
-      ...toTicketRow(x, todayIso),
+      ...toTicketRow(x, todayIso, extraExcludedLabels),
       assignee: backlogAgingAssignee(teamConfig, x.row) || "(unassigned)",
     }));
 

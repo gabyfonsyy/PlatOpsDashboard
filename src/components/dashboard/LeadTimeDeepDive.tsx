@@ -11,6 +11,7 @@ import { LeadTimeFlowBreakdown } from "@/components/dashboard/LeadTimeFlowBreakd
 import { LeadTimeOutliersTable } from "@/components/dashboard/LeadTimeOutliersTable";
 import { LeadTimePatternsTable } from "@/components/dashboard/LeadTimePatternsTable";
 import { LeadTimeTicketsTable } from "@/components/dashboard/LeadTimeTicketsTable";
+import { ExcludedLabelsEditor } from "@/components/dashboard/ExcludedLabelsEditor";
 import { formatNumber } from "@/lib/format";
 
 function fmtDaysValue(minutes: number | null): string {
@@ -58,7 +59,17 @@ function volumeTrend(delta: { deltaPct: number | null } | undefined) {
  * product, distribution bucket) as local state — see LeadTimeTicketsTable's doc comment for why
  * only the details table, not the charts/summary tables above it, is scoped by them.
  */
-export function LeadTimeDeepDive({ report, jiraBaseUrl }: { report: LeadTimeDeepDiveReport; jiraBaseUrl?: string }) {
+export function LeadTimeDeepDive({
+  report,
+  jiraBaseUrl,
+  extraExcludedLabels,
+}: {
+  report: LeadTimeDeepDiveReport;
+  jiraBaseUrl?: string;
+  /** User-added label exclusions (lib/excluded-labels.ts) — resolved server-side from the cookie
+   * and passed down so the ticket table's Labels column honors them without a client refetch. */
+  extraExcludedLabels: string[];
+}) {
   const [workType, setWorkType] = useState<string | null>(null);
   const [product, setProduct] = useState<string | null>(null);
   const [bucket, setBucket] = useState<string | null>(null);
@@ -137,6 +148,8 @@ export function LeadTimeDeepDive({ report, jiraBaseUrl }: { report: LeadTimeDeep
 
       <LeadTimePatternsTable rows={report.patterns} />
 
+      <ExcludedLabelsEditor labels={extraExcludedLabels} />
+
       {/* ============================================================= DETAILS */}
       <LeadTimeTicketsTable
         tickets={report.tickets}
@@ -148,6 +161,7 @@ export function LeadTimeDeepDive({ report, jiraBaseUrl }: { report: LeadTimeDeep
         bucketFilter={bucket}
         distribution={report.distribution}
         onClearFilters={hasFilter ? clearFilters : undefined}
+        extraExcludedLabels={extraExcludedLabels}
       />
     </div>
   );

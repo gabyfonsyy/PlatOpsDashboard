@@ -8,6 +8,8 @@ import {
   formatDurationBreakdown,
   formatManilaDate,
 } from "@/lib/format";
+import { useTablePagination } from "@/lib/use-table-pagination";
+import { TablePagination } from "@/components/dashboard/TablePagination";
 
 /**
  * Ticket list shared by the escalation / FCR / on-hold drill-downs, with a per-column filter.
@@ -86,6 +88,8 @@ export function BreakdownTicketsTable({
     [searchable, active]
   );
 
+  const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(visible);
+
   const columns: { key: string; label: string }[] = [
     { key: "issueKey", label: "Ticket" },
     { key: "assignee", label: assigneeLabel },
@@ -157,7 +161,7 @@ export function BreakdownTicketsTable({
               </td>
             </tr>
           ) : (
-            visible.map((t) => (
+            pageRows.map((t) => (
               <tr key={t.issueKey}>
                 <td className="px-4 py-3 font-medium text-neutral-900 whitespace-nowrap">
                   {jiraBaseUrl ? (
@@ -194,6 +198,7 @@ export function BreakdownTicketsTable({
           )}
         </tbody>
       </table>
+      <TablePagination page={page} pageCount={pageCount} totalCount={visible.length} pageSize={pageSize} onPageChange={setPage} />
     </div>
   );
 }

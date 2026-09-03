@@ -47,6 +47,11 @@ export const ANALYSIS_EXCLUDED_LABELS = [
   // Added 2026-09-02 — her list, verbatim.
   "ca-investigate",
   "ca-decode",
+  // Added 2026-09-03 — her list, verbatim. "detailing-revisit" was already named in the P1 SLA
+  // page's own description of this list (src/app/(dashboard)/[team]/p1-sla/page.tsx) but had never
+  // actually been added here — a real drift between that hardcoded prose and this array.
+  "eab-review",
+  "detailing-revisit",
 ];
 
 /**
@@ -59,13 +64,20 @@ export const BREAKDOWN_TICKET_LIMIT = 500;
 
 const EXCLUDED_LABEL_SET = new Set(ANALYSIS_EXCLUDED_LABELS.map((l) => l.toLowerCase()));
 
-/** Splits a CSV label cell into usable classification labels, dropping the excluded ones. */
-export function meaningfulLabels(labels: string | null | undefined): string[] {
+/**
+ * Splits a CSV label cell into usable classification labels, dropping the excluded ones.
+ *
+ * `extraExcluded` is the user-added overlay from lib/excluded-labels.ts (cookie-backed, so it can
+ * only be honored where a caller has actually read that cookie and passed it through — see that
+ * module's doc comment for which pages currently do). Omit it and this behaves exactly as before.
+ */
+export function meaningfulLabels(labels: string | null | undefined, extraExcluded?: readonly string[]): string[] {
+  const extraSet = extraExcluded?.length ? new Set(extraExcluded.map((l) => l.toLowerCase())) : null;
   return (labels || "")
     .split(",")
     .map((l) => l.trim())
     .filter(Boolean)
-    .filter((l) => !EXCLUDED_LABEL_SET.has(l.toLowerCase()));
+    .filter((l) => !EXCLUDED_LABEL_SET.has(l.toLowerCase()) && !(extraSet && extraSet.has(l.toLowerCase())));
 }
 
 /**

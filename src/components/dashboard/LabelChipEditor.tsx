@@ -28,6 +28,9 @@ export function LabelChipEditor({
   actions,
   tone = "neutral",
   busy = false,
+  readOnlyLabels,
+  readOnlyTitle = "Built in",
+  editableTitle,
 }: {
   title: string;
   description: ReactNode;
@@ -51,6 +54,16 @@ export function LabelChipEditor({
    * a second edit landing mid-refresh would be computed against the pre-edit list and silently lost.
    */
   busy?: boolean;
+  /**
+   * A separate, non-removable set shown above the editable chips — e.g. a hardcoded default list
+   * that isn't stored in whatever `labels` persists to, so there's nothing for onRemove to act on.
+   * Omit for editors with no such split (every existing caller before this one).
+   */
+  readOnlyLabels?: string[];
+  readOnlyTitle?: string;
+  /** Sub-heading over the editable chips, shown only when readOnlyLabels is also present — with
+   * nothing else on the card, the editable list doesn't need a heading of its own. */
+  editableTitle?: string;
 }) {
   const [draft, setDraft] = useState("");
 
@@ -82,7 +95,29 @@ export function LabelChipEditor({
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5 flex-wrap mt-3">
+      {readOnlyLabels && readOnlyLabels.length > 0 && (
+        <div className="mt-3">
+          <p className="text-[11px] uppercase tracking-wide text-neutral-400 mb-1.5">
+            {readOnlyTitle} ({readOnlyLabels.length})
+          </p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {readOnlyLabels.map((label) => (
+              <span
+                key={label}
+                className="inline-flex items-center text-xs rounded px-1.5 py-0.5 bg-neutral-50 text-neutral-400 border border-neutral-200"
+                title={`${label} — built in, not editable here`}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {readOnlyLabels && readOnlyLabels.length > 0 && editableTitle && (
+        <p className="text-[11px] uppercase tracking-wide text-neutral-400 mt-3 mb-1.5">{editableTitle}</p>
+      )}
+      <div className={`flex items-center gap-1.5 flex-wrap ${readOnlyLabels?.length ? "" : "mt-3"}`}>
         {labels.length === 0 && <span className="text-xs text-neutral-400">{emptyMessage}</span>}
         {labels.map((label) => (
           <button

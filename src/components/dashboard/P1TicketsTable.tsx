@@ -5,6 +5,8 @@ import { Search, X } from "lucide-react";
 import type { P1TicketRow } from "@/lib/p1-sla";
 import { Badge } from "@/components/ui/Badge";
 import { formatManilaDate } from "@/lib/format";
+import { useTablePagination } from "@/lib/use-table-pagination";
+import { TablePagination } from "@/components/dashboard/TablePagination";
 
 const STATUS_META: Record<P1TicketRow["status"], { label: string; tone: "success" | "warning" | "danger" }> = {
   onTime: { label: "On Time", tone: "success" },
@@ -69,6 +71,8 @@ export function P1TicketsTable({
         .map(({ ticket }) => ticket),
     [searchable, active]
   );
+
+  const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(visible);
 
   const columns = [
     { key: "issueKey", label: "Ticket" },
@@ -136,7 +140,7 @@ export function P1TicketsTable({
               </td>
             </tr>
           ) : (
-            visible.map((t) => {
+            pageRows.map((t) => {
               const meta = STATUS_META[t.status];
               return (
                 <tr key={t.issueKey}>
@@ -175,6 +179,7 @@ export function P1TicketsTable({
           )}
         </tbody>
       </table>
+      <TablePagination page={page} pageCount={pageCount} totalCount={visible.length} pageSize={pageSize} onPageChange={setPage} />
     </div>
   );
 }
