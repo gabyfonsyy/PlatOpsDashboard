@@ -11,73 +11,9 @@ import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { shiftPeriod, type RangeType } from "@/lib/date-ranges";
 import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
 import { BREAKDOWN_TICKET_LIMIT } from "@/lib/ticket-breakdowns";
+import { BACKEND_EXECUTION_ISSUE_TYPES } from "@/lib/tool-assisted";
 
 export type LeadCycleTimeMetric = "lead" | "cycle";
-
-export type LeadCycleTimeTicket = {
-  issueKey: string;
-  issueType: string;
-  /** The team's configured owner — Assigned COD for DBA/DevOps. */
-  assignee: string;
-  product: string;
-  labels: string;
-  minutes: number;
-  createdAt: string;
-  /** "" for Lead Time (not applicable — Lead Time starts at creation). */
-  startedAt: string;
-  /** The end of the measured span — resolution, except for ST Cycle Time where it is the review entry. */
-  resolvedAt: string;
-};
-
-export type LeadCycleTimeRankRow = { key: string; avgMinutes: number; count: number };
-
-export type LeadCycleTimeReport = {
-  team: string;
-  range: string;
-  period: string;
-  metric: LeadCycleTimeMetric;
-  issueType: string | null;
-  /** Column header for ranked-by-assignee — "Assigned COD" or "Assigned SE", per the team's config. */
-  assigneeLabel: string;
-  /**
-   * How this report's span is defined, for the page subtitle and the ticket table's two date
-   * columns. Derived here rather than in the page so the prose can never drift from the formula
-   * directly above it — ST Cycle Time measures something genuinely different (see basisFor).
-   */
-  description: string;
-  startColumnLabel: string;
-  endColumnLabel: string;
-  count: number;
-  /**
-   * For ST's Cycle Time specifically, this is the ACTUAL-WORK average only (out of To Do ->
-   * reached review) — the same span this field has always measured. `combinedAvgMinutes` below
-   * is actual + peer review, and IS this same value everywhere else (Lead Time, non-peer-review
-   * teams), so a reader who only looks at combinedAvgMinutes gets the right number regardless of
-   * team/metric.
-   */
-  avgMinutes: number | null;
-  /** Average time IN For Peer Review (peer_review_cycles_json). Null except ST's Cycle Time. */
-  peerReviewAvgMinutes: number | null;
-  /** How many tickets contributed to peerReviewAvgMinutes. */
-  peerReviewCount: number;
-  /**
-   * avgMinutes + peerReviewAvgMinutes for ST's Cycle Time — the same number the team-page
-   * scorecard shows (see getLeadCycleTimeAverages), so the card and this deep-dive agree by
-   * construction. Equals avgMinutes everywhere peer review doesn't apply.
-   */
-  combinedAvgMinutes: number | null;
-  topTickets: LeadCycleTimeTicket[];
-  byAssignee: LeadCycleTimeRankRow[];
-  byProduct: LeadCycleTimeRankRow[];
-  byLabel: LeadCycleTimeRankRow[];
-};
-
-const EMPTY_REPORT: LeadCycleTimeReport = {
-  team: "", range: "month", period: "", metric: "lead", issueType: null, assigneeLabel: "Assignee",
-  description: "", startColumnLabel: "Started", endColumnLabel: "Ended",
-  count: 0, avgMinutes: null, peerReviewAvgMinutes: null, peerReviewCount: 0, combinedAvgMinutes: null,
-  topTickets: [], byAssignee: [], byProduct: [], byLabel: [],
-};
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -391,131 +327,6 @@ async function fetchTicketsInRange(
       error: { message: string } | null;
     }>;
   });
-}
-
-function rankBy(withDuration: { row: TicketRow; minutes: number }[], keyFn: (r: TicketRow) => string): LeadCycleTimeRankRow[] {
-  const buckets: Record<string, { sum: number; count: number }> = {};
-  for (const x of withDuration) {
-    const key = keyFn(x.row);
-    if (!key) continue;
-    if (!buckets[key]) buckets[key] = { sum: 0, count: 0 };
-    buckets[key].sum += x.minutes;
-    buckets[key].count++;
-  }
-  return Object.entries(buckets)
-    .map(([key, b]) => ({ key, avgMinutes: round2(b.sum / b.count), count: b.count }))
-    .sort((a, b) => b.avgMinutes - a.avgMinutes);
-}
-
-/**
- * Phase 4 of the Sheets -> Supabase migration: reads the `tickets` table directly instead of
- * proxying through the GAS `lead-cycle-time-report` route. Ported from
- * gas/LeadCycleTimeApi.gs's getLeadCycleTimeDrilldownReport_.
- */
-export async function getLeadCycleTimeReport(
-  team: string,
-  range: string,
-  period: string,
-  metric: LeadCycleTimeMetric,
-  issueType?: string
-): Promise<LeadCycleTimeReport> {
-  try {
-    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
-    const teamConfig = (await getTeams()).find((t) => t.team_key === team);
-    if (!teamConfig) throw new Error(`Unknown team: ${team}`);
-
-    const basis = basisFor(metric, teamConfig.has_peer_review_tracking);
-    const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
-
-    const withDuration = rows
-      .filter((r) => !isExcludedIssueType(team, r.issue_type))
-      .filter((r) => {
-        const bucketIso = toManilaDateString(basis.endedAt(r));
-        return bucketIso && bucketIso >= startDate && bucketIso <= endDate;
-      })
-      .map((r) => ({ row: r, minutes: basis.duration(r) }))
-      .filter((x): x is { row: TicketRow; minutes: number } => x.minutes !== null && isFinite(x.minutes));
-
-    const topTickets: LeadCycleTimeTicket[] = withDuration
-      .slice()
-      .sort((a, b) => b.minutes - a.minutes)
-      .slice(0, 10)
-      .map((x) => ({
-        issueKey: x.row.issue_key,
-        issueType: x.row.issue_type || "",
-        assignee: backlogAgingAssignee(teamConfig, x.row) || "(unassigned)",
-        product: x.row.product || "(none)",
-        labels: x.row.labels || "",
-        minutes: round2(x.minutes),
-        createdAt: x.row.created,
-        startedAt: basis.startedAt(x.row),
-        resolvedAt: basis.endedAt(x.row),
-      }));
-
-    const byAssignee = rankBy(withDuration, (r) => backlogAgingAssignee(teamConfig, r) || "(unassigned)");
-    const byProduct = rankBy(withDuration, (r) => r.product || "(none)");
-
-    // Labels: a ticket's labels are a CSV of tags — expand to individual tokens and attribute
-    // this ticket's duration to each one, excluding department/team tags like se-ops, hr-ops,
-    // payroll-ops (anything containing "-ops") since those aren't a meaningful task classification.
-    const labelBuckets: Record<string, { sum: number; count: number }> = {};
-    for (const x of withDuration) {
-      const labels = (x.row.labels || "").split(",").map((s) => s.trim()).filter(Boolean);
-      for (const label of labels) {
-        if (label.toLowerCase().includes("-ops")) continue;
-        if (!labelBuckets[label]) labelBuckets[label] = { sum: 0, count: 0 };
-        labelBuckets[label].sum += x.minutes;
-        labelBuckets[label].count++;
-      }
-    }
-    const byLabel = Object.entries(labelBuckets)
-      .map(([key, b]) => ({ key, avgMinutes: round2(b.sum / b.count), count: b.count }))
-      .sort((a, b) => b.avgMinutes - a.avgMinutes);
-
-    const avgMinutes = withDuration.length
-      ? round2(withDuration.reduce((sum, x) => sum + x.minutes, 0) / withDuration.length)
-      : null;
-
-    // ST's Cycle Time only: decompose the same span into actual-work vs. time spent IN review,
-    // over the SAME ticket population withDuration already selected for the period, so this
-    // number and avgMinutes/topTickets/byAssignee etc. can never disagree about which tickets
-    // are in scope.
-    let peerReviewAvgMinutes: number | null = null;
-    let peerReviewCount = 0;
-    let combinedAvgMinutes = avgMinutes;
-    if (metric === "cycle" && teamConfig.has_peer_review_tracking) {
-      const reviewMinutesList = withDuration
-        .map((x) => sumPeerReviewMinutes(x.row.peer_review_cycles_json))
-        .filter((v): v is number => v !== null);
-      peerReviewCount = reviewMinutesList.length;
-      peerReviewAvgMinutes = peerReviewCount
-        ? round2(reviewMinutesList.reduce((sum, v) => sum + v, 0) / peerReviewCount)
-        : null;
-      combinedAvgMinutes =
-        avgMinutes !== null && peerReviewAvgMinutes !== null
-          ? round2(avgMinutes + peerReviewAvgMinutes)
-          : avgMinutes ?? peerReviewAvgMinutes;
-    }
-
-    return {
-      team, range, period, metric, issueType: issueType ?? null,
-      assigneeLabel: backlogAgingAssigneeLabel(teamConfig),
-      description: basis.description,
-      startColumnLabel: basis.startColumnLabel,
-      endColumnLabel: basis.endColumnLabel,
-      count: withDuration.length,
-      avgMinutes,
-      peerReviewAvgMinutes,
-      peerReviewCount,
-      combinedAvgMinutes,
-      topTickets,
-      byAssignee,
-      byProduct,
-      byLabel,
-    };
-  } catch {
-    return { ...EMPTY_REPORT, team, range, period, metric, issueType: issueType ?? null };
-  }
 }
 
 /**
@@ -1354,5 +1165,940 @@ export async function getLeadTimeDeepDive(
     return report;
   } catch {
     return emptyDeepDive(team, range, period, issueType);
+  }
+}
+
+// ==================================================================================
+// Cycle Time deep-dive (metric === "cycle") — same pulse -> trend -> distribution ->
+// breakdown -> longest-work -> patterns -> details shape as the Lead Time deep-dive
+// above, but for a peer-review team (has_peer_review_tracking, i.e. SE/ST) it also
+// decomposes every number into DOER (execution, cycle_time_start -> cycle_time_end)
+// vs. VALIDATOR (peer_review_cycles_json) — see basisFor's peer-review branch and
+// sumPeerReviewMinutes. DBA/DevOps have no such split; hasDoerValidatorSplit is false
+// for them and every doer/validator field is null, never a fabricated zero.
+//
+// A THIRD dimension sits inside the SE split itself: Backend Changes (Doer -> Validator) vs.
+// Investigations (Doer only — no review stage). getCycleTimeDeepDive's optional `workCategory`
+// parameter re-scopes the entire report to one of them (see cycleTimeWorkCategoryFor), and
+// reuses the exact same split/non-split machinery above — scoped to Investigations, a population
+// where nothing ever has a validatorMinutes value trivially produces showSplit=false and every
+// "Total" is already exactly "Doer" per-ticket, with no zero-filling required to make it so.
+// ==================================================================================
+
+export type CycleTimeWorkCategory = "backend" | "investigations";
+
+/**
+ * Ends its review path at For Checking, never at For Peer Review — see
+ * BACKEND_EXECUTION_ISSUE_TYPES's doc comment in lib/tool-assisted.ts, which is the source of
+ * truth for the OTHER half of this same split and is imported here rather than re-typed so the
+ * two pages can never disagree about which issue types get a Validator stage.
+ */
+const INVESTIGATION_ISSUE_TYPES = ["Investigation", "Data Generation", "External Support Request", "Team Viewer"];
+
+const BACKEND_CATEGORY_LOOKUP = new Set(BACKEND_EXECUTION_ISSUE_TYPES.map((t) => t.toLowerCase()));
+const INVESTIGATION_CATEGORY_LOOKUP = new Set(INVESTIGATION_ISSUE_TYPES.map((t) => t.toLowerCase()));
+
+/** Null for an issue type in neither list (e.g. a type introduced after this was written) —
+ * excluded from category-specific views/summaries rather than guessed into one. */
+export function cycleTimeWorkCategoryFor(issueType: string | null | undefined): CycleTimeWorkCategory | null {
+  const normalized = (issueType || "").trim().toLowerCase();
+  if (BACKEND_CATEGORY_LOOKUP.has(normalized)) return "backend";
+  if (INVESTIGATION_CATEGORY_LOOKUP.has(normalized)) return "investigations";
+  return null;
+}
+
+export type CycleTimeStat = {
+  count: number;
+  medianMinutes: number | null;
+  avgMinutes: number | null;
+  p75Minutes: number | null;
+  /** Null below a 10-ticket sample. */
+  p90Minutes: number | null;
+};
+
+function statOf(values: number[]): CycleTimeStat {
+  const sorted = values.slice().sort((a, b) => a - b);
+  const count = values.length;
+  return {
+    count,
+    medianMinutes: medianOf(sorted),
+    avgMinutes: count ? round2(values.reduce((s, v) => s + v, 0) / count) : null,
+    p75Minutes: percentile(sorted, 75),
+    p90Minutes: count >= 10 ? percentile(sorted, 90) : null,
+  };
+}
+
+export type CycleTimePulse = {
+  count: number;
+  /**
+   * Every field here is computed from the REAL per-ticket total (doerMinutes + validatorMinutes,
+   * treating "never reviewed" as 0) — EXCEPT avgMinutes, which is deliberately overridden to
+   * doer.avgMinutes + validator.avgMinutes (see below). That is the same "sum of two group
+   * averages" the team-page scorecard already uses (getPeerReviewCycleAverages /
+   * getLeadCycleTimeAverages), so this page's headline average can never disagree with the
+   * scorecard card it's linked from. Median/P75/P90 don't have that constraint (percentiles of a
+   * sum aren't the sum of percentiles regardless of convention), so those come straight off the
+   * true per-ticket totals.
+   */
+  total: CycleTimeStat;
+  /** Over every ticket in the population — every ticket in scope has a doer span by definition. */
+  doer: CycleTimeStat | null;
+  /**
+   * Over only the tickets that actually had a closed peer-review cycle (see sumPeerReviewMinutes).
+   * Deliberately NOT zero-filled for tickets that skipped review — that would drag the median/P90
+   * down and understate how long review takes when it happens. `count` here is therefore the
+   * "reviewed" count, not the population count (that's doer.count / pulse.count).
+   */
+  validator: CycleTimeStat | null;
+  /** doer.avgMinutes / total.avgMinutes. Null for teams without the split. */
+  doerSharePct: number | null;
+  /** (validator.avgMinutes ?? 0) / total.avgMinutes. Null for teams without the split. */
+  validatorSharePct: number | null;
+};
+
+type CycleTimeMetricDelta = { current: number | null; previous: number | null; deltaPct: number | null };
+
+export type CycleTimeComparison = {
+  count: { current: number; previous: number; deltaPct: number | null };
+  totalMedianMinutes: CycleTimeMetricDelta;
+  totalAvgMinutes: CycleTimeMetricDelta;
+  totalP90Minutes: CycleTimeMetricDelta;
+  /** Null for teams without the Doer/Validator split. */
+  doerMedianMinutes: CycleTimeMetricDelta | null;
+  doerAvgMinutes: CycleTimeMetricDelta | null;
+  validatorMedianMinutes: CycleTimeMetricDelta | null;
+  validatorAvgMinutes: CycleTimeMetricDelta | null;
+};
+
+export type CycleTimeTrendPoint = {
+  bucket: string;
+  count: number;
+  medianTotalMinutes: number | null;
+  avgTotalMinutes: number | null;
+  /** Null for teams without the split. */
+  medianDoerMinutes: number | null;
+  avgDoerMinutes: number | null;
+  medianValidatorMinutes: number | null;
+  avgValidatorMinutes: number | null;
+};
+
+export type CycleTimeDistributionBucket = { label: string; minDays: number; maxDays: number | null; count: number; share: number | null };
+
+export type CycleTimeDistributions = {
+  total: CycleTimeDistributionBucket[];
+  /** Null for teams without the split. Doer is over the full population; Validator is over the
+   * reviewed-only subset — same reasoning as CycleTimePulse.validator. */
+  doer: CycleTimeDistributionBucket[] | null;
+  validator: CycleTimeDistributionBucket[] | null;
+};
+
+export type CycleTimePercentileSet = { p50: number | null; p75: number | null; p90: number | null; p95: number | null };
+
+export type CycleTimePercentiles = {
+  total: CycleTimePercentileSet;
+  doer: CycleTimePercentileSet | null;
+  validator: CycleTimePercentileSet | null;
+};
+
+export type CycleTimeBreakdownRow = {
+  key: string;
+  count: number;
+  /** Null for teams without the split. */
+  avgDoerMinutes: number | null;
+  /** Null when nothing in this group was ever reviewed (or the team has no split). */
+  avgValidatorMinutes: number | null;
+  /** avgDoerMinutes + (avgValidatorMinutes ?? 0) — see CycleTimePulse.total's doc comment. */
+  avgTotalMinutes: number | null;
+  medianTotalMinutes: number | null;
+  p90TotalMinutes: number | null;
+  /** Tickets in this group above the report's long-running threshold (see longRunningThreshold). */
+  longRunningCount: number;
+  /** Set only on byTicketType rows for a peer-review team viewing "All SE Work" (no workCategory
+   * selected) — which of the two SE work models this issue type belongs to, so the breakdown
+   * table can group Backend Changes and Investigations under their own subheaders instead of
+   * interleaving a doer-only row among doer+validator ones. Null everywhere else (byProduct,
+   * byAssignee, DBA/DevOps, or when a single category is already selected). */
+  category: CycleTimeWorkCategory | null;
+};
+
+export type CycleTimeCategorySummary = {
+  category: CycleTimeWorkCategory | "other";
+  label: string;
+  count: number;
+  avgTotalMinutes: number | null;
+  medianTotalMinutes: number | null;
+  /** Backend Changes only — null for "investigations" and "other". */
+  avgDoerMinutes: number | null;
+  avgValidatorMinutes: number | null;
+};
+
+export type CycleTimeTicketOutlier = {
+  issueKey: string;
+  issueType: string;
+  assignee: string;
+  product: string;
+  labels: string;
+  createdAt: string;
+  startedAt: string;
+  resolvedAt: string;
+  doerMinutes: number;
+  /** Null when this ticket never had a closed peer-review cycle (or the team has no split). */
+  validatorMinutes: number | null;
+  totalMinutes: number;
+  vsMedianTotalMinutes: number | null;
+  vsMedianTotalPct: number | null;
+  /** Which side dominates this ticket's own total — null when the team has no split, or the two
+   * sides are within 30% of each other (genuinely balanced, not worth naming a "primary" side). */
+  dominant: "doer" | "validator" | "balanced" | null;
+};
+
+export type CycleTimePattern = {
+  dimension: "Ticket Type" | "Product";
+  key: string;
+  count: number;
+  medianTotalMinutes: number | null;
+  p90TotalMinutes: number | null;
+};
+
+export type CycleTimeTicketRow = {
+  issueKey: string;
+  issueType: string;
+  assignee: string;
+  product: string;
+  labels: string;
+  createdAt: string;
+  startedAt: string;
+  resolvedAt: string;
+  doerMinutes: number;
+  validatorMinutes: number | null;
+  totalMinutes: number;
+  vsMedianTotalMinutes: number | null;
+};
+
+export type CycleTimeDeepDiveReport = {
+  team: string;
+  range: string;
+  period: string;
+  issueType: string | null;
+  assigneeLabel: string;
+  description: string;
+  /**
+   * True when THIS POPULATION has a Doer/Validator split to show — gates every doer/validator
+   * field and section. False for DBA/DevOps (the team has no split at all) AND for SE scoped to
+   * Investigations (the team has one, but Investigations don't go through review) — see
+   * `workCategory` and `workflowModel` to tell those two cases apart for copy purposes.
+   */
+  hasDoerValidatorSplit: boolean;
+  /**
+   * "doer-validator" when this population's Cycle Time decomposes (SE, All Work or Backend
+   * Changes) — same as hasDoerValidatorSplit true. "doer-only" when the team has the split but
+   * this population structurally doesn't (SE scoped to Investigations) — Doer = Total, and the
+   * page should say so rather than rendering a generic single "Cycle Time" as if this were
+   * DBA/DevOps. "single" when the team has no split at all (DBA/DevOps).
+   */
+  workflowModel: "doer-validator" | "doer-only" | "single";
+  /** The category this report is scoped to, or null for "All SE Work" (every category pooled).
+   * Always null for a team without the split. */
+  workCategory: CycleTimeWorkCategory | null;
+  /** Backend Changes vs. Investigations (vs. "other" if any issue type falls in neither list) at
+   * a glance — ONLY populated for a peer-review team with workCategory unset (the "All SE Work"
+   * view); null otherwise, since a single-category view already IS that category's numbers. */
+  categoryComparison: CycleTimeCategorySummary[] | null;
+  startColumnLabel: string;
+  endColumnLabel: string;
+  pulse: CycleTimePulse;
+  comparison: CycleTimeComparison | null;
+  /** "Where is the time going?" dominant-contributor read — always present when hasDoerValidatorSplit,
+   * shown directly under the Doer/Validator breakdown bar rather than folded into `insights`. */
+  doerValidatorInsight: LeadTimeInsight | null;
+  insights: LeadTimeInsight[];
+  positiveHighlights: LeadTimePositiveHighlight[];
+  trend: CycleTimeTrendPoint[];
+  distribution: CycleTimeDistributions;
+  percentiles: CycleTimePercentiles;
+  byTicketType: CycleTimeBreakdownRow[];
+  byProduct: CycleTimeBreakdownRow[];
+  /** Individual (Assigned SE) breakdown — empty for teams without the split. Sorted by ticket
+   * volume, not by speed, so this can't read as a leaderboard. */
+  byAssignee: CycleTimeBreakdownRow[];
+  /** Top 20 by Doer minutes. Empty for teams without the split. */
+  longestToExecute: CycleTimeTicketOutlier[];
+  longestToExecuteTotalCount: number;
+  /** Top 20 by Validator minutes, over reviewed tickets only. Empty for teams without the split. */
+  longestToValidate: CycleTimeTicketOutlier[];
+  longestToValidateTotalCount: number;
+  /** Top 20 by Total minutes, ABOVE the period's long-running threshold — merges "longest overall"
+   * and "outlier analysis" into one table, same call as the Lead Time deep-dive's longRunning. For
+   * a team without the split this is the page's only "longest work" table. */
+  longestEndToEnd: CycleTimeTicketOutlier[];
+  longestEndToEndTotalCount: number;
+  patterns: CycleTimePattern[];
+  tickets: CycleTimeTicketRow[];
+  ticketsTotalCount: number;
+};
+
+function emptyCycleTimeDeepDive(
+  team: string,
+  range: string,
+  period: string,
+  issueType?: string,
+  workCategory?: CycleTimeWorkCategory
+): CycleTimeDeepDiveReport {
+  const emptyStat: CycleTimeStat = { count: 0, medianMinutes: null, avgMinutes: null, p75Minutes: null, p90Minutes: null };
+  const emptyPct: CycleTimePercentileSet = { p50: null, p75: null, p90: null, p95: null };
+  return {
+    team, range, period, issueType: issueType ?? null,
+    assigneeLabel: "Assignee",
+    description: "",
+    hasDoerValidatorSplit: false,
+    workflowModel: "single",
+    workCategory: workCategory ?? null,
+    categoryComparison: null,
+    startColumnLabel: "Started",
+    endColumnLabel: "Ended",
+    pulse: { count: 0, total: emptyStat, doer: null, validator: null, doerSharePct: null, validatorSharePct: null },
+    comparison: null,
+    doerValidatorInsight: null,
+    insights: [],
+    positiveHighlights: [],
+    trend: [],
+    distribution: { total: [], doer: null, validator: null },
+    percentiles: { total: emptyPct, doer: null, validator: null },
+    byTicketType: [],
+    byProduct: [],
+    byAssignee: [],
+    longestToExecute: [],
+    longestToExecuteTotalCount: 0,
+    longestToValidate: [],
+    longestToValidateTotalCount: 0,
+    longestEndToEnd: [],
+    longestEndToEndTotalCount: 0,
+    patterns: [],
+    tickets: [],
+    ticketsTotalCount: 0,
+  };
+}
+
+/** One ticket in the Cycle Time deep-dive's working population, with its span already split. */
+type CycleTimeRow = {
+  row: TicketRow;
+  doerMinutes: number;
+  /** Null when the team has no split, or this ticket never had a closed peer-review cycle. */
+  validatorMinutes: number | null;
+  /** doerMinutes + (validatorMinutes ?? 0) — real per-ticket total, always defined. */
+  totalMinutes: number;
+};
+
+/**
+ * Filters `rows` to the period/exclusion rules every other function in this file already applies,
+ * then splits each ticket's duration into doer/validator/total. Shared by getCycleTimeDeepDive and
+ * summarizeCycleTimePeriod (the previous-period comparison) so both read the exact same population.
+ */
+function cycleTimeRowsFor(
+  rows: TicketRow[],
+  team: string,
+  hasSplit: boolean,
+  basis: ReturnType<typeof basisFor>,
+  startDate: string,
+  endDate: string
+): CycleTimeRow[] {
+  const out: CycleTimeRow[] = [];
+  for (const r of rows) {
+    if (isExcludedIssueType(team, r.issue_type)) continue;
+    const bucketIso = toManilaDateString(basis.endedAt(r));
+    if (!bucketIso || bucketIso < startDate || bucketIso > endDate) continue;
+    const doerMinutes = basis.duration(r);
+    if (doerMinutes === null || !isFinite(doerMinutes)) continue;
+    const validatorMinutes = hasSplit ? sumPeerReviewMinutes(r.peer_review_cycles_json) : null;
+    out.push({
+      row: r,
+      doerMinutes: round2(doerMinutes),
+      validatorMinutes,
+      totalMinutes: round2(doerMinutes + (validatorMinutes ?? 0)),
+    });
+  }
+  return out;
+}
+
+/** doer.avgMinutes + validator.avgMinutes, the sum-of-group-averages convention — see CycleTimePulse.total. */
+function combinedAvg(doerAvg: number | null, validatorAvg: number | null): number | null {
+  if (doerAvg !== null && validatorAvg !== null) return round2(doerAvg + validatorAvg);
+  return doerAvg ?? validatorAvg;
+}
+
+function cycleTimeDistributionOf(values: number[]): CycleTimeDistributionBucket[] {
+  const count = values.length;
+  return DISTRIBUTION_BUCKETS.map((b) => {
+    const c = values.filter((v) => {
+      const days = v / 1440;
+      return days >= b.minDays && (b.maxDays === null || days < b.maxDays);
+    }).length;
+    return { label: b.label, minDays: b.minDays, maxDays: b.maxDays, count: c, share: count ? round4(c / count) : null };
+  });
+}
+
+function cycleTimePercentilesOf(values: number[]): CycleTimePercentileSet {
+  const sorted = values.slice().sort((a, b) => a - b);
+  const count = values.length;
+  return {
+    p50: medianOf(sorted),
+    p75: percentile(sorted, 75),
+    p90: count >= 10 ? percentile(sorted, 90) : null,
+    p95: count >= 20 ? percentile(sorted, 95) : null,
+  };
+}
+
+/** Just enough of one period's Cycle Time numbers to diff against another — mirrors summarizeLeadTimePeriod. */
+async function summarizeCycleTimePeriod(
+  team: string,
+  range: string,
+  period: string,
+  issueType: string | undefined,
+  teamConfig: TeamConfig,
+  workCategory?: CycleTimeWorkCategory
+): Promise<{
+  count: number;
+  totalMedianMinutes: number | null;
+  totalAvgMinutes: number | null;
+  totalP90Minutes: number | null;
+  doerMedianMinutes: number | null;
+  doerAvgMinutes: number | null;
+  validatorMedianMinutes: number | null;
+  validatorAvgMinutes: number | null;
+}> {
+  const hasSplit = teamConfig.has_peer_review_tracking;
+  const showSplit = hasSplit && workCategory !== "investigations";
+  const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+  const basis = basisFor("cycle", hasSplit);
+  const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
+  let cRows = cycleTimeRowsFor(rows, team, hasSplit, basis, startDate, endDate);
+  if (workCategory) cRows = cRows.filter((x) => cycleTimeWorkCategoryFor(x.row.issue_type) === workCategory);
+
+  const doerStat = statOf(cRows.map((x) => x.doerMinutes));
+  const validatorValues = cRows.map((x) => x.validatorMinutes).filter((v): v is number => v !== null);
+  const validatorStat = showSplit ? statOf(validatorValues) : null;
+  const totalReal = statOf(cRows.map((x) => x.totalMinutes));
+
+  return {
+    count: cRows.length,
+    totalMedianMinutes: totalReal.medianMinutes,
+    totalAvgMinutes: showSplit ? combinedAvg(doerStat.avgMinutes, validatorStat?.avgMinutes ?? null) : totalReal.avgMinutes,
+    totalP90Minutes: totalReal.p90Minutes,
+    doerMedianMinutes: showSplit ? doerStat.medianMinutes : null,
+    doerAvgMinutes: showSplit ? doerStat.avgMinutes : null,
+    validatorMedianMinutes: showSplit ? validatorStat?.medianMinutes ?? null : null,
+    validatorAvgMinutes: showSplit ? validatorStat?.avgMinutes ?? null : null,
+  };
+}
+
+/**
+ * Backend Changes vs. Investigations at a glance, over the FULL (unfiltered-by-category)
+ * population — the "All SE Work" composition summary from the brief (sections 1/5/9/13). Computed
+ * once, before the report's own cRows gets narrowed to a single category, so this always reflects
+ * the whole team regardless of which category (if any) the rest of the page is scoped to.
+ *
+ * "other" only appears when an issue type in scope matches neither list — surfaced rather than
+ * silently dropped, same "hiding data invites suspicion" rule the Tool-Assisted page follows for
+ * its own thin samples.
+ */
+function buildCategoryComparison(allRows: CycleTimeRow[]): CycleTimeCategorySummary[] {
+  const groups: Record<"backend" | "investigations" | "other", CycleTimeRow[]> = { backend: [], investigations: [], other: [] };
+  for (const x of allRows) {
+    const cat = cycleTimeWorkCategoryFor(x.row.issue_type);
+    groups[cat ?? "other"].push(x);
+  }
+
+  const summaryFor = (category: CycleTimeWorkCategory | "other", label: string): CycleTimeCategorySummary | null => {
+    const groupRows = groups[category];
+    if (!groupRows.length) return null;
+    const totalStat = statOf(groupRows.map((x) => x.totalMinutes));
+    if (category === "investigations" || category === "other") {
+      return {
+        category, label, count: groupRows.length,
+        avgTotalMinutes: totalStat.avgMinutes, medianTotalMinutes: totalStat.medianMinutes,
+        avgDoerMinutes: null, avgValidatorMinutes: null,
+      };
+    }
+    const doerAvg = round2(groupRows.reduce((s, x) => s + x.doerMinutes, 0) / groupRows.length);
+    const validatorValues = groupRows.map((x) => x.validatorMinutes).filter((v): v is number => v !== null);
+    const validatorAvg = validatorValues.length ? round2(validatorValues.reduce((s, v) => s + v, 0) / validatorValues.length) : null;
+    return {
+      category, label, count: groupRows.length,
+      avgTotalMinutes: combinedAvg(doerAvg, validatorAvg), medianTotalMinutes: totalStat.medianMinutes,
+      avgDoerMinutes: doerAvg, avgValidatorMinutes: validatorAvg,
+    };
+  };
+
+  return [
+    summaryFor("backend", "Backend Changes"),
+    summaryFor("investigations", "Investigations"),
+    summaryFor("other", "Other"),
+  ].filter((s): s is CycleTimeCategorySummary => s !== null);
+}
+
+/**
+ * Rules-based, mirroring buildLeadTimeInsights exactly in spirit: never free-text/LLM-generated,
+ * each rule fires only when its own numeric condition is true, capped at 5. Ordered: overall
+ * direction, long tail, doer-vs-validator trend driver (split teams only), concentration in a
+ * ticket type, recurring pattern.
+ */
+function buildCycleTimeInsights(report: {
+  hasDoerValidatorSplit: boolean;
+  pulse: CycleTimePulse;
+  comparison: CycleTimeComparison | null;
+  byTicketType: CycleTimeBreakdownRow[];
+  patterns: CycleTimePattern[];
+  longestEndToEndTotalCount: number;
+}): LeadTimeInsight[] {
+  const insights: LeadTimeInsight[] = [];
+  const c = report.comparison;
+
+  if (
+    c &&
+    c.totalMedianMinutes.current !== null &&
+    c.totalMedianMinutes.previous !== null &&
+    c.totalMedianMinutes.deltaPct !== null &&
+    Math.abs(c.totalMedianMinutes.deltaPct) >= 0.05
+  ) {
+    const improved = c.totalMedianMinutes.deltaPct < 0;
+    const pct = Math.round(Math.abs(c.totalMedianMinutes.deltaPct) * 1000) / 10;
+    const prev = fmtDaysShort(c.totalMedianMinutes.previous);
+    const curr = fmtDaysShort(c.totalMedianMinutes.current);
+    insights.push({
+      text: {
+        professional: `Median Cycle Time ${improved ? "improved" : "increased"} from ${prev} to ${curr} (${improved ? "-" : "+"}${pct}%) vs the previous period.`,
+        gaby: improved
+          ? `**📈 Mission trajectory looks good.** Median Cycle Time dropped from **${prev} → ${curr}** (${pct}% faster) compared with the previous period.`
+          : `**⚠️ We're drifting off course.** Median Cycle Time went from **${prev} → ${curr}** (${pct}% slower) vs the previous period.`,
+      },
+      tone: improved ? "positive" : "negative",
+    });
+  }
+
+  if (
+    report.pulse.total.medianMinutes !== null &&
+    report.pulse.total.p90Minutes !== null &&
+    report.pulse.total.p90Minutes > report.pulse.total.medianMinutes * 2
+  ) {
+    const p90 = fmtDaysShort(report.pulse.total.p90Minutes);
+    const median = fmtDaysShort(report.pulse.total.medianMinutes);
+    insights.push({
+      text: {
+        professional: `P90 Cycle Time is ${p90} despite a ${median} median — a long tail of slow-moving work is pulling the average up.`,
+        gaby: `**👀 Most tickets move fast, but a few are dragging things out.** P90 sits at **${p90}** against a **${median}** median.`,
+      },
+      tone: "watch",
+    });
+  }
+
+  if (
+    report.hasDoerValidatorSplit &&
+    c?.doerMedianMinutes &&
+    c?.validatorMedianMinutes &&
+    c.doerMedianMinutes.deltaPct !== null &&
+    c.validatorMedianMinutes.deltaPct !== null &&
+    (Math.abs(c.doerMedianMinutes.deltaPct) >= 0.1 || Math.abs(c.validatorMedianMinutes.deltaPct) >= 0.1)
+  ) {
+    const doerMoved = Math.abs(c.doerMedianMinutes.deltaPct) >= 0.1;
+    const validatorMoved = Math.abs(c.validatorMedianMinutes.deltaPct) >= 0.1;
+    const doerDominant = Math.abs(c.doerMedianMinutes.deltaPct) > Math.abs(c.validatorMedianMinutes.deltaPct);
+    if (doerMoved && !validatorMoved) {
+      const pct = Math.round(Math.abs(c.doerMedianMinutes.deltaPct) * 1000) / 10;
+      const dir = c.doerMedianMinutes.deltaPct > 0 ? "increased" : "decreased";
+      insights.push({
+        text: {
+          professional: `Doer (execution) time ${dir} ${pct}% vs the previous period while Validator (review) time stayed roughly flat — execution is driving the change in Cycle Time.`,
+          gaby: `**🚀 Execution is what moved this period.** Doer time ${dir} **${pct}%** while Validation stayed roughly flat.`,
+        },
+        tone: c.doerMedianMinutes.deltaPct > 0 ? "negative" : "positive",
+      });
+    } else if (validatorMoved && !doerMoved) {
+      const pct = Math.round(Math.abs(c.validatorMedianMinutes.deltaPct) * 1000) / 10;
+      const dir = c.validatorMedianMinutes.deltaPct > 0 ? "increased" : "decreased";
+      insights.push({
+        text: {
+          professional: `Validator (review) time ${dir} ${pct}% vs the previous period while Doer (execution) time stayed roughly flat — validation is driving the change in Cycle Time.`,
+          gaby: `**🛰️ Validation is what moved this period.** Review time ${dir} **${pct}%** while execution stayed roughly flat.`,
+        },
+        tone: c.validatorMedianMinutes.deltaPct > 0 ? "negative" : "positive",
+      });
+    } else if (doerMoved && validatorMoved) {
+      const bigger = doerDominant ? "Doer (execution)" : "Validator (review)";
+      insights.push({
+        text: {
+          professional: `Both Doer and Validator time shifted this period, with ${bigger} moving more — the larger driver of the change in Cycle Time.`,
+          gaby: `**Both sides shifted this period** — ${bigger.toLowerCase()} moved the most, so that's the bigger driver of the change.`,
+        },
+        tone: "watch",
+      });
+    }
+  }
+
+  const topLongRunning = report.byTicketType.filter((r) => r.longRunningCount > 0).sort((a, b) => b.longRunningCount - a.longRunningCount)[0];
+  const totalLongRunning = report.longestEndToEndTotalCount;
+  if (topLongRunning && totalLongRunning >= 3 && topLongRunning.longRunningCount / totalLongRunning >= 0.4) {
+    insights.push({
+      text: {
+        professional: `"${topLongRunning.key}" accounts for ${topLongRunning.longRunningCount} of the ${totalLongRunning} unusually long-running tickets this period.`,
+        gaby: `**🚩 "${topLongRunning.key}" is doing more than its share.** It accounts for **${topLongRunning.longRunningCount} of ${totalLongRunning}** unusually long-running tickets this period.`,
+      },
+      tone: "watch",
+    });
+  }
+
+  if (report.patterns.length) {
+    const p = report.patterns[0];
+    const median = fmtDaysShort(p.medianTotalMinutes ?? 0);
+    const smallSample = p.count < 10;
+    insights.push({
+      text: {
+        professional: `Recurring pattern: ${p.dimension === "Ticket Type" ? "ticket type" : "product"} "${p.key}" (${p.count} tickets) runs a ${median} median Cycle Time, notably above the overall median.`,
+        gaby: `**A pattern worth knowing about.** "${p.key}" (**${p.count}** tickets) consistently runs a **${median}** median Cycle Time.${
+          smallSample ? " Small sample — a signal, not a conclusion yet." : ""
+        }`,
+      },
+      tone: "watch",
+    });
+  }
+
+  if (!insights.length && report.pulse.count > 0) {
+    insights.push({
+      text: {
+        professional: "Cycle Time is stable and consistent this period — no significant shifts or long-tail concentration detected.",
+        gaby: "**Nothing jumping out this period.** Cycle Time's steady — no long tail, no volume spike, no recurring slow pattern.",
+      },
+      tone: "positive",
+    });
+  }
+
+  return insights.slice(0, 5);
+}
+
+/**
+ * The one insight the brief asks to always answer — "where is the time going?" — separate from
+ * buildCycleTimeInsights above so it can sit directly under the Doer/Validator breakdown bar
+ * rather than compete for a slot in the general "What Should I Know?" list. Always present for a
+ * split team with data (not gated on a magnitude threshold, unlike the rules above), because the
+ * page's whole point is answering this specific question.
+ */
+function buildDoerValidatorInsight(pulse: CycleTimePulse): LeadTimeInsight | null {
+  if (pulse.doerSharePct === null || pulse.validatorSharePct === null) return null;
+  const doerPct = Math.round(pulse.doerSharePct * 1000) / 10;
+  const validatorPct = Math.round(pulse.validatorSharePct * 1000) / 10;
+  const balanced = Math.abs(doerPct - validatorPct) <= 10;
+
+  if (balanced) {
+    return {
+      text: {
+        professional: `Execution and validation contribute almost equally to total Cycle Time (${doerPct}% vs ${validatorPct}%).`,
+        gaby: `**⚖️ Pretty balanced mission.** Execution and validation are contributing almost equally to total Cycle Time.`,
+      },
+      tone: "watch",
+    };
+  }
+  if (doerPct > validatorPct) {
+    return {
+      text: {
+        professional: `Execution is the larger contributor to Cycle Time. Doer time accounts for ${doerPct}% of total Cycle Time.`,
+        gaby: `**🚀 Execution is eating most of the mission time.** Doer work accounts for **${doerPct}%** of total Cycle Time.`,
+      },
+      tone: "watch",
+    };
+  }
+  return {
+    text: {
+      professional: `Validation is the larger contributor to Cycle Time. Validator time accounts for ${validatorPct}% of total Cycle Time.`,
+      gaby: `**🛰️ Validation is holding us in orbit.** ${validatorPct}% of total Cycle Time is being spent in review.`,
+    },
+    tone: "watch",
+  };
+}
+
+function buildCycleTimePositiveHighlights(report: {
+  comparison: CycleTimeComparison | null;
+  byTicketType: CycleTimeBreakdownRow[];
+  byProduct: CycleTimeBreakdownRow[];
+}): LeadTimePositiveHighlight[] {
+  const highlights: LeadTimePositiveHighlight[] = [];
+  const c = report.comparison;
+
+  if (c && c.totalMedianMinutes.deltaPct !== null && c.totalMedianMinutes.deltaPct <= -0.05) {
+    highlights.push({
+      label: "Faster delivery",
+      detail: `Median Cycle Time down ${Math.round(Math.abs(c.totalMedianMinutes.deltaPct) * 1000) / 10}% vs the previous period.`,
+    });
+  }
+
+  const consistent = [...report.byTicketType, ...report.byProduct]
+    .filter((r) => r.count >= 5 && r.medianTotalMinutes !== null && r.medianTotalMinutes > 0 && r.p90TotalMinutes !== null)
+    .sort((a, b) => a.p90TotalMinutes! / a.medianTotalMinutes! - b.p90TotalMinutes! / b.medianTotalMinutes!)[0];
+  if (consistent) {
+    highlights.push({ label: "Most consistent", detail: `${consistent.key} — ${consistent.count} tickets, tight spread between median and P90 Cycle Time.` });
+  }
+
+  return highlights.slice(0, 3);
+}
+
+/**
+ * The Cycle Time drill-down's full deep-dive — pulse (with Doer/Validator decomposition for a
+ * peer-review team), trend, distribution, breakdown by ticket type/product/assignee, three
+ * "longest work" rankings (Execute/Validate/End-to-End, the last merged with outlier analysis),
+ * recurring patterns, and a filterable per-ticket table. Same population as basisFor("cycle", ...)
+ * — cycle_time_start -> cycle_time_end for a peer-review team, first_out_of_backlog_todo ->
+ * resolved_datetime otherwise — so this reconciles with the team-page scorecard and with Lead
+ * Time's own drill-down by construction.
+ */
+export async function getCycleTimeDeepDive(
+  team: string,
+  range: string,
+  period: string,
+  issueType?: string,
+  workCategory?: CycleTimeWorkCategory
+): Promise<CycleTimeDeepDiveReport> {
+  try {
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const teamConfig = (await getTeams()).find((t) => t.team_key === team);
+    if (!teamConfig) throw new Error(`Unknown team: ${team}`);
+
+    // hasSplit: does the TEAM have peer-review tracking at all (SE/ST) — gates cycleTimeRowsFor's
+    // attempt to read peer_review_cycles_json, and whether the category comparison/toggle apply.
+    // showSplit: does THIS population (after any category scoping) have a split to DISPLAY — false
+    // for DBA/DevOps and for SE narrowed to Investigations, which structurally never has a
+    // Validator. Every doer/validator computation below gates on showSplit, not hasSplit.
+    const hasSplit = teamConfig.has_peer_review_tracking;
+    const showSplit = hasSplit && workCategory !== "investigations";
+    const basis = basisFor("cycle", hasSplit);
+    const rows = await fetchTicketsInRange(team, basis.dateColumn, startDate, endDate, issueType);
+    const allTeamRows = cycleTimeRowsFor(rows, team, hasSplit, basis, startDate, endDate);
+
+    // Computed from the FULL team population, before any category filter narrows cRows below —
+    // this is what makes "All SE Work" able to say what it's composed of.
+    const categoryComparison = hasSplit && !workCategory ? buildCategoryComparison(allTeamRows) : null;
+
+    const cRows = workCategory ? allTeamRows.filter((x) => cycleTimeWorkCategoryFor(x.row.issue_type) === workCategory) : allTeamRows;
+
+    const count = cRows.length;
+    const totalValues = cRows.map((x) => x.totalMinutes);
+    const doerValues = cRows.map((x) => x.doerMinutes);
+    const validatorMeasured = cRows.map((x) => x.validatorMinutes).filter((v): v is number => v !== null);
+
+    const doerStat = showSplit ? statOf(doerValues) : null;
+    const validatorStat = showSplit ? statOf(validatorMeasured) : null;
+    const totalStatReal = statOf(totalValues);
+    const totalAvg = showSplit ? combinedAvg(doerStat!.avgMinutes, validatorStat!.avgMinutes) : totalStatReal.avgMinutes;
+    const totalStat: CycleTimeStat = { ...totalStatReal, avgMinutes: totalAvg };
+
+    const doerSharePct = showSplit && doerStat!.avgMinutes !== null && totalAvg ? round4(doerStat!.avgMinutes / totalAvg) : null;
+    const validatorSharePct = showSplit && totalAvg ? round4((validatorStat!.avgMinutes ?? 0) / totalAvg) : null;
+
+    const pulse: CycleTimePulse = { count, total: totalStat, doer: doerStat, validator: validatorStat, doerSharePct, validatorSharePct };
+
+    const percentiles: CycleTimePercentiles = {
+      total: cycleTimePercentilesOf(totalValues),
+      doer: showSplit ? cycleTimePercentilesOf(doerValues) : null,
+      validator: showSplit ? cycleTimePercentilesOf(validatorMeasured) : null,
+    };
+    const distribution: CycleTimeDistributions = {
+      total: cycleTimeDistributionOf(totalValues),
+      doer: showSplit ? cycleTimeDistributionOf(doerValues) : null,
+      validator: showSplit ? cycleTimeDistributionOf(validatorMeasured) : null,
+    };
+
+    // "Long-running": above P90 when the sample supports one, else 2x the median — same rule as
+    // the Lead Time deep-dive, applied to the real per-ticket TOTAL.
+    const longRunningThreshold = totalStatReal.p90Minutes ?? (totalStatReal.medianMinutes !== null ? totalStatReal.medianMinutes * 2 : null);
+
+    const buckets = leadTimeEnumerateBuckets(range, startDate, endDate);
+    const byBucket = new Map<string, { count: number; total: number[]; doer: number[]; validator: number[] }>();
+    for (const b of buckets) byBucket.set(b, { count: 0, total: [], doer: [], validator: [] });
+    for (const x of cRows) {
+      const iso = toManilaDateString(basis.endedAt(x.row));
+      if (!iso) continue;
+      const b = byBucket.get(leadTimeBucketKeyFor(range, iso));
+      if (!b) continue;
+      b.count++;
+      b.total.push(x.totalMinutes);
+      b.doer.push(x.doerMinutes);
+      if (x.validatorMinutes !== null) b.validator.push(x.validatorMinutes);
+    }
+    const trend: CycleTimeTrendPoint[] = buckets.map((key) => {
+      const b = byBucket.get(key)!;
+      const doerStatB = showSplit ? statOf(b.doer) : null;
+      const validatorStatB = showSplit ? statOf(b.validator) : null;
+      return {
+        bucket: key,
+        count: b.count,
+        medianTotalMinutes: medianOf(b.total.slice().sort((a, c) => a - c)),
+        avgTotalMinutes: showSplit ? combinedAvg(doerStatB!.avgMinutes, validatorStatB!.avgMinutes) : b.count ? round2(b.total.reduce((s, v) => s + v, 0) / b.count) : null,
+        medianDoerMinutes: showSplit ? doerStatB!.medianMinutes : null,
+        avgDoerMinutes: showSplit ? doerStatB!.avgMinutes : null,
+        medianValidatorMinutes: showSplit ? validatorStatB!.medianMinutes : null,
+        avgValidatorMinutes: showSplit ? validatorStatB!.avgMinutes : null,
+      };
+    });
+
+    const breakdownBy = (keyFn: (r: TicketRow) => string): CycleTimeBreakdownRow[] => {
+      const groups = new Map<string, CycleTimeRow[]>();
+      for (const x of cRows) {
+        const key = keyFn(x.row) || "(none)";
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(x);
+      }
+      return Array.from(groups.entries())
+        .map(([key, groupRows]) => {
+          const groupTotals = groupRows.map((x) => x.totalMinutes);
+          const sortedTotals = groupTotals.slice().sort((a, b) => a - b);
+          const groupDoerAvg = showSplit ? round2(groupRows.reduce((s, x) => s + x.doerMinutes, 0) / groupRows.length) : null;
+          const groupValidatorValues = groupRows.map((x) => x.validatorMinutes).filter((v): v is number => v !== null);
+          const groupValidatorAvg = showSplit && groupValidatorValues.length ? round2(groupValidatorValues.reduce((s, v) => s + v, 0) / groupValidatorValues.length) : null;
+          return {
+            key,
+            count: groupRows.length,
+            avgDoerMinutes: groupDoerAvg,
+            avgValidatorMinutes: groupValidatorAvg,
+            avgTotalMinutes: showSplit ? combinedAvg(groupDoerAvg, groupValidatorAvg) : round2(groupTotals.reduce((s, v) => s + v, 0) / groupTotals.length),
+            medianTotalMinutes: medianOf(sortedTotals),
+            p90TotalMinutes: groupTotals.length >= 10 ? percentile(sortedTotals, 90) : null,
+            longRunningCount: longRunningThreshold !== null ? groupTotals.filter((v) => v > longRunningThreshold).length : 0,
+            category: null as CycleTimeWorkCategory | null,
+          };
+        })
+        .sort((a, b) => b.count - a.count); // impact (volume) first, not just avg
+    };
+
+    // Category tag only makes sense keyed on issue type — set here rather than inside the generic
+    // breakdownBy above, which byProduct/byAssignee also call with a key that isn't an issue type.
+    const byTicketType = breakdownBy((r) => r.issue_type || "(none)").map((row) => ({ ...row, category: cycleTimeWorkCategoryFor(row.key) }));
+    const byProduct = breakdownBy((r) => r.product || "(none)");
+    const byAssignee = showSplit ? breakdownBy((r) => backlogAgingAssignee(teamConfig, r) || "(unassigned)") : [];
+
+    const toOutlier = (x: CycleTimeRow): CycleTimeTicketOutlier => {
+      const validator = x.validatorMinutes;
+      let dominant: CycleTimeTicketOutlier["dominant"] = null;
+      if (showSplit) {
+        const v = validator ?? 0;
+        if (x.doerMinutes > v * 1.3) dominant = "doer";
+        else if (v > x.doerMinutes * 1.3) dominant = "validator";
+        else dominant = "balanced";
+      }
+      return {
+        issueKey: x.row.issue_key,
+        issueType: x.row.issue_type || "",
+        assignee: backlogAgingAssignee(teamConfig, x.row) || "(unassigned)",
+        product: x.row.product || "(none)",
+        labels: x.row.labels || "",
+        createdAt: x.row.created,
+        startedAt: basis.startedAt(x.row),
+        resolvedAt: basis.endedAt(x.row),
+        doerMinutes: x.doerMinutes,
+        validatorMinutes: validator,
+        totalMinutes: x.totalMinutes,
+        vsMedianTotalMinutes: totalStatReal.medianMinutes !== null ? round2(x.totalMinutes - totalStatReal.medianMinutes) : null,
+        vsMedianTotalPct: totalStatReal.medianMinutes ? round4((x.totalMinutes - totalStatReal.medianMinutes) / totalStatReal.medianMinutes) : null,
+        dominant,
+      };
+    };
+
+    const longestToExecute = showSplit
+      ? cRows.slice().sort((a, b) => b.doerMinutes - a.doerMinutes).slice(0, 20).map(toOutlier)
+      : [];
+    const reviewedRows = cRows.filter((x) => x.validatorMinutes !== null);
+    const longestToValidate = showSplit
+      ? reviewedRows.slice().sort((a, b) => (b.validatorMinutes ?? 0) - (a.validatorMinutes ?? 0)).slice(0, 20).map(toOutlier)
+      : [];
+    const longRunningAll = longRunningThreshold !== null ? cRows.filter((x) => x.totalMinutes > longRunningThreshold) : [];
+    const longestEndToEnd = longRunningAll.slice().sort((a, b) => b.totalMinutes - a.totalMinutes).slice(0, 20).map(toOutlier);
+
+    const overallMedianTotal = totalStatReal.medianMinutes;
+    const patterns: CycleTimePattern[] = [
+      ...byTicketType
+        .filter((r) => r.count >= 3 && overallMedianTotal !== null && (r.medianTotalMinutes ?? 0) > overallMedianTotal * 1.25)
+        .map((r) => ({ dimension: "Ticket Type" as const, key: r.key, count: r.count, medianTotalMinutes: r.medianTotalMinutes, p90TotalMinutes: r.p90TotalMinutes })),
+      ...byProduct
+        .filter((r) => r.count >= 3 && overallMedianTotal !== null && (r.medianTotalMinutes ?? 0) > overallMedianTotal * 1.25)
+        .map((r) => ({ dimension: "Product" as const, key: r.key, count: r.count, medianTotalMinutes: r.medianTotalMinutes, p90TotalMinutes: r.p90TotalMinutes })),
+    ]
+      .sort((a, b) => (b.medianTotalMinutes ?? 0) - (a.medianTotalMinutes ?? 0))
+      .slice(0, 8);
+
+    let comparison: CycleTimeComparison | null = null;
+    try {
+      const prevPeriod = shiftPeriod(range as RangeType, period, -1);
+      const prev = await summarizeCycleTimePeriod(team, range, prevPeriod, issueType, teamConfig, workCategory);
+      comparison = {
+        count: { current: count, previous: prev.count, deltaPct: pctDelta(count, prev.count) },
+        totalMedianMinutes: { current: totalStat.medianMinutes, previous: prev.totalMedianMinutes, deltaPct: pctDelta(totalStat.medianMinutes, prev.totalMedianMinutes) },
+        totalAvgMinutes: { current: totalAvg, previous: prev.totalAvgMinutes, deltaPct: pctDelta(totalAvg, prev.totalAvgMinutes) },
+        totalP90Minutes: { current: totalStat.p90Minutes, previous: prev.totalP90Minutes, deltaPct: pctDelta(totalStat.p90Minutes, prev.totalP90Minutes) },
+        doerMedianMinutes: showSplit ? { current: doerStat!.medianMinutes, previous: prev.doerMedianMinutes, deltaPct: pctDelta(doerStat!.medianMinutes, prev.doerMedianMinutes) } : null,
+        doerAvgMinutes: showSplit ? { current: doerStat!.avgMinutes, previous: prev.doerAvgMinutes, deltaPct: pctDelta(doerStat!.avgMinutes, prev.doerAvgMinutes) } : null,
+        validatorMedianMinutes: showSplit
+          ? { current: validatorStat!.medianMinutes, previous: prev.validatorMedianMinutes, deltaPct: pctDelta(validatorStat!.medianMinutes, prev.validatorMedianMinutes) }
+          : null,
+        validatorAvgMinutes: showSplit
+          ? { current: validatorStat!.avgMinutes, previous: prev.validatorAvgMinutes, deltaPct: pctDelta(validatorStat!.avgMinutes, prev.validatorAvgMinutes) }
+          : null,
+      };
+    } catch {
+      comparison = null;
+    }
+
+    const tickets: CycleTimeTicketRow[] = cRows
+      .slice()
+      .sort((a, b) => b.totalMinutes - a.totalMinutes)
+      .slice(0, BREAKDOWN_TICKET_LIMIT)
+      .map((x) => ({
+        issueKey: x.row.issue_key,
+        issueType: x.row.issue_type || "",
+        assignee: backlogAgingAssignee(teamConfig, x.row) || "(unassigned)",
+        product: x.row.product || "(none)",
+        labels: x.row.labels || "",
+        createdAt: x.row.created,
+        startedAt: basis.startedAt(x.row),
+        resolvedAt: basis.endedAt(x.row),
+        doerMinutes: x.doerMinutes,
+        validatorMinutes: x.validatorMinutes,
+        totalMinutes: x.totalMinutes,
+        vsMedianTotalMinutes: totalStatReal.medianMinutes !== null ? round2(x.totalMinutes - totalStatReal.medianMinutes) : null,
+      }));
+
+    const report: CycleTimeDeepDiveReport = {
+      team, range, period, issueType: issueType ?? null,
+      assigneeLabel: backlogAgingAssigneeLabel(teamConfig),
+      description: basis.description,
+      hasDoerValidatorSplit: showSplit,
+      workflowModel: showSplit ? "doer-validator" : hasSplit ? "doer-only" : "single",
+      workCategory: hasSplit ? (workCategory ?? null) : null,
+      categoryComparison,
+      startColumnLabel: basis.startColumnLabel,
+      endColumnLabel: basis.endColumnLabel,
+      pulse,
+      comparison,
+      doerValidatorInsight: showSplit ? buildDoerValidatorInsight(pulse) : null,
+      insights: [],
+      positiveHighlights: [],
+      trend,
+      distribution,
+      percentiles,
+      byTicketType,
+      byProduct,
+      byAssignee,
+      longestToExecute,
+      longestToExecuteTotalCount: showSplit ? cRows.length : 0,
+      longestToValidate,
+      longestToValidateTotalCount: showSplit ? reviewedRows.length : 0,
+      longestEndToEnd,
+      longestEndToEndTotalCount: longRunningAll.length,
+      patterns,
+      tickets,
+      ticketsTotalCount: cRows.length,
+    };
+
+    report.insights = buildCycleTimeInsights(report);
+    report.positiveHighlights = buildCycleTimePositiveHighlights(report);
+
+    return report;
+  } catch {
+    return emptyCycleTimeDeepDive(team, range, period, issueType, workCategory);
   }
 }

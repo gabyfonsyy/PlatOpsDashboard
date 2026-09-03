@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getTeamByKey } from "@/lib/teams";
@@ -7,6 +8,7 @@ import { getP1SlaReport, P1_PRIORITY_VALUE } from "@/lib/p1-sla";
 import { slaStatusForRate, STATUS_LABEL, STATUS_TONE } from "@/lib/sla-status";
 import { resolveFilters } from "@/lib/date-ranges";
 import { formatPercent, formatNumber, formatMinutesDecimalValue, formatDurationBreakdown } from "@/lib/format";
+import { EXTRA_EXCLUDED_LABELS_COOKIE, resolveExtraExcludedLabels } from "@/lib/excluded-labels";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { CountRankTable } from "@/components/dashboard/BreakdownTables";
@@ -17,6 +19,7 @@ import { P1ProblemAreaTable } from "@/components/dashboard/P1ProblemAreaTable";
 import { P1PatternsTable } from "@/components/dashboard/P1PatternsTable";
 import { P1AtRiskTable } from "@/components/dashboard/P1AtRiskTable";
 import { P1TicketsTable } from "@/components/dashboard/P1TicketsTable";
+import { ExcludedLabelsEditor } from "@/components/dashboard/ExcludedLabelsEditor";
 
 /** MetricCard's `trend` prop from a fraction delta, framed in percentage points. `higherIsBetter`
  * decides whether a rise reads green or red — a rising on-time rate is good, a rising overdue
@@ -54,7 +57,8 @@ export default async function P1SlaPage({
   if (!team.has_p1_sla_tracking) notFound();
 
   const { range, period, issueType } = resolveFilters(searchParams);
-  const report = await getP1SlaReport(team.team_key, range, period, issueType);
+  const extraExcludedLabels = resolveExtraExcludedLabels(cookies().get(EXTRA_EXCLUDED_LABELS_COOKIE)?.value);
+  const report = await getP1SlaReport(team.team_key, range, period, issueType, extraExcludedLabels);
 
   const issueTypes = team.issue_types_csv ? team.issue_types_csv.split(",").map((s) => s.trim()).filter(Boolean) : [];
   const query = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}) }).toString();
@@ -157,7 +161,7 @@ export default async function P1SlaPage({
             title="Most Frequent Label — Overdue P1 Tickets"
             keyLabel="Label"
             rows={report.byLabel}
-            description="Triage/alerting bookkeeping labels (p1-alerted, jira_escalated, ffup-1, ffup-2, autoclose-nonresponse, crf, update-companypolicy, expedite, acc-d1se, decode, routed-secops, triage-complete, detailing-revisit, triage-round-1, triage-round-2) are excluded — they tag process, not subject matter."
+            description="Triage/alerting bookkeeping labels are excluded — they tag process, not subject matter. Manage the list at the bottom of this page."
             emptyMessage="No labels on overdue P1 tickets this period."
           />
         </div>
@@ -181,6 +185,8 @@ export default async function P1SlaPage({
         <h2 className="mb-3">What Needs Attention Now?</h2>
         <P1AtRiskTable tickets={report.atRisk} assigneeLabel={report.assigneeLabel} jiraBaseUrl={process.env.JIRA_BASE_URL} />
       </div>
+
+      <ExcludedLabelsEditor labels={extraExcludedLabels} />
 
       {/* =============================================================== DETAILS */}
       <P1TicketsTable
