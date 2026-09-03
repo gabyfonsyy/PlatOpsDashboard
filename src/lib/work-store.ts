@@ -198,6 +198,7 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
         recentDays: [],
         upcoming: [],
         overdue: [],
+        pastCompleted: [],
         recurrences: [],
         recurrencesReady: false,
         reschedules: [],
@@ -294,6 +295,11 @@ export async function getMyWork(email: string): Promise<MyWorkData> {
     overdue: allTasks
       .filter((t) => t.work_date < today && openOnly(t))
       .sort((a, b) => a.work_date.localeCompare(b.work_date) || a.created_at.localeCompare(b.created_at)),
+    // Newest first, mirroring `history` — the most recent day you actually worked is the one
+    // you're most likely checking on.
+    pastCompleted: allTasks
+      .filter((t) => t.work_date < today && !openOnly(t))
+      .sort((a, b) => b.work_date.localeCompare(a.work_date) || a.created_at.localeCompare(b.created_at)),
   };
 }
 

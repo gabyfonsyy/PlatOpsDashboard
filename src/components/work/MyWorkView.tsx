@@ -118,6 +118,7 @@ export function MyWorkView({
   tasks,
   upcoming,
   overdue,
+  pastCompleted,
   projects,
   recurrences,
   recurrencesReady,
@@ -127,6 +128,8 @@ export function MyWorkView({
   tasks: WorkTask[];
   upcoming: WorkTask[];
   overdue: WorkTask[];
+  /** Done/deferred tasks from before today — see UpcomingPanel's Past section. */
+  pastCompleted: WorkTask[];
   projects: WorkProject[];
   recurrences: WorkRecurrence[];
   recurrencesReady: boolean;
@@ -386,6 +389,7 @@ export function MyWorkView({
         today={today}
         upcoming={partition.ahead}
         overdue={partition.behind}
+        pastCompleted={pastCompleted}
         projects={projects}
         slipCounts={slipCounts}
         onToggleDone={toggleDone}

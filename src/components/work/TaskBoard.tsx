@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   Check,
@@ -28,18 +29,13 @@ import { celebrate } from "@/lib/celebrate";
 import {
   FOCUS_SOFT_LIMIT,
   LANE_META,
-  RECUR_FREQS,
-  RECUR_LABELS,
   TASK_LANES,
   TASK_PRIORITIES,
   TASK_STATUSES,
-  addIsoDays,
   dayLabel,
   groupTasks,
   isOpen,
-  nextMondayIso,
   pushTargetDate,
-  recurrenceLabel,
   statusTone,
   QUADRANT_META,
   QUADRANT_ORDER,
@@ -54,9 +50,7 @@ import {
   projectReadout,
   quadrantOf,
   type Quadrant,
-  type RecurFreq,
   type TaskLane,
-  type TaskPriority,
   type Triage,
   type WorkProject,
   type WorkTask,
@@ -70,6 +64,8 @@ import {
   QuadrantSelect,
 } from "@/components/work/Quadrant";
 import { BriefSummary, ProjectBriefPanel } from "@/components/work/ProjectBriefPanel";
+import { AddTaskDialog } from "@/components/work/AddTaskDialog";
+import { WhenSelect } from "@/components/work/WhenSelect";
 
 /**
  * How today's work is arranged. Two framings of exactly the same rows, never two lists:
@@ -151,7 +147,7 @@ export function TaskBoard({
 
   return (
     <div className="flex flex-col gap-4">
-      <QuickAdd projects={projects} defaultProjectId={projectFilter} today={today} />
+      <AddTaskDialog projects={projects} defaultProjectId={projectFilter} today={today} />
 
       {projectFilter && (
         <button onClick={onClearFilter} className="self-start btn-secondary py-1 px-3 text-xs">
@@ -475,10 +471,17 @@ const EMPTY_CELL: Record<Quadrant, { serious: string; playful: string }> = {
  * of thing and now look it: the selects still change a value in place, and anything that DOES
  * something to the task lives here.
  *
- * `position: absolute`, not `fixed`, and that is load-bearing. `.card` is `backdrop-blur-xl`,
- * which makes it a containing block for fixed descendants (the trap documented at length in
- * ui/SidePanel) — an absolutely positioned menu is measured against the row instead and is
- * unaffected. `.card` sets no `overflow`, so a menu overhanging the last row is not clipped.
+ * Portalled to `document.body`, positioned by the button's own `getBoundingClientRect()` — NOT
+ * rendered in place with `position: absolute` any more.
+ *
+ * `.card` is `backdrop-blur-xl`, and `backdrop-filter` creates a stacking context on its own,
+ * independent of `position`/`z-index` (see the spec, and the fixed-descendant version of the same
+ * trap documented in ui/SidePanel). Every lane is its OWN `.card`, so a menu opened near the
+ * bottom of one lane and overhanging into the lane below it was being painted underneath that next
+ * card — a later, unrelated stacking context always wins over an z-30 buried inside an earlier
+ * one, however high that z-index looks in the source. Portalling out to `document.body` — which
+ * has no such ancestor — is what RescheduleReasonStrip already does for the same reason, and it is
+ * the only fix that survives every lane, not just the one it happened to be tested on.
  */
 function RowMenu({
   label,
@@ -488,12 +491,41 @@ function RowMenu({
   children: (close: () => void) => React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Measured in a layout effect, before paint, so the menu never flashes at (0, 0) for a frame.
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      // Right-edge anchored, viewport-relative (this is `position: fixed`): the button sits at
+      // the row's right edge, so a left-aligned menu would hang off the card, and `right` is
+      // measured from the viewport's right edge, not the button's left. The `.dropdown-menu`
+      // class still contributes `mt-2` for the visual gap below the button.
+      setPos({ top: rect.bottom, right: window.innerWidth - rect.right });
+    }
+    place();
+    // The menu is fixed to the viewport, not to the row, so scrolling the page (or a scrollable
+    // lane) without re-measuring would leave it hovering over whatever the button used to be
+    // above.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent) {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
@@ -510,8 +542,9 @@ function RowMenu({
   }, [open]);
 
   return (
-    <div ref={wrapRef} className="relative shrink-0">
+    <div className="relative shrink-0">
       <button
+        ref={buttonRef}
         onClick={() => setOpen((v) => !v)}
         aria-label={label}
         aria-expanded={open}
@@ -523,13 +556,18 @@ function RowMenu({
       >
         <MoreVertical className="w-3.5 h-3.5" />
       </button>
-      {open && (
-        // Right-aligned: the button sits at the row's right edge, so a left-aligned menu would
-        // hang off the card.
-        <div role="menu" className="dropdown-menu left-auto right-0 min-w-[13rem]">
-          {children(() => setOpen(false))}
-        </div>
-      )}
+      {open && pos &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{ position: "fixed", top: pos.top, right: pos.right }}
+            className="dropdown-menu left-auto min-w-[13rem]"
+          >
+            {children(() => setOpen(false))}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
@@ -1043,230 +1081,6 @@ export function TaskRow({
       </div>
     )}
     </div>
-  );
-}
-
-/**
- * When a new task is for. Today and tomorrow are one click because they're the two answers almost
- * every time; "Next Mon" exists because "not this week" is the third; and the date field only
- * appears when none of those is the answer, so the common path stays one select rather than a
- * calendar you have to think about.
- */
-function WhenSelect({
-  today,
-  value,
-  onChange,
-}: {
-  today: string;
-  value: string;
-  onChange: (date: string) => void;
-}) {
-  const tomorrow = addIsoDays(today, 1);
-  const monday = nextMondayIso(today);
-  const presets = [
-    { key: today, label: "Today" },
-    { key: tomorrow, label: "Tomorrow" },
-    // Skipped when next Monday IS tomorrow — two options for the same day is just a puzzle.
-    ...(monday !== tomorrow ? [{ key: monday, label: "Next Mon" }] : []),
-  ];
-  const isPreset = presets.some((p) => p.key === value);
-
-  return (
-    <>
-      <select
-        value={isPreset ? value : "custom"}
-        onChange={(e) => onChange(e.target.value === "custom" ? addIsoDays(today, 7) : e.target.value)}
-        className="form-input w-auto text-sm"
-        aria-label="When"
-      >
-        {presets.map((p) => (
-          <option key={p.key} value={p.key}>{p.label}</option>
-        ))}
-        <option value="custom">Pick a date…</option>
-      </select>
-      {!isPreset && (
-        <input
-          type="date"
-          value={value}
-          onChange={(e) => onChange(e.target.value || today)}
-          className="form-input w-auto text-sm"
-          aria-label="Date for new task"
-        />
-      )}
-    </>
-  );
-}
-
-/**
- * Type, press Enter, done. The lane/project/when selects sit beside it and persist between adds,
- * so capturing five incoming requests is five keystrokes-plus-Enter rather than five dialogs — and
- * planning six things for Monday means setting the day once, not six times.
- */
-function QuickAdd({
-  projects,
-  defaultProjectId,
-  today,
-}: {
-  projects: WorkProject[];
-  defaultProjectId: string | null;
-  today: string;
-}) {
-  const router = useRouter();
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [title, setTitle] = useState("");
-  const [lane, setLane] = useState<TaskLane>("Today");
-  const [priority, setPriority] = useState<TaskPriority>("Normal");
-  const [when, setWhen] = useState<string>(today);
-  const [repeat, setRepeat] = useState<RecurFreq | "">("");
-  /**
-   * Triage at capture, and it persists between adds like every other select here. Sorting a task
-   * later means opening the row and answering two questions about something you have already
-   * stopped thinking about; sorting it now costs one click while the judgement is still fresh.
-   *
-   * It defaults to Unsorted rather than to a square, on purpose. A default quadrant would be a
-   * lie told about every task typed in a hurry, and the unsorted cell exists precisely so that
-   * capturing something fast stays free.
-   */
-  const [triage, setTriage] = useState<Triage>({ urgent: null, important: null });
-  const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  /**
-   * One form, two destinations. With Repeats set, the same fields describe a SCHEDULE rather than
-   * a task, so it posts to /api/work/recurrences and the "when" value becomes the start date; the
-   * server materialises the first instances, and they arrive through the normal task path on the
-   * refresh below. Weekly and monthly take their day from the start date — see createRecurrence.
-   */
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    const value = title.trim();
-    if (!value) return;
-    setBusy(true);
-    setError(null);
-    // Cleared immediately so the next task can be typed while this one is still in flight.
-    setTitle("");
-    const recurring = repeat !== "";
-    try {
-      const res = await fetch(recurring ? "/api/work/recurrences" : "/api/work/tasks", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          recurring
-            ? {
-                title: value,
-                lane,
-                priority,
-                project_id: projectId || null,
-                freq: repeat,
-                start_date: when,
-                ...triage,
-              }
-            : {
-                title: value,
-                lane,
-                priority,
-                project_id: projectId || null,
-                work_date: when,
-                ...triage,
-              }
-        ),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || body?.ok === false) throw new Error(body?.error || `HTTP ${res.status}`);
-      celebrate("success");
-      router.refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setTitle(value); // hand the text back rather than losing it
-    } finally {
-      setBusy(false);
-      inputRef.current?.focus();
-    }
-  }
-
-  return (
-    <form onSubmit={submit} className="card p-3 flex flex-wrap items-center gap-2">
-      <input
-        ref={inputRef}
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        placeholder={when === today ? "What needs doing?" : "What needs doing, later?"}
-        className="form-input flex-1 min-w-[14rem]"
-        aria-label="New task"
-      />
-      <WhenSelect today={today} value={when} onChange={setWhen} />
-      {/* Directly after the title: the two questions are easiest to answer in the same breath as
-          typing the thing they are about. */}
-      <QuadrantSelect value={triage} onChange={setTriage} size="md" label="Quadrant for new task" />
-      <select
-        value={repeat}
-        onChange={(e) => setRepeat(e.target.value as RecurFreq | "")}
-        className="form-input w-auto text-sm"
-        aria-label="Repeats"
-      >
-        <option value="">Once</option>
-        {RECUR_FREQS.map((f) => (
-          <option key={f} value={f}>{RECUR_LABELS[f]}</option>
-        ))}
-      </select>
-      {/* Priority at logging time: setting it later means opening the row's hover controls, and a
-          task typed as urgent is most reliably marked urgent in the same breath. */}
-      <select
-        value={priority}
-        onChange={(e) => setPriority(e.target.value as TaskPriority)}
-        className="form-input w-auto text-sm"
-        aria-label="Priority for new task"
-      >
-        {TASK_PRIORITIES.map((pr) => (
-          <option key={pr} value={pr}>{pr}</option>
-        ))}
-      </select>
-      <select
-        value={lane}
-        onChange={(e) => setLane(e.target.value as TaskLane)}
-        className="form-input w-auto text-sm"
-        aria-label="Lane for new task"
-      >
-        {/* Value is the stored lane, text is the label — see LANE_META: 'Today' displays as 'To Do'. */}
-        {TASK_LANES.map((l) => (
-          <option key={l} value={l}>{LANE_META[l].label}</option>
-        ))}
-      </select>
-      <select
-        value={projectId}
-        onChange={(e) => setProjectId(e.target.value)}
-        className="form-input w-auto text-sm max-w-[10rem]"
-        aria-label="Project for new task"
-      >
-        <option value="">No project</option>
-        {projects.map((p) => (
-          <option key={p.project_id} value={p.project_id}>{p.name}</option>
-        ))}
-      </select>
-      <button type="submit" disabled={busy || !title.trim()} className="btn-primary">
-        <Plus className="w-4 h-4" />
-        Add
-      </button>
-      {/* Says what's about to happen, but only when it isn't the default (one task, today). */}
-      {repeat !== "" ? (
-        <p className="text-xs text-neutral-400 w-full">
-          {recurrenceLabel({
-            freq: repeat,
-            byweekday: null,
-            bymonthday: null,
-          })}
-          , starting {dayLabel(when, today)}. Manage it under Repeating.
-        </p>
-      ) : (
-        when !== today && (
-          <p className="text-xs text-neutral-400 w-full">
-            Lands on {dayLabel(when, today)} — not today&apos;s board.
-          </p>
-        )
-      )}
-      {error && <p className="text-xs text-red-600 w-full">{error}</p>}
-    </form>
   );
 }
 

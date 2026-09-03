@@ -34,6 +34,7 @@ const EMPTY: MyWorkData = {
   recentDays: [],
   upcoming: [],
   overdue: [],
+  pastCompleted: [],
   recurrences: [],
   recurrencesReady: false,
   reschedules: [],
@@ -59,6 +60,7 @@ export default async function MyWorkPage() {
     history,
     upcoming,
     overdue,
+    pastCompleted,
     recurrences,
     recurrencesReady,
     recentDays,
@@ -187,6 +189,7 @@ export default async function MyWorkPage() {
         tasks={tasks}
         upcoming={upcoming}
         overdue={overdue}
+        pastCompleted={pastCompleted}
         projects={projects}
         recurrences={recurrences}
         recurrencesReady={recurrencesReady}

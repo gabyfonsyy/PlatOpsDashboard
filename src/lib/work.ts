@@ -83,6 +83,8 @@ export const DECK_COPY = {
   projects: { serious: "Projects", playful: "In Orbit" },
   repeating: { serious: "Repeating", playful: "Standing Orders" },
   ahead: { serious: "Ahead", playful: "On Approach" },
+  notToday: { serious: "Not Today", playful: "Off Deck" },
+  past: { serious: "Past", playful: "Flight Log" },
   debrief: { serious: "Work Mirror", playful: "Mission Debrief" },
 } as const;
 
@@ -1171,6 +1173,14 @@ export type MyWorkData = {
    * forward or rescheduled on purpose.
    */
   overdue: WorkTask[];
+  /**
+   * Done or deferred tasks dated BEFORE today, within the history window — the ones a finished or
+   * parked task quietly falls out of everywhere else on the page (the board only keeps a day's
+   * settled work for the day it happened, and `overdue` is open-only by definition). Newest first,
+   * the same convention as `history`. This is the only source for "what did I actually do" once
+   * the day it happened has passed.
+   */
+  pastCompleted: WorkTask[];
   /** True when the Supabase tables haven't been created yet, so the page can explain rather than break. */
   needsSetup?: boolean;
 };
