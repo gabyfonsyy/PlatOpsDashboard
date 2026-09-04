@@ -34,7 +34,7 @@ RULE = '// ' + '=' * 64
 
 # Everything this session changed. Any OTHER file's section differing from the previous bundle
 # means the format drifted, not that the code changed.
-EDITED = {'Backfill.gs', 'SupabaseClient.gs'}
+EDITED = {'Config.gs', 'Code.gs', 'SiteMonitoringApi.gs'}
 
 
 def read(path):

@@ -88,6 +88,9 @@ function handleRequest_(e, method) {
       case 'refresh-cache':
         return jsonResponse_({ ok: true, data: invalidateAllCaches_() });
 
+      case 'site-monitoring':
+        return jsonResponse_({ ok: true, data: SiteMonitoringApi.list() });
+
       // Phase 5 of the Sheets -> Supabase migration: 'metrics', 'assignee-metrics',
       // 'backlog-aging-report', 'lead-cycle-time-report', 'late-pickup-report',
       // 'peer-review-wait-report', and 'tool-assisted-cycle-time' were removed here — Phase 4

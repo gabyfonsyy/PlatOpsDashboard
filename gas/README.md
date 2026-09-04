@@ -11,10 +11,12 @@ push/pull syncing).
 |---|---|---|
 | `PlatOps - Jira Data` | `1raCFx9Bk-VQjIjrggcMGP8KwRvcfM9zELnc9dRm2iYk` | https://docs.google.com/spreadsheets/d/1raCFx9Bk-VQjIjrggcMGP8KwRvcfM9zELnc9dRm2iYk/edit |
 | `PlatOps - Manager Data` | `1sC_i2LnTNX1zJLHGShmV1Anw1g80AowMMHjsOFjeTXM` | https://docs.google.com/spreadsheets/d/1sC_i2LnTNX1zJLHGShmV1Anw1g80AowMMHjsOFjeTXM/edit |
+| Site Monitoring (`Final List` tab) | `1Dj26xEcv3RUMLnygeW_CvNkb0nCdfCbTltos7FZ_30Y` | https://docs.google.com/spreadsheets/d/1Dj26xEcv3RUMLnygeW_CvNkb0nCdfCbTltos7FZ_30Y/edit |
 
-Both live in the Drive folder `Platform Operations Dashboard` (under `Platform Operations`).
-They start empty — running `setupAll()` (below) builds every tab, header row, and
-pre-filled config row.
+The first two live in the Drive folder `Platform Operations Dashboard` (under `Platform
+Operations`) and start empty — running `setupAll()` (below) builds every tab, header row, and
+pre-filled config row. The Site Monitoring workbook is external — maintained outside this app,
+read-only, never written to (see SiteMonitoringApi.gs).
 
 ## File order
 
@@ -32,7 +34,7 @@ For readability, arrange them (drag in the editor's left file list) as:
 8. `AiClient.gs` — the one AI transport (open-weight models on Groq); no prompts live here
 9. `Insights.gs` — narrative generation (via `AiClient.gs`) + deterministic outlier detection
 10. `Code.gs` — the `doGet`/`doPost` router, ties everything together
-11. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`, `ProgressApi.gs`, `TasksApi.gs`
+11. `LeaveApi.gs`, `RtoApi.gs`, `ProjectsApi.gs`, `ProgressApi.gs`, `TasksApi.gs`, `SiteMonitoringApi.gs`
 12. `IncidentsApi.gs` — Incident Logs: the Jira pull of Report-Tagged tickets + log CRUD
 13. `Setup.gs` — one-time bootstrap, not called by the router
 14. `Triggers.gs` — installs every recurring trigger, run last of all
@@ -52,6 +54,7 @@ For readability, arrange them (drag in the editor's left file list) as:
    AI_API_KEY=<Groq API key from console.groq.com/keys — open-weight models; replaced GEMINI_API_KEY>
    API_SHARED_SECRET=<generate a random string, e.g. `openssl rand -hex 24`>
    ALERT_EMAIL=<your email — recommended; see Troubleshooting below if omitted>
+   SPREADSHEET_ID_SITE_MONITORING=1Dj26xEcv3RUMLnygeW_CvNkb0nCdfCbTltos7FZ_30Y
    ```
 4. In the editor, select the `setupAll` function (top dropdown) and click **Run**.
    First run will prompt for authorization — grant access to both spreadsheets.
@@ -457,6 +460,31 @@ Next.js dashboard against the real dataset and check:
 If page loads feel slow, the fix is almost always in `MetricsApi.gs` (e.g. cache
 `getMetricsDailyRowsInRange_`'s full-sheet read across calls within one request) —
 the raw ticket tabs should never be in the request path at all.
+
+## Site Monitoring (SiteMonitoringApi.gs)
+
+Read-only lookup over a separate workbook's `Final List` tab — per-client operational data (Domain,
+Database, App Pool, SSO/Keycloak) surfaced on the References page for fast P1 incident triage.
+Not in `REQUIRED_SCRIPT_PROPERTIES` (see `getSiteMonitoringSpreadsheet_` in `Config.gs`), so every
+other route keeps working until `SPREADSHEET_ID_SITE_MONITORING` is actually set.
+
+**Nothing is ever written back to this sheet.** The dashboard's "Impacted Clients" panel is
+frontend-only scratch state (`sessionStorage`) for the duration of an incident — the sheet stays
+the sole source of truth for client data.
+
+Only the derived `ecosystem` field is returned — the three raw feature-flag columns (`FF 46
+(FutureDatedResignationApi)`, `FF 34 (Future Dated Resignation - Direct)`, `FF 67
+(EcosystemDashboardEnabled)`) never leave `SiteMonitoringApi.list()`.
+`ecosystem` is `'Yes'` only when FF46=Yes AND FF34=No AND FF67=Yes, otherwise `'No'`.
+
+Smoke-test:
+
+```bash
+curl "<URL>?route=site-monitoring&apiKey=<KEY>"
+```
+
+Confirm the response has no `FF 46`/`FF 34`/`FF 67` keys anywhere, and that `ecosystem` matches a
+few rows you know the flag values of by hand in the sheet.
 
 ## Active-effort-time tracking (ST only)
 

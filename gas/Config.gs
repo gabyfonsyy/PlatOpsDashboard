@@ -47,6 +47,17 @@ function getInitiativesSpreadsheet_() {
   return SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_INITIATIVES'));
 }
 
+/**
+ * The Site Monitoring workbook (per-client ops data — Domain, Database, App Pool, Keycloak — read
+ * by SiteMonitoringApi.gs for P1 triage). Not in REQUIRED_SCRIPT_PROPERTIES for the same reason
+ * as getInitiativesSpreadsheet_ above: adding it there would break every existing route until this
+ * one property is set. It throws its own clear "Missing required Script Property" only when the
+ * site-monitoring route is actually used.
+ */
+function getSiteMonitoringSpreadsheet_() {
+  return SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_SITE_MONITORING'));
+}
+
 /** Reads TEAMS_CONFIG and coerces boolean/number columns — the single source every module reads from. */
 function getTeamsConfig_() {
   const sheet = getManagerDataSpreadsheet_().getSheetByName('TEAMS_CONFIG');

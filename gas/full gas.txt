@@ -2481,6 +2481,9 @@ function handleRequest_(e, method) {
       case 'refresh-cache':
         return jsonResponse_({ ok: true, data: invalidateAllCaches_() });
 
+      case 'site-monitoring':
+        return jsonResponse_({ ok: true, data: SiteMonitoringApi.list() });
+
       // Phase 5 of the Sheets -> Supabase migration: 'metrics', 'assignee-metrics',
       // 'backlog-aging-report', 'lead-cycle-time-report', 'late-pickup-report',
       // 'peer-review-wait-report', and 'tool-assisted-cycle-time' were removed here — Phase 4
@@ -2571,6 +2574,17 @@ function getManagerDataSpreadsheet_() {
  */
 function getInitiativesSpreadsheet_() {
   return SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_INITIATIVES'));
+}
+
+/**
+ * The Site Monitoring workbook (per-client ops data — Domain, Database, App Pool, Keycloak — read
+ * by SiteMonitoringApi.gs for P1 triage). Not in REQUIRED_SCRIPT_PROPERTIES for the same reason
+ * as getInitiativesSpreadsheet_ above: adding it there would break every existing route until this
+ * one property is set. It throws its own clear "Missing required Script Property" only when the
+ * site-monitoring route is actually used.
+ */
+function getSiteMonitoringSpreadsheet_() {
+  return SpreadsheetApp.openById(getScriptProperty_('SPREADSHEET_ID_SITE_MONITORING'));
 }
 
 /** Reads TEAMS_CONFIG and coerces boolean/number columns — the single source every module reads from. */
@@ -7421,6 +7435,55 @@ function removeDefaultBlankSheet_(spreadsheet) {
     spreadsheet.deleteSheet(sheet);
   }
 }
+
+
+// ================================================================
+// SiteMonitoringApi.gs
+// ================================================================
+
+/**
+ * Read-only lookup over the `Final List` tab of the Site Monitoring workbook — per-client
+ * operational data (domain, database, App Pool, SSO/Keycloak) used for fast P1 incident triage.
+ *
+ * Deliberately no create/update/delete: the sheet is the source of truth, maintained outside this
+ * app, and the dashboard is a read-and-investigate surface only (see References page's Impacted
+ * Clients panel, which is frontend-only scratch state and never writes back here).
+ *
+ * The three feature-flag columns (FF 46/34/67) never leave this function — only the derived
+ * `ecosystem` value is returned, so a raw flag can't end up rendered or logged on the frontend
+ * by accident.
+ */
+var SiteMonitoringApi = {
+  list: function () {
+    const sheet = getSiteMonitoringSpreadsheet_().getSheetByName('Final List');
+    if (!sheet) throw new Error("Site Monitoring sheet has no 'Final List' tab.");
+    const rows = sheetToObjects_(sheet);
+
+    return rows.map(function (r) {
+      // The header row wraps these three onto two lines in the sheet, so sheetToObjects_ keys
+      // them with a literal '\n', not a space — confirmed via the (now removed) debugRow_ dump.
+      const ff46 = String(r['FF 46\n(FutureDatedResignationApi)'] || '').trim();
+      const ff34 = String(r['FF 34\n(Future Dated Resignation - Direct)'] || '').trim();
+      const ff67 = String(r['FF 67\n(EcosystemDashboardEnabled)'] || '').trim();
+      const ecosystem = ff46 === 'Yes' && ff34 === 'No' && ff67 === 'Yes' ? 'Yes' : 'No';
+
+      return {
+        clientId: String(r['Client ID'] || '').trim(),
+        clientName: String(r['Client Name'] || '').trim(),
+        domainName: String(r['Domain Name'] || '').trim(),
+        databaseName: String(r['Database Name'] || '').trim(),
+        clientStatus: String(r['Client Status'] || '').trim(),
+        databaseServer: String(r['Database Server'] || '').trim(),
+        appPoolName: String(r['App Pool Name'] || '').trim(),
+        sso: String(r['SSO'] || '').trim(),
+        keycloakInstance: String(r['Keycloak Instance'] || '').trim(),
+        keycloakRealm: String(r['Keycloak Realm'] || '').trim(),
+        ecosystem: ecosystem,
+        ecosystemUrl: String(r['Ecosystem URL'] || '').trim(),
+      };
+    }).filter(function (c) { return c.clientId !== ''; });
+  },
+};
 
 
 // ================================================================
