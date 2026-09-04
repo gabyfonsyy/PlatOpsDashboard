@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Check } from "lucide-react";
+import { ChevronDown, Check, Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RefreshDataButton } from "@/components/layout/RefreshDataButton";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
@@ -60,6 +60,11 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [myWorkOpen, setMyWorkOpen] = useState(false);
   const myWorkRef = useRef<HTMLDivElement>(null);
+  // Mobile/tablet nav: the pill bar is desktop-only (see the xl:flex below — it needs room for
+  // seven pills plus two dropdowns, which iPad doesn't reliably have even in landscape at 1024px,
+  // Tailwind's `lg` boundary). Below `xl` this drawer takes over instead of trying to squeeze or
+  // scroll the pill bar.
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   // Easter egg #1: the logo. Counts clicks and pays out on the 5th, then resets. Deliberately
   // attached to a decorative element that does nothing else, so there's no workflow to disrupt.
   const logoClicks = useRef(0);
@@ -87,6 +92,7 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   useEffect(() => {
     setTeamsOpen(false);
     setMyWorkOpen(false);
+    setMobileMenuOpen(false);
   }, [pathname]);
 
   return (
@@ -141,6 +147,15 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
           <div className="flex items-center gap-4 shrink-0">
             <ThemeToggle />
             <RefreshDataButton />
+            <button
+              onClick={() => setMobileMenuOpen((o) => !o)}
+              className="xl:hidden flex items-center justify-center w-8 h-8 rounded-lg text-neutral-500 hover:text-sprout-700 hover:bg-sprout-50 transition-colors"
+              aria-label="Toggle navigation menu"
+              aria-haspopup="menu"
+              aria-expanded={mobileMenuOpen}
+            >
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
             {session?.user && (
               <button onClick={() => signOut({ callbackUrl: "/login" })} className="flex items-center gap-2 group">
                 {session.user.image ? (
@@ -162,11 +177,82 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
         </div>
       </header>
 
+      {/* Mobile/tablet drawer — takes over below `lg` (see the hamburger in the header above).
+          Flat list, no dropdowns-inside-dropdowns: there's vertical room here that the floating
+          pill bar doesn't have, so Teams' members are just shown inline under a label instead of
+          needing their own disclosure. */}
+      {mobileMenuOpen && (
+        <div className="xl:hidden border-b border-line/70 bg-surface/95 backdrop-blur-xl">
+          <nav role="menu" className="max-w-7xl mx-auto px-6 py-3 flex flex-col gap-0.5">
+            {MY_WORK_MENU.map((item) => {
+              const active = pathname === item.href;
+              const name = PAGE_NAMES[item.page].nav;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  role="menuitem"
+                  className={cn("dropdown-item", active && "dropdown-item-active")}
+                >
+                  <span>
+                    <Copy serious={name.serious} playful={name.playful} />
+                  </span>
+                  {active && <Check className="w-4 h-4 shrink-0" />}
+                </Link>
+              );
+            })}
+
+            <span className="px-3 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+              <Copy serious={PAGE_NAMES.teams.nav.serious} playful={PAGE_NAMES.teams.nav.playful} />
+            </span>
+            {teamMenu.map((item) => {
+              const active = pathname === item.href;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  role="menuitem"
+                  className={cn("dropdown-item", active && "dropdown-item-active")}
+                >
+                  <span>
+                    <Copy serious={item.label} playful={item.playful} />
+                  </span>
+                  {active && <Check className="w-4 h-4 shrink-0" />}
+                </Link>
+              );
+            })}
+
+            <div className="h-px bg-line/70 my-2" />
+
+            {NAV_ITEMS.map((item) => {
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+              const name = PAGE_NAMES[item.page].nav;
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  role="menuitem"
+                  className={cn("dropdown-item", active && "dropdown-item-active")}
+                >
+                  <span>
+                    <Copy serious={name.serious} playful={name.playful} />
+                  </span>
+                  {active && <Check className="w-4 h-4 shrink-0" />}
+                </Link>
+              );
+            })}
+          </nav>
+        </div>
+      )}
+
       {/* Floating pill nav — lives outside the header, centered, straddling the boundary.
           The straddle broke at eight pills, when the bar grew wide enough to cover the theme
           switcher. It is back because the Overview pill is gone and the bar is seven again, which
-          is the width it was designed at. If a pill is ever added, check this overlap first. */}
-      <div className="relative z-30 -mt-5 flex justify-center px-6 pointer-events-none">
+          is the width it was designed at. If a pill is ever added, check this overlap first.
+          Desktop-only (`xl:flex`) — below that the header's hamburger drawer takes over instead
+          of squeezing or scrolling this bar (the Teams dropdown inside it can't tolerate an
+          overflow-x container, see the note below). */}
+      <div className="relative z-30 -mt-5 hidden xl:flex justify-center px-6 pointer-events-none">
         {/* No overflow-x here, deliberately: the Teams dropdown is absolutely positioned INSIDE
             this nav, and a scroll container would clip it shut. Narrow windows overflow the bar
             horizontally, which they did before this too. */}
