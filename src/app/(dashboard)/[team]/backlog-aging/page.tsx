@@ -3,12 +3,12 @@ import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getTeamByKey } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
-import { getBacklogAgingReport } from "@/lib/backlog-aging";
+import { getBacklogAgingDeepDive } from "@/lib/backlog-aging";
+import type { CycleTimeWorkCategory } from "@/lib/lead-cycle-time";
 import { resolveFilters } from "@/lib/date-ranges";
-import { formatPercent, formatNumber } from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
-import { MetricCard } from "@/components/dashboard/MetricCard";
-import { BacklogAgingTable } from "@/components/dashboard/BacklogAgingTable";
+import { CycleTimeWorkCategoryToggle } from "@/components/dashboard/CycleTimeWorkCategoryToggle";
+import { BacklogAgingDeepDive } from "@/components/dashboard/BacklogAgingDeepDive";
 
 export default async function BacklogAgingPage({
   params,
@@ -21,7 +21,12 @@ export default async function BacklogAgingPage({
   if (!team) notFound();
 
   const { range, period, issueType } = resolveFilters(searchParams);
-  const report = await getBacklogAgingReport(team.team_key, range, period, issueType);
+
+  const rawWorkCategory = Array.isArray(searchParams.workCategory) ? searchParams.workCategory[0] : searchParams.workCategory;
+  const workCategory: CycleTimeWorkCategory | undefined =
+    rawWorkCategory === "backend" || rawWorkCategory === "investigations" ? rawWorkCategory : undefined;
+
+  const report = await getBacklogAgingDeepDive(team.team_key, range, period, issueType, workCategory);
 
   const issueTypes = team.issue_types_csv
     ? team.issue_types_csv.split(",").map((s) => s.trim()).filter(Boolean)
@@ -32,7 +37,7 @@ export default async function BacklogAgingPage({
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
-        <div>
+        <div className="max-w-2xl">
           <Link
             href={`/${team.team_key.toLowerCase()}?${query}`}
             className="inline-flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-900 transition-colors mb-2"
@@ -40,48 +45,23 @@ export default async function BacklogAgingPage({
             <ArrowLeft className="w-4 h-4" />
             Back to {teamLabel(team.team_name)}
           </Link>
-          <h1>{teamLabel(team.team_name)} — Backlog Aging</h1>
+          <h1>{teamLabel(team.team_name)} — Backlog & Ageing</h1>
           <p className="text-sm text-neutral-500 mt-1">
-            Every ticket resolved during the period after its due date, newest overdue first.
+            How much unfinished work exists, how old it is, whether it&apos;s growing, where it&apos;s
+            concentrated, and how often work is resolved beyond its due date.
           </p>
         </div>
         <FilterBar issueTypes={issueTypes} />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <MetricCard
-          label="Backlog Aging"
-          value={formatPercent(report.backlogAgingRate, 2)}
-          sublabel={`${formatNumber(report.overdueCount)} of ${formatNumber(report.resolvedInPeriod)} resolved overdue`}
-          tooltip={
-            team.has_peer_review_tracking
-              ? "Overdue tickets ÷ total tickets resolved in the period. Overdue = resolved after the due date (resolved date > due date)."
-              : "Overdue tickets ÷ total tickets resolved (moved to Ready for Checking or Cancelled) in the period. Overdue = resolved after the due date (resolved date > due date)."
-          }
+      {report.hasWorkCategorySplit && (
+        <CycleTimeWorkCategoryToggle
+          active={workCategory ?? "all"}
+          labels={{ all: "All SE Work", backend: "Backend Changes", investigations: "Investigations" }}
         />
-        <MetricCard
-          label="Overdue Tickets"
-          value={formatNumber(report.overdueCount)}
-          sublabel="listed below"
-          tooltip="Tickets whose resolved calendar date falls strictly after their due date."
-        />
-        <MetricCard
-          label="Resolved in Period"
-          value={formatNumber(report.resolvedInPeriod)}
-          sublabel="the rate's denominator"
-          tooltip={
-            team.has_peer_review_tracking
-              ? "Every ticket the team resolved during the period, overdue or not — bucketed by resolved date."
-              : "Every ticket the team resolved (moved to Ready for Checking or Cancelled) during the period, overdue or not — bucketed by resolved date."
-          }
-        />
-      </div>
+      )}
 
-      <BacklogAgingTable
-        tickets={report.tickets}
-        assigneeLabel={report.assigneeLabel}
-        jiraBaseUrl={process.env.JIRA_BASE_URL}
-      />
+      <BacklogAgingDeepDive report={report} jiraBaseUrl={process.env.JIRA_BASE_URL} />
     </div>
   );
 }

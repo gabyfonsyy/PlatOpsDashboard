@@ -100,6 +100,16 @@ export function formatDurationBreakdownWithSeconds(minutes: number | null | unde
   return parts.join(" ");
 }
 
+/**
+ * A whole/fractional day count that's already a calendar-day difference (e.g. ticket age,
+ * days since update) — unlike formatDaysValue/formatDaysValueCeil, there's no minutes-to-days
+ * conversion here, so this just renders the number with one decimal and a trailing "d".
+ */
+export function formatAgeDays(days: number | null | undefined): string {
+  if (days === null || days === undefined) return "—";
+  return `${days.toFixed(1)}d`;
+}
+
 export function formatPercent(value: number | null | undefined, decimals = 1): string {
   if (value === null || value === undefined) return "—";
   return `${(value * 100).toFixed(decimals)}%`;

@@ -308,6 +308,97 @@ function deleteStPeerReviewTrigger_() {
 }
 
 /**
+ * Targeted re-backfill for ST's `resolved_datetime` specifically — a DIFFERENT population than
+ * runStPeerReviewRebackfill above. That job's JQL only matches tickets that were EVER in For
+ * Peer Review/For Checking/For Product Team/Archived/Rejected, which excludes the exact tickets
+ * this one exists to fix: ones that went straight from active work to Done with no formal
+ * review step recorded at all (confirmed live 2026-09-03/04 — this is the COMMON case for
+ * 2024-2025 ST tickets, not an edge case: e.g. ST-54812, ST-76687, ST-76591, ST-76565, ST-75961,
+ * ST-75335 all show a bare To Do -> In Progress -> On Hold -> Done history). Those need
+ * extractSeResolvedAtFallback_'s "Done" last-resort fallback (JiraSync.gs), which
+ * processAndUpsertIssue_ only reaches once the ticket is actually reprocessed.
+ *
+ * JQL targets the root cause directly — status = Done AND the native resolved-date custom
+ * field (customfield_10188, i.e. resolved_date_field_id) is empty — rather than reusing the
+ * peer-review job's "status WAS X" shape, which would silently miss this population again.
+ * Confirmed 2026-09-04: 15,856 ST tickets currently match. Deliberately NO created-date floor
+ * (her call, 2026-09-04) — the ST project goes back to 2019, well before the "late
+ * 2024/early 2025" she originally estimated, and any straight-to-Done ticket left unbackfilled
+ * stays permanently miscounted as open backlog regardless of how old it is.
+ *
+ * Mirrors runStPeerReviewRebackfill's shape exactly (own Script Properties cursor, self-
+ * rescheduling trigger, idempotent upsert by issue_key). After it finishes, run
+ * backfillResolvedOnDate + backfillResolvedInMonth so METRICS_DAILY/METRICS_BY_ASSIGNEE_MONTHLY
+ * recompute from the corrected values.
+ */
+const ST_RESOLVED_DATETIME_CURSOR_KEY = 'ST_RESOLVED_DATETIME_REBACKFILL_CURSOR';
+
+function runStResolvedDatetimeRebackfill() {
+  const team = getActiveTeamsConfig_().find((t) => t.team_key === 'ST');
+  if (!team) throw new Error('ST team not found in active config — check TEAMS_CONFIG.');
+
+  const props = PropertiesService.getScriptProperties();
+  const pageToken = props.getProperty(ST_RESOLVED_DATETIME_CURSOR_KEY) || undefined;
+
+  const jql = `project = ${team.jira_project_key} AND status = "Done" AND cf[${team.resolved_date_field_id.replace('customfield_', '')}] is EMPTY ORDER BY created ASC`;
+  const fields = buildJiraFieldList_(team);
+
+  let page;
+  try {
+    page = jiraSearchIssues_(jql, pageToken, 100, fields);
+  } catch (err) {
+    deleteStResolvedDatetimeTrigger_();
+    if (isExpiredPageTokenError_(err)) {
+      props.deleteProperty(ST_RESOLVED_DATETIME_CURSOR_KEY);
+      notifyFailure_(
+        'runStResolvedDatetimeRebackfill: page token expired, cursor reset',
+        `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runStResolvedDatetimeRebackfill manually to restart from the beginning (upserts are idempotent by issue_key).`
+      );
+      return;
+    }
+    notifyFailure_('runStResolvedDatetimeRebackfill: Jira fetch failed', err);
+    ScriptApp.newTrigger('runStResolvedDatetimeRebackfill').timeBased().after(5000).create();
+    return;
+  }
+
+  if (page.nextPageToken && page.nextPageToken === pageToken) {
+    notifyFailure_('runStResolvedDatetimeRebackfill stalled', 'nextPageToken did not advance — check Jira response.');
+    deleteStResolvedDatetimeTrigger_();
+    return;
+  }
+
+  for (const issue of page.issues) {
+    try {
+      processAndUpsertIssue_(team, issue);
+    } catch (issueErr) {
+      Logger.log(`runStResolvedDatetimeRebackfill failed for ${issue.key}: ${issueErr}`);
+      logSyncError_(team.team_key, issue.key, 'resolved_datetime_rebackfill', '', String(issueErr));
+    }
+  }
+  flushDirtyDates_(team.team_key);
+
+  if (page.nextPageToken && page.issues.length > 0) {
+    props.setProperty(ST_RESOLVED_DATETIME_CURSOR_KEY, page.nextPageToken);
+    deleteStResolvedDatetimeTrigger_();
+    ScriptApp.newTrigger('runStResolvedDatetimeRebackfill').timeBased().after(1000).create();
+    return;
+  }
+
+  props.deleteProperty(ST_RESOLVED_DATETIME_CURSOR_KEY);
+  deleteStResolvedDatetimeTrigger_();
+  sendAlertEmail_(
+    'ST resolved_datetime re-backfill complete',
+    'All ST tickets that were status=Done with an empty native resolved-date field have been re-processed — resolved_datetime now falls back to when they entered For Checking/For Product Team, or Archived/Rejected, or (last resort) Done itself. Run backfillResolvedOnDate and backfillResolvedInMonth next so METRICS_DAILY/METRICS_BY_ASSIGNEE_MONTHLY recompute from the corrected values.'
+  );
+}
+
+function deleteStResolvedDatetimeTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runStResolvedDatetimeRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
  * Targeted re-backfill for DE/DEV's `resolved_datetime` — re-derives it from the changelog (moved
  * to Ready for Checking or Cancelled) instead of trusting resolved_date_field_id's raw text value,
  * which isn't reliably updated for every outcome. Confirmed on a real ticket (DEV-11408) that the
@@ -856,5 +947,188 @@ function resetPriorityRebackfill() {
 function deletePriorityRebackfillTrigger_() {
   ScriptApp.getProjectTriggers()
     .filter((t) => t.getHandlerFunction() === 'runPriorityRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
+ * Targeted fixup for `tickets.priority` still being NULL in Supabase for specific tickets that
+ * DO have a real priority in Jira right now (reported by Gaby 2026-09-04: ST-84399, ST-84419,
+ * ST-84480, and 772 others across ST/DE/DEV). Confirmed root cause: `extractJiraFieldValue_`
+ * returns '' when `fields.priority` is absent/null AT THE MOMENT A TICKET WAS SYNCED — for most
+ * of these that was before priority tracking existed at all (a January 2024 batch of ~200 ST
+ * tickets, matching runPriorityRebackfill's original "column added after most tickets were
+ * already synced" gap), but a handful (the 3 she found, all July/Aug 2026) show the field was
+ * genuinely empty in Jira at THEIR sync time too and simply hasn't been reprocessed since —
+ * `toStringOrNull_('')` (SupabaseClient.gs) then stores that empty string as SQL NULL.
+ *
+ * Deliberately does NOT go through runPriorityRebackfill's Sheets-then-runSupabaseMigration
+ * two-step (that path exists because bulk full-row Sheets reads are the only way to keep a
+ * partial Supabase upsert NOT-NULL-safe across an entire team/year — see applyPriorityUpdates_'s
+ * doc comment). This job instead re-fetches and reprocesses each affected ticket INDIVIDUALLY
+ * through processAndUpsertIssue_, which always builds a complete row before upserting — the
+ * NOT-NULL problem that motivated the Sheets-only design doesn't apply here, so this can dual-
+ * write Supabase directly in one pass, no separate migration step needed.
+ *
+ * Reads the affected issue_key list FROM SUPABASE ITSELF (priority IS NULL), so it self-scopes
+ * to whatever's actually still broken — no hardcoded ticket list to keep in sync by hand.
+ *
+ * ⚠ Guards against a real bug found and fixed 2026-09-04: Jira's `key in (...)` JQL resolves a
+ * MOVED issue's old key to its CURRENT key/project — e.g. searching "ST-84399" can come back as
+ * "L3-2893" if that ticket was later moved to project L3. processAndUpsertIssue_ upserts by
+ * `issue.key`, so blindly processing the search result wrote a WRONG row (a non-ST ticket
+ * mislabeled team_key/project_key='ST') while leaving the real stale ST-84399 row untouched —
+ * confirmed live: 8 such rows (L3-2893, EAB-5739/5740/5741/5752/5769/5842/5995) got created this
+ * way and had to be deleted. Now skips (and logs) any returned issue whose key doesn't match
+ * what was actually queried, rather than trusting the search result's own key.
+ */
+function runPriorityNullFixup() {
+  const teams = getActiveTeamsConfig_();
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    const res = supabaseRequest_('GET', `tickets?team_key=eq.${team.team_key}&priority=is.null&select=issue_key`, undefined, {});
+    const issueKeys = (res.body || []).map((r) => r.issue_key);
+    if (!issueKeys.length) continue;
+
+    Logger.log(`runPriorityNullFixup: ${team.team_key} has ${issueKeys.length} tickets with null priority`);
+    const CHUNK = 50;
+    for (let j = 0; j < issueKeys.length; j += CHUNK) {
+      const batch = issueKeys.slice(j, j + CHUNK);
+      const batchSet = {};
+      batch.forEach((k) => (batchSet[k] = true));
+      const jql = `key in (${batch.map((k) => `"${k}"`).join(',')})`;
+      let page;
+      try {
+        page = jiraSearchIssues_(jql, undefined, batch.length, buildJiraFieldList_(team));
+      } catch (err) {
+        notifyFailure_(`runPriorityNullFixup: Jira fetch failed for ${team.team_key} batch starting at ${j}`, err);
+        continue;
+      }
+      page.issues.forEach((issue) => {
+        if (!batchSet[issue.key]) {
+          // This ticket was moved to another project since we last synced it — Jira resolved our
+          // old key to its new home. Do NOT upsert it (would mislabel a non-ST/DE/DEV ticket
+          // under this team); the original stale row is a separate, deliberate follow-up.
+          Logger.log(`runPriorityNullFixup: key mismatch — a queried key in this batch now resolves to ${issue.key}, skipping (likely moved to another project)`);
+          logSyncError_(team.team_key, issue.key, 'priority_null_fixup_key_mismatch', '', `Search returned ${issue.key}, which was not in the queried batch — ticket likely moved projects`);
+          return;
+        }
+        try {
+          processAndUpsertIssue_(team, issue);
+        } catch (issueErr) {
+          Logger.log(`runPriorityNullFixup failed for ${issue.key}: ${issueErr}`);
+          logSyncError_(team.team_key, issue.key, 'priority_null_fixup', '', String(issueErr));
+        }
+      });
+      flushDirtyDates_(team.team_key);
+    }
+  }
+
+  sendAlertEmail_(
+    'Priority null fixup complete',
+    'Every ticket that had priority=NULL in Supabase (across ST/DE/DEV) has been re-fetched from Jira and reprocessed. Any still null after this genuinely has no priority set on the Jira issue itself, or was skipped because it has since moved to a different Jira project (see ERROR_LOG for priority_null_fixup_key_mismatch entries).'
+  );
+}
+
+/**
+ * One-off catch-up re-sync for tickets the regular incremental sync (syncTeam_ in JiraSync.gs)
+ * silently skipped. Discovered 2026-09-03 via ST-84399/84419/84480: each had real Jira updates
+ * (priority set, status moved past "To do") weeks old that never reached Sheets/Supabase, even
+ * though syncTeam_'s 2h trigger was actively processing brand-new tickets in the same window —
+ * evidence its Jira pagination silently stalled/drifted at some point and orphaned a chunk of
+ * tickets instead of erroring out. syncTeam_ had no stall guard until the 2026-09-03 fix (see
+ * the `page.nextPageToken === pageToken` block there, mirroring runInitialBackfill's).
+ *
+ * Re-walks the last STUCK_CATCHUP_WINDOW_DAYS of `updated` per team and reprocesses every issue
+ * through the SAME processAndUpsertIssue_ path the regular sync uses — a full row upsert, not a
+ * narrow field patch, so status/priority/everything else is corrected together in one pass. Own
+ * Script Properties cursor per team, isolated from SYNC_CHECKPOINT, so it can't interfere with
+ * or be confused with the regular incremental sync's cursor. Safe to re-run (upserts are
+ * idempotent by issue_key).
+ *
+ * Run once from the editor (select runStuckTicketCatchup, click Run). If more stuck tickets
+ * surface outside the window later, run resetStuckTicketCatchup then bump
+ * STUCK_CATCHUP_WINDOW_DAYS and re-run.
+ */
+const STUCK_CATCHUP_WINDOW_DAYS = 120;
+const STUCK_CATCHUP_CURSOR_PREFIX = 'STUCK_CATCHUP_CURSOR_';
+const STUCK_CATCHUP_DONE_PREFIX = 'STUCK_CATCHUP_DONE_';
+
+function runStuckTicketCatchup() {
+  const props = PropertiesService.getScriptProperties();
+  const teams = getActiveTeamsConfig_();
+
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    if (props.getProperty(STUCK_CATCHUP_DONE_PREFIX + team.team_key)) continue;
+
+    const pageToken = props.getProperty(STUCK_CATCHUP_CURSOR_PREFIX + team.team_key) || undefined;
+    const jql = `project = ${team.jira_project_key} AND updated >= "-${STUCK_CATCHUP_WINDOW_DAYS}d" ORDER BY updated ASC`;
+    const fields = buildJiraFieldList_(team);
+
+    let page;
+    try {
+      page = jiraSearchIssues_(jql, pageToken, 100, fields);
+    } catch (err) {
+      deleteStuckTicketCatchupTrigger_();
+      if (isExpiredPageTokenError_(err)) {
+        props.deleteProperty(STUCK_CATCHUP_CURSOR_PREFIX + team.team_key);
+        notifyFailure_(
+          `runStuckTicketCatchup: page token expired for ${team.jira_project_key}, cursor reset`,
+          `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runStuckTicketCatchup manually to restart ${team.jira_project_key} from the beginning (upserts are idempotent by issue_key).`
+        );
+        return;
+      }
+      notifyFailure_(`runStuckTicketCatchup: Jira fetch failed for ${team.jira_project_key}`, err);
+      ScriptApp.newTrigger('runStuckTicketCatchup').timeBased().after(5000).create();
+      return;
+    }
+
+    if (page.nextPageToken && page.nextPageToken === pageToken) {
+      notifyFailure_(`runStuckTicketCatchup stalled for ${team.jira_project_key}`, 'nextPageToken did not advance — check Jira response.');
+      deleteStuckTicketCatchupTrigger_();
+      return;
+    }
+
+    page.issues.forEach((issue) => {
+      try {
+        processAndUpsertIssue_(team, issue);
+      } catch (issueErr) {
+        Logger.log(`runStuckTicketCatchup failed for ${issue.key}: ${issueErr}`);
+        logSyncError_(team.team_key, issue.key, 'stuck_ticket_catchup', '', String(issueErr));
+      }
+    });
+    flushDirtyDates_(team.team_key);
+
+    if (page.nextPageToken && page.issues.length > 0) {
+      props.setProperty(STUCK_CATCHUP_CURSOR_PREFIX + team.team_key, page.nextPageToken);
+      deleteStuckTicketCatchupTrigger_();
+      ScriptApp.newTrigger('runStuckTicketCatchup').timeBased().after(1000).create();
+      return;
+    }
+
+    props.setProperty(STUCK_CATCHUP_DONE_PREFIX + team.team_key, nowIso_());
+    props.deleteProperty(STUCK_CATCHUP_CURSOR_PREFIX + team.team_key);
+  }
+
+  deleteStuckTicketCatchupTrigger_();
+  sendAlertEmail_(
+    'Stuck-ticket catch-up complete',
+    `All active teams' tickets updated in the last ${STUCK_CATCHUP_WINDOW_DAYS} days have been re-synced (Sheets + Supabase), correcting any tickets the regular sync had silently skipped before the 2026-09-03 stall-guard fix in JiraSync.gs. aggregateAllTeams will pick up the affected dates (marked dirty automatically) on its next run. Re-run resetStuckTicketCatchup + runStuckTicketCatchup with a larger STUCK_CATCHUP_WINDOW_DAYS if more stuck tickets are found outside this window.`
+  );
+}
+
+function resetStuckTicketCatchup() {
+  const props = PropertiesService.getScriptProperties();
+  getActiveTeamsConfig_().forEach((team) => {
+    props.deleteProperty(STUCK_CATCHUP_DONE_PREFIX + team.team_key);
+    props.deleteProperty(STUCK_CATCHUP_CURSOR_PREFIX + team.team_key);
+  });
+  deleteStuckTicketCatchupTrigger_();
+  Logger.log('resetStuckTicketCatchup: cleared. Run runStuckTicketCatchup next.');
+}
+
+function deleteStuckTicketCatchupTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runStuckTicketCatchup')
     .forEach((t) => ScriptApp.deleteTrigger(t));
 }
