@@ -27,7 +27,8 @@ export type PageKey =
   | "rto"
   | "projects"
   | "incidents"
-  | "monitoring";
+  | "monitoring"
+  | "references";
 
 export type PageName = {
   nav: { serious: string; playful: string };
@@ -70,5 +71,9 @@ export const PAGE_NAMES: Record<PageKey, PageName> = {
   monitoring: {
     nav: { serious: "Ticket Monitoring", playful: "Telemetry" },
     title: { serious: "Ticket Monitoring", playful: "Telemetry" },
+  },
+  references: {
+    nav: { serious: "References", playful: "The Archive" },
+    title: { serious: "References", playful: "The Archive" },
   },
 };

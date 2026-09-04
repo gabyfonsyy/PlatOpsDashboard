@@ -17,6 +17,13 @@ function buildGasUrl(route: string, params: Record<string, string | undefined> =
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== "") url.searchParams.set(key, value);
   }
+  // Google's edge has been observed caching a GET Web App response keyed on the exact request
+  // URL — confirmed live on `site-monitoring` (no other params, so every call was byte-identical):
+  // a redeployed code fix kept returning the pre-fix response until a differing URL broke the
+  // cache. `cache: "no-store"` on the fetch() call only controls Next.js's own cache, not this.
+  // A route with naturally-varying params (team, date range, ...) mostly dodges it by accident;
+  // this closes it for every route, varying or not.
+  url.searchParams.set("_", Date.now().toString());
   return url.toString();
 }
 

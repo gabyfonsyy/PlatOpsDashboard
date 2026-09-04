@@ -51,7 +51,25 @@ function syncTeam_(team) {
       if (!maxUpdated || issue.fields.updated > maxUpdated) maxUpdated = issue.fields.updated;
     });
 
-    if (!page.nextPageToken || page.issues.length === 0 || page.nextPageToken === pageToken) break;
+    if (page.nextPageToken && page.nextPageToken === pageToken) {
+      // Guards against the same /rest/api/3/search/jql nextPageToken-not-advancing bug
+      // Backfill.gs already guards against (see runInitialBackfill) — confirmed 2026-09-03 via
+      // ST-84399/84419/84480, which had real Jira updates weeks old that never reached Sheets/
+      // Supabase even though this trigger was actively syncing brand-new tickets in the same
+      // window. Deliberately does NOT call writeSyncStatus_ here: this page's issues were already
+      // processed and folded into maxUpdated above, but anything past this page in the current
+      // run was never fetched. Persisting last_synced_updated_ts would move the cursor past those
+      // un-fetched tickets and permanently exclude them from every future `updated >= cursor`
+      // query. Stopping without writing the checkpoint means the next scheduled run retries this
+      // exact page instead of silently skipping the rest.
+      notifyFailure_(
+        `syncTeam_ stalled for ${team.jira_project_key}`,
+        `nextPageToken did not advance after ${count} issue(s) processed this run. Checkpoint was NOT advanced, so the next sync retries from the same point rather than skipping the remainder. If this recurs, check the Jira response for that page manually.`
+      );
+      return;
+    }
+
+    if (!page.nextPageToken || page.issues.length === 0) break;
     pageToken = page.nextPageToken;
   }
 
@@ -100,10 +118,22 @@ function processAndUpsertIssue_(team, issue) {
     }
     if (team.has_peer_review_tracking) {
       row.peer_review_cycles_json = JSON.stringify(extractPeerReviewCyclesWithReviewer_(changelog));
-      const endStatuses = cycleTimeEndStatusesForIssueType_(row.issue_type);
-      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, endStatuses);
+      const reviewCycleTime = extractReviewCycleTimeRange_(changelog, row.first_out_of_backlog_todo, row.issue_type);
       row.cycle_time_start = reviewCycleTime.startAt || '';
       row.cycle_time_end = reviewCycleTime.endAt || '';
+      // SE's native resolutiondate field (parseResolvedDateField_) is blank for a large share of
+      // tickets predating when the team started reliably setting Resolution on completion (Gaby:
+      // late 2024/early 2025) — those tickets are otherwise indistinguishable from genuinely open
+      // work everywhere in this app (every report treats resolved_datetime IS NULL as "open").
+      // Fall back to extractSeResolvedAtFallback_'s completion signal (For Checking/For Product
+      // Team, then Archived/Rejected, then Done as a last resort) — deliberately NOT
+      // reviewCycleTime.endAt, which for post-cutover Backend Changes tickets is only the DOER's
+      // handoff to peer review, not the ticket's actual completion. Only fills a genuine gap —
+      // never overwrites a real native resolutiondate value.
+      if (!row.resolved_datetime) {
+        const fallbackResolvedAt = extractSeResolvedAtFallback_(changelog);
+        if (fallbackResolvedAt) row.resolved_datetime = new Date(fallbackResolvedAt).toISOString();
+      }
     }
   }
 
@@ -409,9 +439,9 @@ const CYCLE_TIME_UNIVERSAL_END_STATUSES = ['archived', 'rejected'];
 
 /**
  * The representative review-handoff status for this issue type's GROUP — used where only group
- * membership matters (e.g. ToolAssistedApi.gs excluding Investigations from its comparison),
- * not the full set of statuses that can end cycle time — see cycleTimeEndStatusesForIssueType_
- * for that.
+ * membership matters (e.g. ToolAssistedApi.gs excluding Investigations from its comparison, which
+ * only cares about CURRENT-era Backend Changes work, well after SE_PEER_REVIEW_INTRODUCED_ON), not
+ * the full set of statuses that can end cycle time — see isHandoffStatusAt_ for that.
  */
 function cycleTimeEndStatusForIssueType_(issueType) {
   const type = (issueType || '').toLowerCase();
@@ -419,30 +449,50 @@ function cycleTimeEndStatusForIssueType_(issueType) {
 }
 
 /**
- * Every status that ends this issue type's cycle time (see extractReviewCycleTimeRange_) —
- * "backend changes" issue types (Company Policy, Backend Changes, Task, Account Creation, Data
- * Deletion, Technical Story — also the fallback for anything unlisted) hand off at For Peer
- * Review; "Investigations" issue types hand off at For Checking or For Product Team instead.
- * Archived/Rejected apply on top, regardless of group.
+ * "For Peer Review" did not exist as a status for SE Backend Changes tickets before this date —
+ * before it, Backend Changes shared "For Checking" with Investigations as their common
+ * review-handoff status (confirmed by Gaby 2026-09-03). Investigations' own handoff statuses
+ * (For Checking / For Product Team) are unaffected by this cutover — only Backend Changes'
+ * changed. Anchored to Asia/Manila midnight (the Apps Script project's runtime timezone), same
+ * convention as every other date-only cutover constant in this codebase (e.g. TOOL_RELEASED_ON).
  */
-function cycleTimeEndStatusesForIssueType_(issueType) {
+const SE_PEER_REVIEW_INTRODUCED_ON = '2026-01-12T00:00:00+08:00';
+
+/**
+ * Whether `toStatus` was a valid review-handoff status for `issueType` AT THE TIME the
+ * transition (`transitionAt`) actually happened — not based on the ticket's creation date, since
+ * a ticket created before SE_PEER_REVIEW_INTRODUCED_ON can still transition after it. Used by
+ * extractReviewCycleTimeRange_ per-changelog-entry, replacing the old static
+ * cycleTimeEndStatusesForIssueType_ list (which assumed "For Peer Review" always existed for
+ * Backend Changes and silently produced no cycle_time_end — and, per the fallback below, no
+ * resolved_datetime fallback either — for any Backend Changes ticket that finished before the
+ * cutover, since its changelog only ever contains "For Checking").
+ */
+function isHandoffStatusAt_(issueType, toStatus, transitionAt) {
   const type = (issueType || '').toLowerCase();
-  const reviewHandoffStatuses = CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.indexOf(type) !== -1
-    ? ['for checking', 'for product team']
-    : ['for peer review'];
-  return reviewHandoffStatuses.concat(CYCLE_TIME_UNIVERSAL_END_STATUSES);
+  if (CYCLE_TIME_INVESTIGATION_ISSUE_TYPES.indexOf(type) !== -1) {
+    return toStatus === 'for checking' || toStatus === 'for product team';
+  }
+  // Backend Changes (and the unlisted-type fallback).
+  const isPostCutover = new Date(transitionAt) >= new Date(SE_PEER_REVIEW_INTRODUCED_ON);
+  return isPostCutover ? toStatus === 'for peer review' : toStatus === 'for checking';
 }
 
 /**
  * SE/ST cycle-time definition (replaces backlog-exit -> resolution for teams with
  * has_peer_review_tracking): the span from when the ticket first moved OUT of Backlog/To Do
  * (`backlogExitFallback`, i.e. `first_out_of_backlog_todo` — a fixed point per ticket) to the
- * end of `endStatuses` (see cycleTimeEndStatusesForIssueType_), which splits into two cases:
+ * DOER's own handoff point (see isHandoffStatusAt_) — For Peer Review for post-cutover Backend
+ * Changes, For Checking for pre-cutover Backend Changes and for Investigations always. This is
+ * deliberately the DOER's effort boundary, not the ticket's true completion — see
+ * extractSeResolvedAtFallback_ for that (Gaby's happy path, 2026-09-03: To Do -> In Progress ->
+ * [For Peer Review ->] For Checking -> Done — For Peer Review is a doer->validator handoff
+ * halfway through, not the end of the ticket).
  *
- * - Handoff statuses (For Peer Review / For Checking / For Product Team) can legitimately be
- *   re-entered after more work, so `cycleTimeEnd` is overwritten every time a LATER matching
- *   transition is seen while walking the changelog chronologically — a ticket that bounces
- *   On Hold -> In Progress -> handoff again automatically recomputes using the latest entry.
+ * - Handoff statuses can legitimately be re-entered after more work, so `cycleTimeEnd` is
+ *   overwritten every time a LATER matching transition is seen while walking the changelog
+ *   chronologically — a ticket that bounces On Hold -> In Progress -> handoff again
+ *   automatically recomputes using the latest entry.
  * - CYCLE_TIME_UNIVERSAL_END_STATUSES (archived/rejected) are terminal: once a ticket reaches
  *   either one, it's done. A LATER move between them, or from a handoff status into one of them
  *   after the ticket had already gone terminal, is a reclassification of an already-finished
@@ -455,7 +505,7 @@ function cycleTimeEndStatusesForIssueType_(issueType) {
  * The start does NOT track "In Progress" re-entries — it's always the ticket's original
  * backlog-exit moment, regardless of how many times it later cycles back through review.
  */
-function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatuses) {
+function extractReviewCycleTimeRange_(changelog, backlogExitFallback, issueType) {
   let cycleTimeEnd = null;
   let terminalAt = null;
 
@@ -464,16 +514,59 @@ function extractReviewCycleTimeRange_(changelog, backlogExitFallback, endStatuse
     if (!statusItem) continue;
 
     const toStatus = (statusItem.toString || '').toLowerCase();
-    if (endStatuses.indexOf(toStatus) === -1) continue;
+    const transitionAt = changelog[i].created;
+    const isTerminal = CYCLE_TIME_UNIVERSAL_END_STATUSES.indexOf(toStatus) !== -1;
+    if (!isTerminal && !isHandoffStatusAt_(issueType, toStatus, transitionAt)) continue;
 
-    if (CYCLE_TIME_UNIVERSAL_END_STATUSES.indexOf(toStatus) !== -1) {
-      if (!terminalAt) terminalAt = changelog[i].created;
+    if (isTerminal) {
+      if (!terminalAt) terminalAt = transitionAt;
     } else if (!terminalAt) {
-      cycleTimeEnd = changelog[i].created;
+      cycleTimeEnd = transitionAt;
     }
   }
 
   return { startAt: backlogExitFallback || null, endAt: terminalAt || cycleTimeEnd };
+}
+
+/**
+ * SE resolved_datetime fallback, for when the native resolutiondate field is blank — a
+ * DIFFERENT signal than cycle_time_end above. cycle_time_end measures the DOER's own effort
+ * boundary (era/type-dependent — see isHandoffStatusAt_); this measures the ticket's actual
+ * completion, which per Gaby's happy path (2026-09-03) is always "For Checking" (or "For
+ * Product Team" for the Investigations subset that hands off there instead) immediately before
+ * Done — true in BOTH the pre- and post-SE_PEER_REVIEW_INTRODUCED_ON Backend Changes workflow
+ * (To Do -> In Progress -> [For Peer Review ->] For Checking -> Done) and in Investigations, so
+ * unlike cycle_time_end this needs NO date or issue-type gating — "For Peer Review" is
+ * deliberately excluded here, since reaching it only means the doer finished, not the ticket.
+ * Archived/Rejected are terminal exactly as above (first occurrence wins, over any handoff
+ * timestamp). "Done" is a LAST-RESORT fallback (latest occurrence, same "re-entry means more
+ * work" reasoning as a handoff status) for tickets whose changelog has no For Checking/For
+ * Product Team/Archived/Rejected transition at all — Gaby confirmed 2024-era SE tickets predate
+ * that step entirely and went straight from active work to Done.
+ */
+function extractSeResolvedAtFallback_(changelog) {
+  const COMPLETION_HANDOFF_STATUSES = ['for checking', 'for product team'];
+  let handoffAt = null;
+  let terminalAt = null;
+  let doneAt = null;
+
+  for (let i = 0; i < changelog.length; i++) {
+    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    if (!statusItem) continue;
+
+    const toStatus = (statusItem.toString || '').toLowerCase();
+    const transitionAt = changelog[i].created;
+
+    if (toStatus === 'done') doneAt = transitionAt;
+
+    if (CYCLE_TIME_UNIVERSAL_END_STATUSES.indexOf(toStatus) !== -1) {
+      if (!terminalAt) terminalAt = transitionAt;
+    } else if (COMPLETION_HANDOFF_STATUSES.indexOf(toStatus) !== -1 && !terminalAt) {
+      handoffAt = transitionAt;
+    }
+  }
+
+  return terminalAt || handoffAt || doneAt;
 }
 
 /**

@@ -1,21 +1,33 @@
+"use client";
+
 import type { BacklogAgingTicket } from "@/lib/backlog-aging";
 import { formatNumber } from "@/lib/format";
+import { useTablePagination } from "@/lib/use-table-pagination";
+import { TablePagination } from "@/components/dashboard/TablePagination";
 
 export function BacklogAgingTable({
   tickets,
   assigneeLabel,
   showTeam = false,
   jiraBaseUrl,
+  title,
 }: {
   tickets: BacklogAgingTicket[];
   assigneeLabel: string;
   showTeam?: boolean;
   jiraBaseUrl?: string;
+  title?: string;
 }) {
   const columnCount = showTeam ? 6 : 5;
+  const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(tickets);
 
   return (
     <div className="card overflow-x-auto">
+      {title && (
+        <div className="px-4 py-3 border-b border-neutral-200">
+          <h3 className="text-sm font-semibold text-neutral-900">{title}</h3>
+        </div>
+      )}
       <table className="w-full text-sm">
         <thead className="bg-neutral-50 border-b border-neutral-200">
           <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
@@ -35,7 +47,7 @@ export function BacklogAgingTable({
               </td>
             </tr>
           ) : (
-            tickets.map((t) => (
+            pageRows.map((t) => (
               <tr key={`${t.teamKey}-${t.issueKey}`}>
                 <td className="px-4 py-3 font-medium text-neutral-900 whitespace-nowrap">
                   {jiraBaseUrl ? (
@@ -68,6 +80,7 @@ export function BacklogAgingTable({
           )}
         </tbody>
       </table>
+      <TablePagination page={page} pageCount={pageCount} totalCount={tickets.length} pageSize={pageSize} onPageChange={setPage} />
     </div>
   );
 }

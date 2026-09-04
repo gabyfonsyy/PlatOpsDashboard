@@ -32,7 +32,17 @@ const PRIMARY_NAV = { href: "/my-work", page: "home" } as const;
  * is not tangled up with the header's stacking), available on every page, with the full page
  * one click from inside the panel. Removing the pill also gives the bar its width back.
  */
-const LEADING_NAV = [{ href: PRIMARY_NAV.href, page: PRIMARY_NAV.page }] as const;
+
+/**
+ * My Work's dropdown. References joined it 2026-09-04 rather than getting its own pill — it's a
+ * personal, disposable list in the same spirit as My Work's own projects, not a place-you-go on
+ * the level of Leave or Projects, and the bar has no room for an eighth pill (see the straddle
+ * note below).
+ */
+const MY_WORK_MENU = [
+  { href: "/my-work", page: "home" },
+  { href: "/references", page: "references" },
+] as const;
 
 /** Labels come from lib/nav.ts, which carries both names for every page. */
 const NAV_ITEMS = [
@@ -48,6 +58,8 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   const { data: session } = useSession();
   const [teamsOpen, setTeamsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [myWorkOpen, setMyWorkOpen] = useState(false);
+  const myWorkRef = useRef<HTMLDivElement>(null);
   // Easter egg #1: the logo. Counts clicks and pays out on the 5th, then resets. Deliberately
   // attached to a decorative element that does nothing else, so there's no workflow to disrupt.
   const logoClicks = useRef(0);
@@ -60,15 +72,22 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   const teamKeys = teamTabs.map((t) => t.key);
   const isTeamsActive = teamKeys.some((k) => pathname === `/${k}` || pathname.startsWith(`/${k}/`));
 
+  // My Work menu = the personal command centre plus References, its dropdown sibling.
+  const isMyWorkActive = pathname === PRIMARY_NAV.href || pathname.startsWith("/references");
+
   // Close on outside click and on navigation.
   useEffect(() => {
     function onMouseDown(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setTeamsOpen(false);
+      if (myWorkRef.current && !myWorkRef.current.contains(e.target as Node)) setMyWorkOpen(false);
     }
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, []);
-  useEffect(() => setTeamsOpen(false), [pathname]);
+  useEffect(() => {
+    setTeamsOpen(false);
+    setMyWorkOpen(false);
+  }, [pathname]);
 
   return (
     <>
@@ -152,15 +171,38 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
             this nav, and a scroll container would clip it shut. Narrow windows overflow the bar
             horizontally, which they did before this too. */}
         <nav className="pill-nav pointer-events-auto">
-          {LEADING_NAV.map((item) => {
-            const active = pathname === item.href;
-            const name = PAGE_NAMES[item.page].nav;
-            return (
-              <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>
-                <Copy serious={name.serious} playful={name.playful} />
-              </Link>
-            );
-          })}
+          <div className="relative" ref={myWorkRef}>
+            <button
+              onClick={() => setMyWorkOpen((o) => !o)}
+              className={cn("pill", isMyWorkActive && "pill-active")}
+              aria-haspopup="menu"
+              aria-expanded={myWorkOpen}
+            >
+              <Copy serious={PAGE_NAMES[PRIMARY_NAV.page].nav.serious} playful={PAGE_NAMES[PRIMARY_NAV.page].nav.playful} />
+              <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", myWorkOpen && "rotate-180")} />
+            </button>
+            {myWorkOpen && (
+              <div role="menu" className="dropdown-menu">
+                {MY_WORK_MENU.map((item) => {
+                  const active = pathname === item.href;
+                  const name = PAGE_NAMES[item.page].nav;
+                  return (
+                    <Link
+                      key={item.href}
+                      href={item.href}
+                      role="menuitem"
+                      className={cn("dropdown-item", active && "dropdown-item-active")}
+                    >
+                      <span>
+                        <Copy serious={name.serious} playful={name.playful} />
+                      </span>
+                      {active && <Check className="w-4 h-4 shrink-0" />}
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
           <div className="relative" ref={dropdownRef}>
             <button
