@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 import { celebrate } from "@/lib/celebrate";
 import { Badge } from "@/components/ui/Badge";
 import { Copy } from "@/components/ui/Copy";
+import { useTablePagination } from "@/lib/use-table-pagination";
+import { TablePagination } from "@/components/dashboard/TablePagination";
 import type { SiteMonitoringClient } from "@/lib/site-monitoring";
 
 const IMPACTED_STORAGE_KEY = "platops.impactedClients";
@@ -172,6 +174,14 @@ export function SiteMonitoringSection({
 
   const hasActiveFilters = search.trim() !== "" || Object.values(filters).some(Boolean);
 
+  // Her 2026-09-03 standing rule for every ticket/client detail table: paginate the filtered
+  // result rather than rendering it all inline. With 2,670 clients in one snapshot, rendering
+  // every row unconditionally was the real cause of the sluggish theme toggle reported on this
+  // page — a `data-theme` change forces the browser to restyle the entire DOM, and that DOM was
+  // ~2,670 rows deep regardless of how many were ever visible on screen. Search/filter still run
+  // over the full `clients` array; only what's painted is capped.
+  const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(visibleClients);
+
   function clearFilters() {
     setSearch("");
     setFilters({});
@@ -302,10 +312,16 @@ export function SiteMonitoringSection({
           time, never via a click in the main table (see the static badge below), so a misclick
           during a live incident can't silently drop a client. Rendered as compact rows rather
           than a dense table — this list is meant to stay short, so it can afford to be readable. */}
-      <div className={cn("rounded-lg border", impacted.size > 0 ? "border-amber-200 shadow-sm" : "border-neutral-200")}>
+      {/* `amber-500` at low opacity, not `amber-50`/`amber-200` — this panel needs to read as a
+          warm highlight in EVERY theme. `amber-50`/`-200` are ramp endpoints that invert with the
+          rest of the neutral scale in dark/adhd (see globals.css), which turns "highlighted" into
+          a muddy dark-brown block that no longer looks like a highlight at all. `amber-500` itself
+          stays a recognizable gold/amber across all three themes, so a translucent wash of it
+          reads as the same warm accent everywhere — confirmed live in light, dark, and Gaby's View. */}
+      <div className={cn("rounded-lg border", impacted.size > 0 ? "border-amber-500/40 shadow-sm" : "border-neutral-200")}>
         <div className={cn(
           "flex items-center justify-between gap-3 px-3 py-2 border-b",
-          impacted.size > 0 ? "border-amber-200 bg-amber-50" : "border-neutral-200 bg-neutral-50"
+          impacted.size > 0 ? "border-amber-500/40 bg-amber-500/10" : "border-neutral-200 bg-neutral-50"
         )}>
           <div>
             <h3 className="text-sm font-semibold text-neutral-900">Impacted Clients ({impacted.size})</h3>
@@ -338,10 +354,16 @@ export function SiteMonitoringSection({
                 needs (Client ID, Domain, Server, App Pool, Keycloak Instance) are columns, not
                 prose, and never behind a "Details" click the way the main table's secondary
                 fields are. This list is the point of the workspace, so nothing here is hidden. */}
-            <table className="w-full text-sm hidden sm:table">
+            {/* `table-fixed` is load-bearing here, not decorative — without it the browser
+                auto-sizes columns from content, so a short Domain value shrinks that column
+                below its intended share (opening a gap before Database Server) while realistic
+                App Pool values ("HRIS SSO Production v2 Tier 19") get squeezed into whatever's
+                left and wrap. Fixed widths below are tuned to those two columns' real content
+                lengths, same "table-fixed + explicit w-[%]" pattern the main table already uses. */}
+            <table className="w-full text-sm table-fixed hidden sm:table">
               <colgroup>
-                <col className="w-[16%]" /><col className="w-[26%]" /><col className="w-[16%]" />
-                <col className="w-[18%]" /><col className="w-[16%]" /><col className="w-[8%]" />
+                <col className="w-[13%]" /><col className="w-[21%]" /><col className="w-[12%]" />
+                <col className="w-[26%]" /><col className="w-[18%]" /><col className="w-[10%]" />
               </colgroup>
               <thead className="bg-neutral-50/60 border-b border-neutral-100">
                 <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
@@ -461,14 +483,14 @@ export function SiteMonitoringSection({
         especially Domain, too compressed to read at a glance, which defeats the point of a P1
         lookup tool.
       */}
-      <div className="max-h-[40rem] overflow-y-auto rounded-lg border border-neutral-200">
+      <div className="rounded-lg border border-neutral-200 overflow-hidden">
         <table className="w-full text-sm table-fixed">
           <colgroup>
             <col className="w-[8%]" /><col className="w-[13%]" /><col className="w-[19%]" />
             <col className="w-[8%]" /><col className="w-[6%]" /><col className="w-[10%]" />
             <col className="w-[14%]" /><col className="w-[10%]" /><col className="w-[12%]" />
           </colgroup>
-          <thead className="bg-neutral-50 border-b border-neutral-200 sticky top-0 z-10">
+          <thead className="bg-neutral-50 border-b border-neutral-200">
             <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
               <th className="px-3 py-2.5">Client ID</th>
               <th className="px-3 py-2.5">Client Name</th>
@@ -501,7 +523,7 @@ export function SiteMonitoringSection({
                 </td>
               </tr>
             )}
-            {visibleClients.map((c) => {
+            {pageRows.map((c) => {
               const isImpacted = impacted.has(c.clientId);
               const isOpen = expanded.has(c.clientId);
               return (
@@ -509,7 +531,10 @@ export function SiteMonitoringSection({
                   <tr
                     className={cn(
                       "hover:bg-neutral-50/80 transition-colors",
-                      isImpacted && "bg-amber-50/50",
+                      // Same amber-500-at-low-opacity reasoning as the Impacted Clients panel
+                      // above — `amber-50/50` was nearly imperceptible in dark/adhd because that
+                      // ramp endpoint is already close to the row's own dark background there.
+                      isImpacted && "bg-amber-500/10",
                       isOpen && "bg-neutral-50/60"
                     )}
                   >
@@ -583,6 +608,7 @@ export function SiteMonitoringSection({
             })}
           </tbody>
         </table>
+        <TablePagination page={page} pageCount={pageCount} totalCount={visibleClients.length} pageSize={pageSize} onPageChange={setPage} />
       </div>
     </div>
   );
