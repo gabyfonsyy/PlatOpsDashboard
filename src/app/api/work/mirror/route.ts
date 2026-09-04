@@ -294,7 +294,12 @@ export async function POST(req: Request) {
       // Low: this is reporting, not writing. The same fortnight of data should produce the same
       // observations twice in a row, or they aren't observations.
       temperature: 0.2,
-      maxTokens: 800,
+      // gpt-oss-120b is a reasoning model: its hidden reasoning tokens count against max_tokens
+      // (Groq defaults reasoning_effort to "medium"), so 800 left nothing for the final JSON on a
+      // payload this dense — the model burned the whole budget reasoning and returned empty
+      // content, which Groq's json_object validator then rejected as unparseable. 2400 matches
+      // the other "deep"-tier call (generateBriefing in overview-ai.ts) that doesn't hit this.
+      maxTokens: 2400,
       // The one genuinely "deep" task in the app: relating duration, throughput, deferrals,
       // project switching, mood and free-text reflections to each other. The small model produces
       // noticeably shallower correlations here, and this runs rarely enough to afford it.
