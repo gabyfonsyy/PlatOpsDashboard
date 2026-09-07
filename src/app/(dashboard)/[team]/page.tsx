@@ -5,6 +5,7 @@ import { getTeamByKey, backlogAgingAssigneeLabel } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
 import { getAutomatedTicketCount } from "@/lib/automated-tickets";
+import { getTicketOutcomeCards, outcomeDef } from "@/lib/ticket-outcomes";
 import { getP1SlaReport } from "@/lib/p1-sla";
 import { slaStatusForRate, STATUS_LABEL, STATUS_TONE } from "@/lib/sla-status";
 import { AUTOMATION_LABELS_COOKIE, resolveAutomationLabels } from "@/lib/automation-labels";
@@ -23,6 +24,8 @@ import { MetricCard } from "@/components/dashboard/MetricCard";
 import { MetricsSeriesChart } from "@/components/dashboard/MetricsSeriesChart";
 import { DistributionChart } from "@/components/dashboard/DistributionChart";
 import { InsightPanel } from "@/components/dashboard/InsightPanel";
+import { OutcomeCard } from "@/components/dashboard/OutcomeCard";
+import { TicketOutcomesSectionIntro } from "@/components/dashboard/TicketOutcomesCopy";
 
 export default async function TeamDashboardPage({
   params,
@@ -44,13 +47,14 @@ export default async function TeamDashboardPage({
   // rather than the built-in default. Without this the card and the page it links to disagree the
   // moment she edits the automation-label catalogue.
   const automationLabels = resolveAutomationLabels(cookies().get(AUTOMATION_LABELS_COOKIE)?.value);
-  const [metrics, insight, automatedCount, p1Sla] = await Promise.all([
+  const [metrics, insight, automatedCount, p1Sla, outcomeCards] = await Promise.all([
     getTicketMetrics(team.team_key, range, period, issueType),
     getInsight(`TEAM:${team.team_key}`),
     hasAssignedSe
       ? getAutomatedTicketCount(team.team_key, range, period, issueType, automationLabels)
       : Promise.resolve(0),
     team.has_p1_sla_tracking ? getP1SlaReport(team.team_key, range, period, issueType) : Promise.resolve(null),
+    getTicketOutcomeCards(team.team_key, range, period, issueType),
   ]);
 
   const issueTypes = team.issue_types_csv
@@ -185,17 +189,39 @@ export default async function TeamDashboardPage({
 
       <MetricsSeriesChart series={metrics.series} />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {team.has_holding_reason && (
+      {team.has_holding_reason && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <DistributionChart title="Ticket Holding Reasons" data={metrics.holdingReasonBreakdown} labelKey="reason" />
-        )}
-        {team.has_rejection_category && (
-          <DistributionChart title="Ticket Rejection Categories" data={metrics.rejectionCategoryBreakdown} labelKey="category" />
-        )}
-        {team.has_cancellation_reason && (
-          <DistributionChart title="Cancellation Reasons" data={metrics.cancellationReasonBreakdown} labelKey="reason" />
-        )}
-      </div>
+        </div>
+      )}
+
+      {outcomeCards.length > 0 && (
+        <div>
+          <h2 className="text-base font-semibold text-neutral-900">Ticket Outcomes</h2>
+          <TicketOutcomesSectionIntro />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-3">
+            {outcomeCards.map((card) => {
+              const def = outcomeDef(card.outcome);
+              return (
+                <OutcomeCard
+                  key={card.outcome}
+                  label={def.cardLabel}
+                  outcome={card.outcome}
+                  value={formatNumber(card.count)}
+                  sublabel={
+                    card.resolvedInPeriod
+                      ? `${formatPercent(card.share)} of ${formatNumber(card.resolvedInPeriod)} resolved`
+                      : undefined
+                  }
+                  tooltip={`Tickets resolved in the period whose status is ${def.statusLabel}, divided by every ticket ${teamLabel(team.team_name)} resolved in the period. Click through for the ${def.reasonLabel.toLowerCase()} breakdown and the ticket list.`}
+                  href={`/${team.team_key.toLowerCase()}/${card.outcome}?${filterQuery}`}
+                  breakdown={card.byReason}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

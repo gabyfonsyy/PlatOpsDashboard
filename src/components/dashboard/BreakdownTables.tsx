@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { ANALYSIS_EXCLUDED_LABELS, type CountRow, type ComboRow } from "@/lib/ticket-breakdowns";
 import { formatNumber, formatPercent } from "@/lib/format";
 
@@ -16,6 +17,7 @@ export function CountRankTable({
   countLabel = "Tickets",
   emptyMessage = "Nothing in this period.",
   description,
+  hrefForKey,
 }: {
   title: string;
   keyLabel: string;
@@ -24,6 +26,10 @@ export function CountRankTable({
   emptyMessage?: string;
   /** Caption under the title — e.g. to name an exclusion the rows were built with. */
   description?: string;
+  /** When given, each row's key links to the drill-down for just that row — e.g. the Ticket
+   * Outcomes reason breakdown carrying its reason into the ticket table below. Omit for every
+   * other caller; rows render as plain text unless this is passed. */
+  hrefForKey?: (key: string) => string;
 }) {
   const max = rows.reduce((m, r) => Math.max(m, r.count), 0);
   return (
@@ -49,7 +55,13 @@ export function CountRankTable({
             rows.map((r) => (
               <tr key={r.key}>
                 <td className="px-4 py-2.5 text-neutral-900">
-                  {r.key}
+                  {hrefForKey ? (
+                    <Link href={hrefForKey(r.key)} className="hover:underline text-sprout-700">
+                      {r.key}
+                    </Link>
+                  ) : (
+                    r.key
+                  )}
                   {/* Proportional bar: the ranking is the point, and a bar reads faster than
                       comparing numbers down a column. Width is relative to the top row, not to
                       the total, so short tails stay visible. */}

@@ -135,6 +135,7 @@ function buildJiraFieldList_(teamConfig) {
     'customfield_11463', // Ticket Holding Reason
     'customfield_11496', // Ticket Rejection Category
     'customfield_11285', // Cancellation Reason
+    'customfield_10187', // Archive Reason
   ];
   return standard.concat(custom);
 }

@@ -951,6 +951,134 @@ function deletePriorityRebackfillTrigger_() {
 }
 
 /**
+ * Lightweight re-backfill for the `archive_reason` column (added after most tickets were already
+ * synced — see migrateAddTicketOutcomeColumns in Setup.gs). Same shape as runPriorityRebackfill:
+ * pulls only `created` + `customfield_10187` per ticket and patches just the cell in the existing
+ * RAW row, self-continuing across executions via per-team Script Property cursors. Run once from
+ * the editor after migrateAddTicketOutcomeColumns. Needed for the Archived Tickets drill-down
+ * (lib/ticket-outcomes.ts) to see tickets synced before this column existed — going forward, the
+ * regular sync fills it in on its own. Safe to re-run (clear the DONE_ props to force a full redo).
+ */
+const TICKET_OUTCOME_REBACKFILL_CURSOR_PREFIX = 'TICKET_OUTCOME_REBACKFILL_CURSOR_';
+const TICKET_OUTCOME_REBACKFILL_DONE_PREFIX = 'TICKET_OUTCOME_REBACKFILL_DONE_';
+
+function runTicketOutcomeFieldsRebackfill() {
+  const props = PropertiesService.getScriptProperties();
+  const teams = getActiveTeamsConfig_();
+
+  for (let i = 0; i < teams.length; i++) {
+    const team = teams[i];
+    if (props.getProperty(TICKET_OUTCOME_REBACKFILL_DONE_PREFIX + team.team_key)) continue;
+
+    const pageToken = props.getProperty(TICKET_OUTCOME_REBACKFILL_CURSOR_PREFIX + team.team_key) || undefined;
+    const jql = buildJqlBackfillFull_(team);
+
+    let page;
+    try {
+      page = jiraSearchIssues_(jql, pageToken, 100, ['created', 'customfield_10187']);
+    } catch (err) {
+      deleteTicketOutcomeRebackfillTrigger_();
+      if (isExpiredPageTokenError_(err)) {
+        props.deleteProperty(TICKET_OUTCOME_REBACKFILL_CURSOR_PREFIX + team.team_key);
+        notifyFailure_(
+          `runTicketOutcomeFieldsRebackfill: page token expired for ${team.jira_project_key}, cursor reset`,
+          `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runTicketOutcomeFieldsRebackfill manually to restart ${team.jira_project_key} from the beginning.`
+        );
+        return;
+      }
+      notifyFailure_(`runTicketOutcomeFieldsRebackfill: Jira fetch failed for ${team.jira_project_key}`, err);
+      ScriptApp.newTrigger('runTicketOutcomeFieldsRebackfill').timeBased().after(5000).create();
+      return;
+    }
+
+    if (page.nextPageToken && page.nextPageToken === pageToken) {
+      notifyFailure_(`runTicketOutcomeFieldsRebackfill stalled for ${team.jira_project_key}`, 'nextPageToken did not advance — check Jira response.');
+      deleteTicketOutcomeRebackfillTrigger_();
+      return;
+    }
+
+    // Group this page's archive_reason updates by the ticket's created-year (RAW tabs are sharded by it).
+    const updatesByYear = {};
+    page.issues.forEach((issue) => {
+      const created = issue.fields && issue.fields.created;
+      if (!created) return;
+      const year = new Date(created).getFullYear();
+      (updatesByYear[year] = updatesByYear[year] || {})[issue.key] =
+        extractJiraFieldValue_(issue.fields.customfield_10187);
+    });
+    Object.keys(updatesByYear).forEach((year) => applyArchiveReasonUpdates_(team.team_key, year, updatesByYear[year]));
+
+    if (page.nextPageToken && page.issues.length > 0) {
+      props.setProperty(TICKET_OUTCOME_REBACKFILL_CURSOR_PREFIX + team.team_key, page.nextPageToken);
+      deleteTicketOutcomeRebackfillTrigger_();
+      ScriptApp.newTrigger('runTicketOutcomeFieldsRebackfill').timeBased().after(1000).create();
+      return;
+    }
+
+    props.setProperty(TICKET_OUTCOME_REBACKFILL_DONE_PREFIX + team.team_key, nowIso_());
+    props.deleteProperty(TICKET_OUTCOME_REBACKFILL_CURSOR_PREFIX + team.team_key);
+  }
+
+  deleteTicketOutcomeRebackfillTrigger_();
+  sendAlertEmail_(
+    'Ticket Outcome fields re-backfill complete',
+    'All active teams have had RAW archive_reason populated from Jira, in the Sheets (RAW_<team>_<year> tabs). ' +
+    'Now run runSupabaseMigration() (SupabaseMigration.gs) to push it into Supabase — see applyArchiveReasonUpdates_ ' +
+    'for why this step deliberately does not dual-write Supabase itself.'
+  );
+}
+
+/**
+ * Patches the archive_reason cell for the given issue keys in one RAW_<team>_<year> tab (single
+ * batched write). Sheets ONLY, same reasoning as applyPriorityUpdates_ above (a partial Supabase
+ * upsert of just this column fails NOT NULL validation on `tickets`' many other required columns
+ * even when the row already exists) — run runSupabaseMigration() afterward for the full-row push
+ * into Supabase.
+ */
+function applyArchiveReasonUpdates_(teamKey, year, keyToArchiveReason) {
+  const sheet = getOrCreateRawTab_(teamKey, year);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const keyCol = headers.indexOf('issue_key');
+  const archiveReasonCol = headers.indexOf('archive_reason');
+  if (keyCol === -1 || archiveReasonCol === -1) return;
+
+  const keys = sheet.getRange(2, keyCol + 1, lastRow - 1, 1).getValues();
+  const archiveReasons = sheet.getRange(2, archiveReasonCol + 1, lastRow - 1, 1).getValues();
+  let changed = false;
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i][0];
+    if (k && Object.prototype.hasOwnProperty.call(keyToArchiveReason, k)) {
+      archiveReasons[i][0] = keyToArchiveReason[k];
+      changed = true;
+    }
+  }
+  if (changed) sheet.getRange(2, archiveReasonCol + 1, archiveReasons.length, 1).setValues(archiveReasons);
+}
+
+/**
+ * Clears the DONE_/CURSOR_ properties for every active team so the next
+ * runTicketOutcomeFieldsRebackfill call does a full redo instead of skipping teams already marked
+ * complete. Mirrors resetPriorityRebackfill exactly.
+ */
+function resetTicketOutcomeFieldsRebackfill() {
+  const props = PropertiesService.getScriptProperties();
+  getActiveTeamsConfig_().forEach((team) => {
+    props.deleteProperty(TICKET_OUTCOME_REBACKFILL_DONE_PREFIX + team.team_key);
+    props.deleteProperty(TICKET_OUTCOME_REBACKFILL_CURSOR_PREFIX + team.team_key);
+  });
+  deleteTicketOutcomeRebackfillTrigger_();
+  Logger.log('resetTicketOutcomeFieldsRebackfill: cleared. Run runTicketOutcomeFieldsRebackfill next.');
+}
+
+function deleteTicketOutcomeRebackfillTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runTicketOutcomeFieldsRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
  * Targeted fixup for `tickets.priority` still being NULL in Supabase for specific tickets that
  * DO have a real priority in Jira right now (reported by Gaby 2026-09-04: ST-84399, ST-84419,
  * ST-84480, and 772 others across ST/DE/DEV). Confirmed root cause: `extractJiraFieldValue_`

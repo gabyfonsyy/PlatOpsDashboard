@@ -11,7 +11,7 @@ const RAW_TICKET_HEADERS = [
   'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
   'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
-  'cycle_time_start', 'cycle_time_end', 'labels', 'priority',
+  'cycle_time_start', 'cycle_time_end', 'labels', 'priority', 'archive_reason',
 ];
 
 function syncAllTeams() {
@@ -190,6 +190,10 @@ function mapIssueToRawRow_(team, issue, resolved) {
     // scorecard (lib/p1-sla.ts). extractJiraFieldValue_ handles its {id,name,iconUrl} shape via
     // the 'name' branch, same as issuetype/status.
     priority: extractJiraFieldValue_(fields.priority),
+    // Archive Reason — only meaningful on ST (has_fcr_escalation), whose terminal statuses are
+    // Archived/Rejected rather than Cancelled. Same extraction as rejection_category/
+    // cancellation_reason above.
+    archive_reason: extractJiraFieldValue_(fields.customfield_10187),
   };
 }
 

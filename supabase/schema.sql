@@ -68,7 +68,10 @@ create table tickets (
   cycle_time_end timestamptz,
   labels text,
   -- Jira's native Priority field, e.g. 'P1 (Very Urgent)'. Backs the P1 SLA Compliance report.
-  priority text
+  priority text,
+  -- Archive Reason (customfield_10187) — only meaningful on ST (has_fcr_escalation). Backs the
+  -- Archived Tickets drill-down, same as rejection_category/cancellation_reason above.
+  archive_reason text
 );
 
 create index tickets_team_created_idx on tickets (team_key, created);
