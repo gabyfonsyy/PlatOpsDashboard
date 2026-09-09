@@ -15,16 +15,28 @@ export function TicketOutcomeReasonBreakdown({
   outcome,
   reasonLabel,
   rows,
-  hrefForKey,
+  range,
+  period,
+  issueType,
 }: {
   outcome: OutcomeKind;
   reasonLabel: string;
   rows: CountRow[];
-  hrefForKey?: (key: string) => string;
+  range: string;
+  period: string;
+  issueType?: string;
 }) {
   const { theme } = useTheme();
   const copy = ticketOutcomeCopy(theme);
   const hasNoReasonRows = rows.some((r) => r.key === NO_REASON_LABEL);
+
+  // Built here, not passed in from the server component — a plain function can't cross the
+  // server->client boundary as a prop (only "use server" actions can), so the drill-down page
+  // hands over the raw filter values instead and this client component builds its own hrefs.
+  const hrefForKey = (reason: string) => {
+    const params = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}), reason });
+    return `?${params.toString()}`;
+  };
 
   return (
     <CountRankTable

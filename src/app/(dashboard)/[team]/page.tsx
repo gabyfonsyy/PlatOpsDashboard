@@ -187,14 +187,6 @@ export default async function TeamDashboardPage({
         )}
       </div>
 
-      <MetricsSeriesChart series={metrics.series} />
-
-      {team.has_holding_reason && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <DistributionChart title="Ticket Holding Reasons" data={metrics.holdingReasonBreakdown} labelKey="reason" />
-        </div>
-      )}
-
       {outcomeCards.length > 0 && (
         <div>
           <h2 className="text-base font-semibold text-neutral-900">Ticket Outcomes</h2>
@@ -220,6 +212,14 @@ export default async function TeamDashboardPage({
               );
             })}
           </div>
+        </div>
+      )}
+
+      <MetricsSeriesChart series={metrics.series} />
+
+      {team.has_holding_reason && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <DistributionChart title="Ticket Holding Reasons" data={metrics.holdingReasonBreakdown} labelKey="reason" />
         </div>
       )}
     </div>

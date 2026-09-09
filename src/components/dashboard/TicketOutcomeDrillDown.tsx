@@ -38,11 +38,6 @@ export async function TicketOutcomeDrillDown({
     : [];
   const backQuery = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}) }).toString();
 
-  const reasonHref = (reason: string) => {
-    const params = new URLSearchParams({ range, period, ...(issueType ? { issueType } : {}), reason });
-    return `?${params.toString()}`;
-  };
-
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between flex-wrap gap-4">
@@ -94,7 +89,9 @@ export async function TicketOutcomeDrillDown({
         outcome={outcome}
         reasonLabel={def.reasonLabel}
         rows={report.byReason}
-        hrefForKey={reasonHref}
+        range={range}
+        period={period}
+        issueType={issueType}
       />
 
       <OutcomeTicketsTable
