@@ -169,7 +169,7 @@ export function LeaveGanttChart({ records, month }: { records: LeaveRecord[]; mo
                           <span
                             role="tooltip"
                             className="pointer-events-none absolute left-0 bottom-full mb-1 z-30 hidden group-hover:block
-                                       whitespace-nowrap rounded-md bg-neutral-900 text-white text-[11px] leading-snug
+                                       whitespace-nowrap rounded-md bg-gray-900 text-white text-[11px] leading-snug
                                        px-2 py-1 shadow-lg"
                           >
                             {emp} — {tip}

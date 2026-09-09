@@ -64,8 +64,8 @@ export function OutcomeCard({
             <Info className="w-3.5 h-3.5 text-neutral-300 hover:text-neutral-500 cursor-help transition-colors" />
             <span
               role="tooltip"
-              className="pointer-events-none absolute left-1/2 -translate-x-1/2 bottom-full mb-2 w-56
-                         rounded-lg bg-neutral-900 text-white text-[11px] leading-snug font-normal normal-case tracking-normal
+              className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-2 w-56
+                         rounded-lg bg-gray-900 text-white text-[11px] leading-snug font-normal normal-case tracking-normal
                          px-3 py-2 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-30 shadow-lg"
             >
               {tooltip}
