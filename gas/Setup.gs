@@ -244,6 +244,28 @@ function migrateAddPriorityColumn() {
 }
 
 /**
+ * One-time migration: adds `archive_reason` to every existing RAW_<team>_<year> tab
+ * (setupJiraDataSpreadsheet_/getOrCreateRawTab_ only add it to a brand-new tab, via
+ * RAW_TICKET_HEADERS in JiraSync.gs). Backs the Ticket Outcomes feature (lib/ticket-outcomes.ts).
+ * Only populated going forward by the regular sync; run runTicketOutcomeFieldsRebackfill
+ * (Backfill.gs) afterward to fill it in for tickets already synced before this column existed.
+ * Safe to re-run.
+ */
+function migrateAddTicketOutcomeColumns() {
+  const ss = getJiraDataSpreadsheet_();
+  getActiveTeamsConfig_().forEach((team) => {
+    getAllRawYearsForTeam_(team.team_key).forEach((year) => {
+      const sheet = ss.getSheetByName(`RAW_${team.team_key}_${year}`);
+      if (appendColumnIfMissing_(sheet, 'archive_reason')) {
+        Logger.log(`RAW_${team.team_key}_${year}: added archive_reason.`);
+      } else {
+        Logger.log(`RAW_${team.team_key}_${year}: archive_reason already present.`);
+      }
+    });
+  });
+}
+
+/**
  * One-time migration: adds `has_p1_sla_tracking` to an already-provisioned TEAMS_CONFIG
  * (setupJiraDataSpreadsheet_ only adds it to a brand-new tab). Only adds the header — set TRUE
  * manually for the ST row afterward (leave blank/FALSE for DE/DEV), same as

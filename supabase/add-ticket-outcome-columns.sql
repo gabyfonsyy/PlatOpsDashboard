@@ -1,0 +1,22 @@
+-- One-time migration: adds `archive_reason` to the live `tickets` table.
+-- schema.sql only reflects this for a FRESH install (`create table`) — an existing database
+-- needs the ALTER statement below. Run this once in the Supabase SQL editor.
+--
+-- Backs the Archived Tickets scorecard + drill-down (src/lib/ticket-outcomes.ts), SE only
+-- (has_fcr_escalation). `archive_reason` is customfield_10187 — same shape as the existing
+-- rejection_category/cancellation_reason columns.
+--
+-- Populated by the regular GAS sync going forward; run runTicketOutcomeFieldsRebackfill
+-- (gas/Backfill.gs) afterward to fill it in for tickets already synced before this column
+-- existed, then runSupabaseMigration() (SupabaseMigration.gs) to push the backfilled Sheets data
+-- into Supabase — same two-step process as the `priority` column migration.
+--
+-- Safe to re-run: the statement is a no-op if already applied.
+--
+-- Note: an earlier version of this migration also added `summary` (Jira's native Summary field),
+-- run live 2026-09-07 — that column was dropped from the feature the same day before it went
+-- live, so `summary` may still exist on `tickets` as an unused leftover if this file's first
+-- version already ran. Harmless to leave; `alter table tickets drop column if exists summary;`
+-- removes it if wanted.
+
+alter table tickets add column if not exists archive_reason text;

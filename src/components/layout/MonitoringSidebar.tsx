@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { PageName } from "@/components/ui/PageTitle";
 
 const MONITORING_NAV_ITEMS = [
-  { href: "/monitoring/late-pickup", label: "Account Creation Review" },
+  { href: "/monitoring/account-creation", label: "Account Creation Review" },
   { href: "/monitoring/peer-review-wait", label: "Review Wait Time" },
   { href: "/monitoring/tool-assisted", label: "Tool-Assisted Efficiency" },
 ];

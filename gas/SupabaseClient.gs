@@ -173,6 +173,7 @@ function mapRawTicketRowToSupabase_(teamKey, r) {
     cycle_time_end: toTimestampOrNull_(r.cycle_time_end),
     labels: toStringOrNull_(r.labels),
     priority: toStringOrNull_(r.priority),
+    archive_reason: toStringOrNull_(r.archive_reason),
   };
 }
 

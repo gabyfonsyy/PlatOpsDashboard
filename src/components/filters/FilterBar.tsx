@@ -21,7 +21,16 @@ const RANGE_OPTIONS: { value: RangeType; label: string }[] = [
  * page didn't react" even though it's actually just slow. Buttons stay disabled and dim while
  * pending so it's clear a change registered and is in flight, not that nothing happened.
  */
-export function FilterBar({ issueTypes = [] as string[] }: { issueTypes?: string[] }) {
+export function FilterBar({
+  issueTypes = [] as string[],
+  extraFilter,
+}: {
+  issueTypes?: string[];
+  /** A second URL-backed dropdown alongside issueType — e.g. the Ticket Outcomes drill-downs'
+   * reason/category filter. Same read-from-searchParams, write-via-router.push mechanism as
+   * issueType, generalized rather than duplicated so any future drill-down filter can reuse it. */
+  extraFilter?: { param: string; label: string; options: string[] };
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -30,6 +39,7 @@ export function FilterBar({ issueTypes = [] as string[] }: { issueTypes?: string
   const range = (searchParams.get("range") as RangeType) || "month";
   const period = searchParams.get("period") || defaultPeriodForRange(range);
   const issueType = searchParams.get("issueType") || "";
+  const extraValue = extraFilter ? searchParams.get(extraFilter.param) || "" : "";
 
   function updateParams(next: Record<string, string | undefined>) {
     const params = new URLSearchParams(searchParams.toString());
@@ -93,6 +103,20 @@ export function FilterBar({ issueTypes = [] as string[] }: { issueTypes?: string
           <option value="">All issue types</option>
           {issueTypes.map((t) => (
             <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+      )}
+
+      {extraFilter && extraFilter.options.length > 0 && (
+        <select
+          value={extraValue}
+          onChange={(e) => updateParams({ [extraFilter.param]: e.target.value || undefined })}
+          disabled={isPending}
+          className="form-input w-auto text-sm py-1.5 disabled:cursor-wait"
+        >
+          <option value="">{`All ${extraFilter.label.toLowerCase()}`}</option>
+          {extraFilter.options.map((o) => (
+            <option key={o} value={o}>{o}</option>
           ))}
         </select>
       )}

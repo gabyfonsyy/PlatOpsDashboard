@@ -351,6 +351,18 @@
     @apply bg-surface/70 backdrop-blur-xl rounded-2xl border border-line/70 shadow-card;
   }
 
+  /* backdrop-blur (above) creates a new stacking context on every .card, regardless of theme —
+     so a tooltip that overflows past its own card's edge (e.g. MetricCard's info tooltip) gets
+     painted OVER by a later sibling card in the same grid row, since z-index on the tooltip itself
+     can't out-rank a stacking context established one level up. Bumping the HOVERED card's own
+     z-index lifts its whole stacking context above its neighbours, which is what actually needs to
+     win here — not the tooltip element in isolation. Grid items get z-index without needing an
+     explicit `position` (a CSS Grid special case), and 20 stays comfortably below TopNav/dialogs
+     (z-40/z-50), so a hovered card never outranks real chrome. */
+  .card:hover {
+    z-index: 20;
+  }
+
   .card-interactive {
     @apply hover:border-sprout-200 hover:shadow-glow hover:-translate-y-0.5
            active:translate-y-0 transition-all duration-300 ease-out;

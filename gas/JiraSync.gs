@@ -11,7 +11,7 @@ const RAW_TICKET_HEADERS = [
   'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
   'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
-  'cycle_time_start', 'cycle_time_end', 'labels', 'priority',
+  'cycle_time_start', 'cycle_time_end', 'labels', 'priority', 'archive_reason',
 ];
 
 function syncAllTeams() {
@@ -190,6 +190,10 @@ function mapIssueToRawRow_(team, issue, resolved) {
     // scorecard (lib/p1-sla.ts). extractJiraFieldValue_ handles its {id,name,iconUrl} shape via
     // the 'name' branch, same as issuetype/status.
     priority: extractJiraFieldValue_(fields.priority),
+    // Archive Reason — only meaningful on ST (has_fcr_escalation), whose terminal statuses are
+    // Archived/Rejected rather than Cancelled. Same extraction as rejection_category/
+    // cancellation_reason above.
+    archive_reason: extractJiraFieldValue_(fields.customfield_10187),
   };
 }
 
@@ -197,17 +201,41 @@ function mapIssueToRawRow_(team, issue, resolved) {
  * Jira custom fields come back in several shapes depending on field type (select,
  * multi-select, user picker, plain text). Handles all of them generically rather than
  * guessing one shape per field — verify against real payloads during Milestone 2 testing.
+ *
+ * A textarea/paragraph field (e.g. Archive Reason, customfield_10187) comes back as an
+ * Atlassian Document Format object (`{type:"doc", content:[...]}`), not a plain string — the
+ * REST v3 endpoints this app uses (see JiraClient.gs) return rich-text fields in ADF. That
+ * shape has none of displayName/value/name, so it used to fall through to `String(field)` and
+ * write the literal text "[object Object]" — confirmed live on ST-86255's Archive Reason.
  */
 function extractJiraFieldValue_(field) {
   if (field === null || field === undefined) return '';
   if (typeof field === 'string' || typeof field === 'number') return field;
   if (Array.isArray(field)) return field.map(extractJiraFieldValue_).filter(String).join(', ');
   if (typeof field === 'object') {
+    if (field.type === 'doc' && Array.isArray(field.content)) return adfToPlainText_(field).trim();
     if ('displayName' in field) return field.displayName;
     if ('value' in field) return field.value;
     if ('name' in field) return field.name;
   }
   return String(field);
+}
+
+/**
+ * Recursively flattens an Atlassian Document Format node tree to plain text. Block-level nodes
+ * (paragraph/heading/listItem/etc.) get a trailing newline so separate blocks don't run together;
+ * hardBreak becomes a newline; text nodes contribute their text verbatim.
+ */
+function adfToPlainText_(node) {
+  if (!node || typeof node !== 'object') return '';
+  if (node.type === 'text') return node.text || '';
+  if (node.type === 'hardBreak') return '\n';
+  if (Array.isArray(node.content)) {
+    const inner = node.content.map(adfToPlainText_).join('');
+    const blockTypes = ['doc', 'paragraph', 'heading', 'listItem', 'codeBlock', 'blockquote'];
+    return blockTypes.indexOf(node.type) !== -1 ? inner + '\n' : inner;
+  }
+  return '';
 }
 
 /**
