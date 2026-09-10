@@ -1,5 +1,5 @@
 import { fetchGas } from "@/lib/gas-client";
-import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
 import { getTeams, isExcludedIssueType } from "@/lib/teams";
 import { resolvePeriodToDateRange, monthsInRange } from "@/lib/period-range";
 import { getCompletedPeerReviewCycles, aggregateByReviewer } from "@/lib/peer-review";
@@ -139,16 +139,20 @@ async function fetchMetricsDailyRows(
   endDate: string,
   issueType?: string
 ): Promise<MetricsDailyRow[]> {
-  return fetchAllRows<MetricsDailyRow>((from, to) => {
+  // Pages requested CONCURRENTLY via fetchAllRowsParallel — MANDATORY ordering, not a nicety: see
+  // automated-tickets.ts's buildResolvedQuery doc comment for the measured impact of paging
+  // without one. metrics_daily has no single-column primary key (team_key/issue_type/date
+  // composite), so every column of that key is ordered on to make the sort total.
+  return fetchAllRowsParallel<MetricsDailyRow>((head) => {
     let query = getSupabaseClient()
       .from("metrics_daily")
-      .select("*")
+      .select("*", head ? { count: "exact", head: true } : undefined)
       .in("team_key", teamKeys)
       .gte("date", startDate)
       .lte("date", endDate);
     if (issueType) query = query.eq("issue_type", issueType);
-    return query.range(from, to);
-  });
+    return query;
+  }, ["team_key", "issue_type", "date"]);
 }
 
 /**
@@ -314,14 +318,21 @@ type AssigneeMonthlyRow = {
   avg_cycle_time_minutes: number | null;
 };
 
+/**
+ * Pages requested CONCURRENTLY via fetchAllRowsParallel — MANDATORY ordering, not a nicety: see
+ * automated-tickets.ts's buildResolvedQuery doc comment. metrics_by_assignee_monthly's primary
+ * key is (team_key, assignee_display_name, month); team_key is already pinned by .eq() above, so
+ * ordering by the remaining two columns is enough to make the sort total.
+ */
 async function fetchAssigneeMonthlyRows(team: string, months: string[]): Promise<AssigneeMonthlyRow[]> {
-  return fetchAllRows<AssigneeMonthlyRow>((from, to) =>
-    getSupabaseClient()
-      .from("metrics_by_assignee_monthly")
-      .select("*")
-      .eq("team_key", team)
-      .in("month", months)
-      .range(from, to)
+  return fetchAllRowsParallel<AssigneeMonthlyRow>(
+    (head) =>
+      getSupabaseClient()
+        .from("metrics_by_assignee_monthly")
+        .select("*", head ? { count: "exact", head: true } : undefined)
+        .eq("team_key", team)
+        .in("month", months),
+    ["assignee_display_name", "month"]
   );
 }
 

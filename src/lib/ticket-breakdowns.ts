@@ -1,4 +1,4 @@
-import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
 import {
   getTeams,
   backlogAgingAssignee,
@@ -174,13 +174,17 @@ async function fetchResolvedRows(
   rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
   const excluded = excludedIssueTypes(teamKey);
 
-  return fetchAllRows<BreakdownRow>((from, to) => {
+  // Pages are requested CONCURRENTLY via fetchAllRowsParallel, ordered by issue_key (the primary
+  // key, so the ordering is total) — MANDATORY, not a nicety: an unordered .range() page silently
+  // drops and duplicates rows once a query spans more than one page (see automated-tickets.ts's
+  // buildResolvedQuery doc comment for the measured impact of getting this wrong).
+  return fetchAllRowsParallel<BreakdownRow>((head) => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     // `any` for the same reason as lib/lead-cycle-time.ts: conditional re-chaining widens
     // supabase-js's builder generics until TS reports "type instantiation is excessively deep".
     let q: any = getSupabaseClient()
       .from("tickets")
-      .select(SELECT)
+      .select(SELECT, head ? { count: "exact", head: true } : undefined)
       .eq("team_key", teamKey)
       .not("resolved_datetime", "is", null)
       .gte("resolved_datetime", rangeStartUtc.toISOString())
@@ -188,8 +192,8 @@ async function fetchResolvedRows(
     if (issueType) q = q.eq("issue_type", issueType);
     if (excluded.length) q = q.not("issue_type", "in", `(${excluded.map((t) => `"${t}"`).join(",")})`);
     /* eslint-enable @typescript-eslint/no-explicit-any */
-    return q.range(from, to);
-  });
+    return q;
+  }, "issue_key");
 }
 
 async function loadScope(team: string, range: string, period: string, issueType?: string) {

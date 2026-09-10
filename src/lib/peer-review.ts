@@ -1,4 +1,4 @@
-import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString } from "@/lib/manila-date";
 
@@ -66,15 +66,20 @@ async function fetchPeerReviewTickets(startDate: string, endDate: string): Promi
   const startYear = Number(startDate.slice(0, 4));
   const endYear = Number(endDate.slice(0, 4));
 
-  return fetchAllRows<TicketRow>((from, to) =>
-    getSupabaseClient()
-      .from("tickets")
-      .select("issue_key,peer_review_cycles_json")
-      .eq("team_key", "ST")
-      .not("peer_review_cycles_json", "is", null)
-      .gte("created", `${startYear}-01-01T00:00:00Z`)
-      .lte("created", `${endYear}-12-31T23:59:59Z`)
-      .range(from, to)
+  // Pages requested CONCURRENTLY via fetchAllRowsParallel, ordered by issue_key (the primary key,
+  // so the ordering is total) — MANDATORY, not a nicety: an unordered .range() page silently drops
+  // and duplicates rows once a query spans more than one page, which this one routinely does (it
+  // pulls every ST ticket for the FULL calendar year(s) the period touches, regardless of range).
+  return fetchAllRowsParallel<TicketRow>(
+    (head) =>
+      getSupabaseClient()
+        .from("tickets")
+        .select("issue_key,peer_review_cycles_json", head ? { count: "exact", head: true } : undefined)
+        .eq("team_key", "ST")
+        .not("peer_review_cycles_json", "is", null)
+        .gte("created", `${startYear}-01-01T00:00:00Z`)
+        .lte("created", `${endYear}-12-31T23:59:59Z`),
+    "issue_key"
   );
 }
 

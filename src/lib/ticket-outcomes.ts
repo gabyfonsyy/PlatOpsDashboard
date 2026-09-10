@@ -1,4 +1,4 @@
-import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
 import {
   getTeams,
   excludedIssueTypes,
@@ -170,11 +170,15 @@ async function fetchResolvedRows(
   rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
   const excluded = excludedIssueTypes(teamKey);
 
-  return fetchAllRows<OutcomeRow>((from, to) => {
+  // Pages are requested CONCURRENTLY via fetchAllRowsParallel, ordered by issue_key (the primary
+  // key, so the ordering is total) — MANDATORY, not a nicety: an unordered .range() page silently
+  // drops and duplicates rows once a query spans more than one page (see automated-tickets.ts's
+  // buildResolvedQuery doc comment for the measured impact of getting this wrong).
+  return fetchAllRowsParallel<OutcomeRow>((head) => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     let q: any = getSupabaseClient()
       .from("tickets")
-      .select(SELECT)
+      .select(SELECT, head ? { count: "exact", head: true } : undefined)
       .eq("team_key", teamKey)
       .not("resolved_datetime", "is", null)
       .gte("resolved_datetime", rangeStartUtc.toISOString())
@@ -182,10 +186,8 @@ async function fetchResolvedRows(
     if (issueType) q = q.eq("issue_type", issueType);
     if (excluded.length) q = q.not("issue_type", "in", `(${excluded.map((t) => `"${t}"`).join(",")})`);
     /* eslint-enable @typescript-eslint/no-explicit-any */
-    // MANDATORY — see automated-tickets.ts's buildResolvedQuery for why an unordered .range()
-    // page silently drops and duplicates rows.
-    return q.order("issue_key").range(from, to);
-  });
+    return q;
+  }, "issue_key");
 }
 
 function statusMatches(status: string | null, outcome: OutcomeKind): boolean {

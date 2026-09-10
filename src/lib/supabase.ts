@@ -59,3 +59,56 @@ export async function fetchAllRows<T>(
   }
   return all;
 }
+
+/**
+ * Same contract as fetchAllRows, but requests every page CONCURRENTLY instead of walking them
+ * sequentially — for N pages that's one round trip's latency instead of N. Worth it once a query
+ * is likely to span more than a page or two (a ticket-level query over a quarter/year easily hits
+ * several thousand rows); ported from lib/lead-cycle-time.ts's fetchSpanRowsParallel, which measured
+ * the sequential walk at 9-12s of pure latency on the overview's year range before this existed.
+ *
+ * `build` returns the base filtered query with `head` toggling between a `count: "exact", head:
+ * true` request (to learn the total row count up front — one extra round trip, cheap next to
+ * saving N-1 sequential ones once N is more than 2 or so) and the real row-fetching request each
+ * page is built from.
+ *
+ * `orderColumns` MUST make the result set uniquely ordered — a single-column primary key
+ * (`"issue_key"`), or, for a table with no such column (e.g. metrics_daily's composite
+ * team_key/issue_type/date key), every column of a composite key that is unique together
+ * (`["team_key", "issue_type", "date"]`). PostgREST .range() offsets are only stable under a
+ * deterministic sort, and without one, concurrent page requests can overlap or skip rows outright
+ * (the same hazard fetchAllRows' docstring warns about for the sequential walk; concurrent
+ * requests make it worse, not better).
+ */
+export async function fetchAllRowsParallel<T>(
+  // `any` rather than a typed PostgrestFilterBuilder: callers build this via conditional re-chaining
+  // (.eq()/.not()/.or() based on optional filters), which widens supabase-js's builder generics
+  // until TS reports "type instantiation is excessively deep" — same reasoning as the `any` casts
+  // in lib/lead-cycle-time.ts and lib/automated-tickets.ts. Rows are cast to T by every caller.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  build: (head: boolean) => any,
+  orderColumns: string | string[]
+): Promise<T[]> {
+  const { count, error: countError } = await build(true);
+  if (countError) throw new Error(`Supabase count failed: ${countError.message}`);
+  const total = count ?? 0;
+  if (total === 0) return [];
+
+  const columns = Array.isArray(orderColumns) ? orderColumns : [orderColumns];
+  const pageCount = Math.ceil(total / SUPABASE_MAX_ROWS_PER_REQUEST);
+  const pages: { data: T[] | null; error: { message: string } | null }[] = await Promise.all(
+    Array.from({ length: pageCount }, (_, i) => {
+      const from = i * SUPABASE_MAX_ROWS_PER_REQUEST;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let q: any = build(false);
+      for (const col of columns) q = q.order(col);
+      return q.range(from, from + SUPABASE_MAX_ROWS_PER_REQUEST - 1);
+    })
+  );
+  const all: T[] = [];
+  for (const { data, error } of pages) {
+    if (error) throw new Error(`Supabase query failed: ${error.message}`);
+    all.push(...(data ?? []));
+  }
+  return all;
+}
