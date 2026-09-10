@@ -15,6 +15,7 @@ const IMPACTED_STORAGE_KEY = "platops.impactedClients";
 /** Columns with their own dropdown filter — options are the distinct values actually in the data. */
 const FILTER_FIELDS = [
   { key: "clientStatus", label: "Client Status" },
+  { key: "syncStatus", label: "Sync Status" },
   { key: "databaseServer", label: "Database Server" },
   { key: "appPoolName", label: "App Pool" },
   { key: "sso", label: "SSO" },
@@ -350,25 +351,28 @@ export function SiteMonitoringSection({
           </div>
         ) : (
           <>
-            {/* Desktop/tablet: a real scannable table — the 5 fields a P1 investigation actually
-                needs (Client ID, Domain, Server, App Pool, Keycloak Instance) are columns, not
-                prose, and never behind a "Details" click the way the main table's secondary
-                fields are. This list is the point of the workspace, so nothing here is hidden. */}
+            {/* Desktop/tablet: a real scannable table — the 6 fields a P1 investigation actually
+                needs (Client ID, Domain, Sync Status, Server, App Pool, Keycloak Instance) are
+                columns, not prose, and never behind a "Details" click the way the main table's
+                secondary fields are. This list is the point of the workspace, so nothing here is
+                hidden. */}
             {/* `table-fixed` is load-bearing here, not decorative — without it the browser
                 auto-sizes columns from content, so a short Domain value shrinks that column
                 below its intended share (opening a gap before Database Server) while realistic
                 App Pool values ("HRIS SSO Production v2 Tier 19") get squeezed into whatever's
-                left and wrap. Fixed widths below are tuned to those two columns' real content
+                left and wrap. Fixed widths below are tuned to those columns' real content
                 lengths, same "table-fixed + explicit w-[%]" pattern the main table already uses. */}
             <table className="w-full text-sm table-fixed hidden sm:table">
               <colgroup>
-                <col className="w-[13%]" /><col className="w-[21%]" /><col className="w-[12%]" />
-                <col className="w-[26%]" /><col className="w-[18%]" /><col className="w-[10%]" />
+                <col className="w-[12%]" /><col className="w-[19%]" /><col className="w-[9%]" />
+                <col className="w-[11%]" /><col className="w-[22%]" /><col className="w-[17%]" />
+                <col className="w-[10%]" />
               </colgroup>
               <thead className="bg-neutral-50/60 border-b border-neutral-100">
                 <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
                   <th className="px-3 py-2">Client ID</th>
                   <th className="px-3 py-2">Domain Name</th>
+                  <th className="px-3 py-2">Sync Status</th>
                   <th className="px-3 py-2">Database Server</th>
                   <th className="px-3 py-2">App Pool Name</th>
                   <th className="px-3 py-2">Keycloak Instance</th>
@@ -383,6 +387,7 @@ export function SiteMonitoringSection({
                       <p className="text-xs text-neutral-500 break-words">{c.clientName}</p>
                     </td>
                     <td className="px-3 py-2 align-top break-words"><DomainLink domain={c.domainName} /></td>
+                    <td className="px-3 py-2 align-top break-words">{c.syncStatus || "—"}</td>
                     <td className="px-3 py-2 align-top break-words">{c.databaseServer}</td>
                     <td className="px-3 py-2 align-top break-words">{c.appPoolName}</td>
                     <td className="px-3 py-2 align-top break-words">{c.keycloakInstance}</td>
@@ -422,6 +427,8 @@ export function SiteMonitoringSection({
                     </button>
                   </div>
                   <div className="grid grid-cols-[5rem_1fr] gap-y-0.5 text-xs text-neutral-600 mt-2">
+                    <span className="text-neutral-400">Sync</span>
+                    <span className="break-words">{c.syncStatus || "—"}</span>
                     <span className="text-neutral-400">Server</span>
                     <span className="break-words">{c.databaseServer || "—"}</span>
                     <span className="text-neutral-400">App Pool</span>
@@ -476,8 +483,8 @@ export function SiteMonitoringSection({
       </p>
 
       {/*
-        Main table — 8 priority fields (Client ID, Name, Domain, Status, SSO, DB Server, App
-        Pool, Keycloak Instance) in a comfortably wide fixed layout, no horizontal scroll.
+        Main table — 9 priority fields (Client ID, Name, Domain, Status, Sync Status, SSO, DB
+        Server, App Pool, Keycloak Instance) in a comfortably wide fixed layout, no horizontal scroll.
         Database Name/Keycloak Realm/Ecosystem/Ecosystem URL are one click away via "Details"
         rather than crammed into the row — the alternative (12 narrow columns) made every field,
         especially Domain, too compressed to read at a glance, which defeats the point of a P1
@@ -486,9 +493,10 @@ export function SiteMonitoringSection({
       <div className="rounded-lg border border-neutral-200 overflow-hidden">
         <table className="w-full text-sm table-fixed">
           <colgroup>
-            <col className="w-[8%]" /><col className="w-[13%]" /><col className="w-[19%]" />
-            <col className="w-[8%]" /><col className="w-[6%]" /><col className="w-[10%]" />
-            <col className="w-[14%]" /><col className="w-[10%]" /><col className="w-[12%]" />
+            <col className="w-[7%]" /><col className="w-[12%]" /><col className="w-[17%]" />
+            <col className="w-[7%]" /><col className="w-[9%]" /><col className="w-[6%]" />
+            <col className="w-[9%]" /><col className="w-[13%]" /><col className="w-[9%]" />
+            <col className="w-[11%]" />
           </colgroup>
           <thead className="bg-neutral-50 border-b border-neutral-200">
             <tr className="text-left text-xs text-neutral-500 uppercase tracking-wide">
@@ -496,6 +504,7 @@ export function SiteMonitoringSection({
               <th className="px-3 py-2.5">Client Name</th>
               <th className="px-3 py-2.5">Domain Name</th>
               <th className="px-3 py-2.5">Status</th>
+              <th className="px-3 py-2.5">Sync Status</th>
               <th className="px-3 py-2.5">SSO</th>
               <th className="px-3 py-2.5">DB Server</th>
               <th className="px-3 py-2.5">App Pool Name</th>
@@ -506,7 +515,7 @@ export function SiteMonitoringSection({
           <tbody className="divide-y divide-neutral-100">
             {visibleClients.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-10 text-center">
+                <td colSpan={10} className="px-4 py-10 text-center">
                   {clients.length === 0 ? (
                     <p className="text-neutral-400">No Site Monitoring data loaded.</p>
                   ) : (
@@ -564,6 +573,7 @@ export function SiteMonitoringSection({
                     <td className="px-3 py-2 align-top break-words">{c.clientName}</td>
                     <td className="px-3 py-2 align-top text-[13px] leading-snug"><DomainLink domain={c.domainName} /></td>
                     <td className="px-3 py-2 align-top"><Badge tone={statusTone(c.clientStatus)}>{c.clientStatus || "—"}</Badge></td>
+                    <td className="px-3 py-2 align-top break-words">{c.syncStatus || "—"}</td>
                     <td className="px-3 py-2 align-top break-words">{c.sso}</td>
                     <td className="px-3 py-2 align-top break-words">{c.databaseServer}</td>
                     <td className="px-3 py-2 align-top break-words">{c.appPoolName}</td>
@@ -581,7 +591,7 @@ export function SiteMonitoringSection({
                   </tr>
                   {isOpen && (
                     <tr className="bg-neutral-50/60">
-                      <td colSpan={9} className="px-4 py-3">
+                      <td colSpan={10} className="px-4 py-3">
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                           <div>
                             <p className="text-[11px] uppercase tracking-wide text-neutral-400">Database Name</p>

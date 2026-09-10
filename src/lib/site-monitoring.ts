@@ -9,6 +9,7 @@ export type SiteMonitoringClient = {
   domainName: string;
   databaseName: string;
   clientStatus: string;
+  syncStatus: string;
   databaseServer: string;
   appPoolName: string;
   sso: string;

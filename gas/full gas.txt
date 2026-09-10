@@ -7652,6 +7652,7 @@ var SiteMonitoringApi = {
         domainName: String(r['Domain Name'] || '').trim(),
         databaseName: String(r['Database Name'] || '').trim(),
         clientStatus: String(r['Client Status'] || '').trim(),
+        syncStatus: String(r['Sync Status'] || '').trim(),
         databaseServer: String(r['Database Server'] || '').trim(),
         appPoolName: String(r['App Pool Name'] || '').trim(),
         sso: String(r['SSO'] || '').trim(),
