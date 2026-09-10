@@ -5,12 +5,12 @@ import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Check, Menu, X } from "lucide-react";
+import { ChevronDown, Check, Menu, X, Clock, Building, FolderKanban, Radar, Siren, Gauge, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RefreshDataButton } from "@/components/layout/RefreshDataButton";
 import { ThemeToggle } from "@/components/theme/ThemeToggle";
 import { celebrate } from "@/lib/celebrate";
-import { PAGE_NAMES } from "@/lib/nav";
+import { PAGE_NAMES, type PageKey } from "@/lib/nav";
 import { Copy } from "@/components/ui/Copy";
 
 /**
@@ -20,79 +20,181 @@ import { Copy } from "@/components/ui/Copy";
  * every other sense: the page the day is actually run from. The two are deliberately different
  * questions ("what needs me" vs "what am I doing"), which is why both sit at the front of the bar.
  */
-const PRIMARY_NAV = { href: "/my-work", page: "home" } as const;
+const PRIMARY_NAV = { href: "/my-work", page: "home" as PageKey } as const;
+
+const REFERENCES_NAV = { href: "/references", page: "references" as PageKey } as const;
 
 /**
- * The Overview is deliberately NOT on this bar.
- *
- * It briefly was, and before that it was buried in the Teams dropdown. Neither fitted: the bar is
- * for places you go and work, and the Overview is something you consult — usually in the middle of
- * doing something else, which is exactly when navigating away from it is worst. So its entry point
- * is the compass tab on the right edge (OverviewQuickPanel, mounted in the dashboard layout so it
- * is not tangled up with the header's stacking), available on every page, with the full page
- * one click from inside the panel. Removing the pill also gives the bar its width back.
+ * 2026-09-10 nav redesign, corrected same-day per her follow-up brief: FOUR top-level
+ * destinations only — My Work, Teams, Records, References. Capacity and Incident Logs are NOT
+ * top-level anymore; both moved under Teams/Records respectively (see below). This correction
+ * also narrows the bar further (4 elements instead of the prior pass's 6), so the straddle-width
+ * concern the bar's layout comment used to flag is even further from being a risk.
  */
 
 /**
- * My Work's dropdown. References joined it 2026-09-04 rather than getting its own pill — it's a
- * personal, disposable list in the same spirit as My Work's own projects, not a place-you-go on
- * the level of Leave or Projects, and the bar has no room for an eighth pill (see the straddle
- * note below).
+ * Records' popover contents: Leave, RTO, Projects, Incident Monitoring (moved here from its own
+ * top-level pill per her explicit correction), plus Ticket Monitoring — the Account Creation
+ * Review control tower, which already lived here from the PREVIOUS pass and isn't mentioned
+ * either way in this correction's Records list. Kept rather than dropped: the correction's own
+ * instructions are "preserve all existing functionality... unless a change is explicitly
+ * requested," and removing its only nav entry was never asked for. Worth confirming with her.
  */
-const MY_WORK_MENU = [
-  { href: "/my-work", page: "home" },
-  { href: "/references", page: "references" },
+const RECORDS_MENU = [
+  { href: "/leave", page: "leave" as PageKey, description: "Leave records & balance", icon: Clock },
+  { href: "/rto", page: "rto" as PageKey, description: "Return-to-office records", icon: Building },
+  { href: "/projects", page: "projects" as PageKey, description: "Project tracking", icon: FolderKanban },
+  { href: "/incident-logs", page: "incidents" as PageKey, description: "Operational incidents & history", icon: Siren },
+  { href: "/monitoring", page: "monitoring" as PageKey, description: "Account creation & ticket monitoring", icon: Radar },
 ] as const;
 
-/** Labels come from lib/nav.ts, which carries both names for every page. */
-const NAV_ITEMS = [
-  { href: "/leave", page: "leave" },
-  { href: "/rto", page: "rto" },
-  { href: "/projects", page: "projects" },
-  { href: "/incident-logs", page: "incidents" },
-  { href: "/monitoring", page: "monitoring" },
-] as const;
+/** A tiny, restrained Gaby-mode accent — invisible in Light/Dark (see .gaby-sparkle in
+ * globals.css), shown only next to the currently active destination, never on every item. */
+function GabySparkle() {
+  return (
+    <span aria-hidden="true" className="gaby-sparkle">
+      ✦
+    </span>
+  );
+}
+
+function RecordsMenuItem({
+  item,
+  pathname,
+}: {
+  item: (typeof RECORDS_MENU)[number];
+  pathname: string;
+}) {
+  const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+  const Icon = item.icon;
+  const name = PAGE_NAMES[item.page].nav;
+  return (
+    <Link
+      href={item.href}
+      role="menuitem"
+      aria-current={active ? "page" : undefined}
+      className={cn("dropdown-item-rich", active && "dropdown-item-active")}
+    >
+      <Icon className="w-4 h-4 shrink-0 mt-0.5" />
+      <span className="flex-1 min-w-0">
+        <span className="block text-sm font-medium">
+          <Copy serious={name.serious} playful={name.playful} />
+        </span>
+        <span className="block text-xs text-neutral-400 font-normal">{item.description}</span>
+      </span>
+      {active && <Check className="w-4 h-4 shrink-0 mt-0.5" />}
+    </Link>
+  );
+}
+
+/** The Teams popover's own "Capacity" row — org-level capacity, nested here per her correction
+ * (it is no longer a top-level pill). Icon added to match Records' rows, at her request. */
+function TeamsCapacityItem({ pathname }: { pathname: string }) {
+  const active = pathname === "/capacity" || pathname.includes("/capacity");
+  return (
+    <Link
+      href="/capacity"
+      role="menuitem"
+      aria-current={active ? "page" : undefined}
+      className={cn("dropdown-item-rich", active && "dropdown-item-active")}
+    >
+      <Gauge className="w-4 h-4 shrink-0 mt-0.5" />
+      <span className="flex-1 min-w-0">
+        <span className="block text-sm font-medium">
+          <Copy serious={PAGE_NAMES.capacity.nav.serious} playful={PAGE_NAMES.capacity.nav.playful} />
+        </span>
+        <span className="block text-xs text-neutral-400 font-normal">Team capacity &amp; workload health</span>
+      </span>
+      {active && <Check className="w-4 h-4 shrink-0 mt-0.5" />}
+    </Link>
+  );
+}
+
+/** A placeholder row — not a link, nothing to navigate to yet. Rendered inert (no hover state, no
+ * href) rather than pointing somewhere fake. Icon added to match Records'/Capacity's rows. */
+function IndividualStatsItem() {
+  return (
+    <div role="menuitem" aria-disabled="true" className="flex items-start gap-3 px-3 py-2.5 rounded-xl opacity-50 cursor-not-allowed select-none">
+      <User className="w-4 h-4 shrink-0 mt-0.5" />
+      <span className="flex-1 min-w-0">
+        <span className="block text-sm font-medium text-neutral-600">
+          <Copy serious="Individual Stats" playful="Crew Pulse" />
+        </span>
+        <span className="block text-xs text-neutral-400 font-normal">Coming soon</span>
+      </span>
+    </div>
+  );
+}
 
 export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
   const pathname = usePathname();
   const { data: session } = useSession();
+
   const [teamsOpen, setTeamsOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  const [myWorkOpen, setMyWorkOpen] = useState(false);
-  const myWorkRef = useRef<HTMLDivElement>(null);
-  // Mobile/tablet nav: the pill bar is desktop-only (see the xl:flex below — it needs room for
-  // seven pills plus two dropdowns, which iPad doesn't reliably have even in landscape at 1024px,
-  // Tailwind's `lg` boundary). Below `xl` this drawer takes over instead of trying to squeeze or
-  // scroll the pill bar.
+  const teamsRef = useRef<HTMLDivElement>(null);
+  const teamsButtonRef = useRef<HTMLButtonElement>(null);
+
+  const [recordsOpen, setRecordsOpen] = useState(false);
+  const recordsRef = useRef<HTMLDivElement>(null);
+  const recordsButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Mobile/tablet nav: the pill bar is desktop-only (see the xl:flex below). Below `xl` this
+  // drawer takes over instead of trying to squeeze or scroll the pill bar.
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  // Teams/Records are expandable SECTIONS on mobile, matching the desktop IA.
+  const [mobileTeamsOpen, setMobileTeamsOpen] = useState(false);
+  const [mobileRecordsOpen, setMobileRecordsOpen] = useState(false);
+
   // Easter egg #1: the logo. Counts clicks and pays out on the 5th, then resets. Deliberately
   // attached to a decorative element that does nothing else, so there's no workflow to disrupt.
   const logoClicks = useRef(0);
 
-  // Teams menu = one entry per configured team. The Overview moved out to its own pill when it
-  // stopped being a cross-team rollup — see NAV_ITEMS.
-  const teamMenu = teamTabs.map((t) => ({ label: t.label, playful: t.label, href: `/${t.key}` }));
-
-  // Highlight the Teams pill on any team route (incl. /<team>/performance), no longer on "/".
+  const teamMenu = teamTabs.map((t) => ({ label: t.label, playful: t.label, key: t.key, href: `/${t.key}` }));
   const teamKeys = teamTabs.map((t) => t.key);
-  const isTeamsActive = teamKeys.some((k) => pathname === `/${k}` || pathname.startsWith(`/${k}/`));
 
-  // My Work menu = the personal command centre plus References, its dropdown sibling.
-  const isMyWorkActive = pathname === PRIMARY_NAV.href || pathname.startsWith("/references");
+  // Capacity now lives INSIDE Teams (corrected 2026-09-10), so /capacity and /{team}/capacity
+  // both count toward Teams being active, same as any other /{team}/... route.
+  function isTeamRoute(key: string, p: string): boolean {
+    return p === `/${key}` || p.startsWith(`/${key}/`);
+  }
+  const isCapacityActive = pathname === "/capacity" || pathname.includes("/capacity");
+  const isTeamsActive = teamKeys.some((k) => isTeamRoute(k, pathname)) || isCapacityActive;
+  const isRecordsActive = RECORDS_MENU.some((item) => pathname === item.href || pathname.startsWith(`${item.href}/`));
+  const isMyWorkActive = pathname === PRIMARY_NAV.href;
+  const isReferencesActive = pathname === REFERENCES_NAV.href || pathname.startsWith("/references/");
 
-  // Close on outside click and on navigation.
+  // Close on outside click, on Escape (returning focus to whichever trigger was open), and on
+  // navigation.
   useEffect(() => {
     function onMouseDown(e: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setTeamsOpen(false);
-      if (myWorkRef.current && !myWorkRef.current.contains(e.target as Node)) setMyWorkOpen(false);
+      if (teamsRef.current && !teamsRef.current.contains(e.target as Node)) setTeamsOpen(false);
+      if (recordsRef.current && !recordsRef.current.contains(e.target as Node)) setRecordsOpen(false);
+    }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      if (teamsOpen) {
+        setTeamsOpen(false);
+        teamsButtonRef.current?.focus();
+      }
+      if (recordsOpen) {
+        setRecordsOpen(false);
+        recordsButtonRef.current?.focus();
+      }
     }
     document.addEventListener("mousedown", onMouseDown);
-    return () => document.removeEventListener("mousedown", onMouseDown);
-  }, []);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onMouseDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [teamsOpen, recordsOpen]);
+
   useEffect(() => {
     setTeamsOpen(false);
-    setMyWorkOpen(false);
+    setRecordsOpen(false);
     setMobileMenuOpen(false);
+    setMobileTeamsOpen(false);
+    setMobileRecordsOpen(false);
   }, [pathname]);
 
   return (
@@ -177,160 +279,192 @@ export function TopNav({ teamTabs = [] as { key: string; label: string }[] }) {
         </div>
       </header>
 
-      {/* Mobile/tablet drawer — takes over below `lg` (see the hamburger in the header above).
-          Flat list, no dropdowns-inside-dropdowns: there's vertical room here that the floating
-          pill bar doesn't have, so Teams' members are just shown inline under a label instead of
-          needing their own disclosure. */}
+      {/* Mobile/tablet drawer — takes over below `xl` (see the hamburger in the header above).
+          Mirrors the desktop IA 1:1: My Work, Teams (expandable: Team Stats pills + Capacity +
+          Individual Stats), Records (expandable), References. */}
       {mobileMenuOpen && (
         <div className="xl:hidden border-b border-line/70 bg-surface/95 backdrop-blur-xl">
           <nav role="menu" className="max-w-7xl mx-auto px-6 py-3 flex flex-col gap-0.5">
-            {MY_WORK_MENU.map((item) => {
-              const active = pathname === item.href;
-              const name = PAGE_NAMES[item.page].nav;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  role="menuitem"
-                  className={cn("dropdown-item", active && "dropdown-item-active")}
-                >
-                  <span>
-                    <Copy serious={name.serious} playful={name.playful} />
-                  </span>
-                  {active && <Check className="w-4 h-4 shrink-0" />}
-                </Link>
-              );
-            })}
+            <Link
+              href={PRIMARY_NAV.href}
+              role="menuitem"
+              aria-current={isMyWorkActive ? "page" : undefined}
+              className={cn("dropdown-item", isMyWorkActive && "dropdown-item-active")}
+            >
+              <span>
+                <Copy serious={PAGE_NAMES[PRIMARY_NAV.page].nav.serious} playful={PAGE_NAMES[PRIMARY_NAV.page].nav.playful} />
+              </span>
+              {isMyWorkActive && <Check className="w-4 h-4 shrink-0" />}
+            </Link>
 
-            <span className="px-3 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-400">
-              <Copy serious={PAGE_NAMES.teams.nav.serious} playful={PAGE_NAMES.teams.nav.playful} />
-            </span>
-            {teamMenu.map((item) => {
-              const active = pathname === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  role="menuitem"
-                  className={cn("dropdown-item", active && "dropdown-item-active")}
-                >
-                  <span>
-                    <Copy serious={item.label} playful={item.playful} />
-                  </span>
-                  {active && <Check className="w-4 h-4 shrink-0" />}
-                </Link>
-              );
-            })}
+            <button
+              onClick={() => setMobileTeamsOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={mobileTeamsOpen}
+              className={cn("dropdown-item w-full", isTeamsActive && "dropdown-item-active")}
+            >
+              <span>
+                <Copy serious={PAGE_NAMES.teams.nav.serious} playful={PAGE_NAMES.teams.nav.playful} />
+              </span>
+              <ChevronDown className={cn("w-4 h-4 shrink-0 transition-transform duration-200", mobileTeamsOpen && "rotate-180")} />
+            </button>
+            {mobileTeamsOpen && (
+              <div className="pl-1 pb-2 pt-1 flex flex-col gap-1.5">
+                <p className="px-2 pt-1 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">Team Stats</p>
+                <div className="flex flex-wrap gap-1.5 px-2 pb-1.5">
+                  {teamMenu.length === 0 && (
+                    <p className="text-xs text-neutral-400 italic">No teams loaded — try Refresh Data.</p>
+                  )}
+                  {teamMenu.map((item) => {
+                    const selected = isTeamRoute(item.key, pathname);
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        role="menuitem"
+                        aria-current={selected ? "page" : undefined}
+                        className={cn("team-pill", selected && "team-pill-active")}
+                      >
+                        <Copy serious={item.label} playful={item.playful} />
+                      </Link>
+                    );
+                  })}
+                </div>
+                <div className="h-px bg-line/70 mx-2" />
+                <TeamsCapacityItem pathname={pathname} />
+                <IndividualStatsItem />
+              </div>
+            )}
 
-            <div className="h-px bg-line/70 my-2" />
+            <button
+              onClick={() => setMobileRecordsOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={mobileRecordsOpen}
+              className={cn("dropdown-item w-full", isRecordsActive && "dropdown-item-active")}
+            >
+              <span>
+                <Copy serious={PAGE_NAMES.records.nav.serious} playful={PAGE_NAMES.records.nav.playful} />
+              </span>
+              <ChevronDown className={cn("w-4 h-4 shrink-0 transition-transform duration-200", mobileRecordsOpen && "rotate-180")} />
+            </button>
+            {mobileRecordsOpen && (
+              <div className="pl-1 pb-1 flex flex-col gap-0.5">
+                {RECORDS_MENU.map((item) => (
+                  <RecordsMenuItem key={item.href} item={item} pathname={pathname} />
+                ))}
+              </div>
+            )}
 
-            {NAV_ITEMS.map((item) => {
-              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-              const name = PAGE_NAMES[item.page].nav;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  role="menuitem"
-                  className={cn("dropdown-item", active && "dropdown-item-active")}
-                >
-                  <span>
-                    <Copy serious={name.serious} playful={name.playful} />
-                  </span>
-                  {active && <Check className="w-4 h-4 shrink-0" />}
-                </Link>
-              );
-            })}
+            <Link
+              href={REFERENCES_NAV.href}
+              role="menuitem"
+              aria-current={isReferencesActive ? "page" : undefined}
+              className={cn("dropdown-item", isReferencesActive && "dropdown-item-active")}
+            >
+              <span>
+                <Copy serious={PAGE_NAMES[REFERENCES_NAV.page].nav.serious} playful={PAGE_NAMES[REFERENCES_NAV.page].nav.playful} />
+              </span>
+              {isReferencesActive && <Check className="w-4 h-4 shrink-0" />}
+            </Link>
           </nav>
         </div>
       )}
 
       {/* Floating pill nav — lives outside the header, centered, straddling the boundary.
-          The straddle broke at eight pills, when the bar grew wide enough to cover the theme
-          switcher. It is back because the Overview pill is gone and the bar is seven again, which
-          is the width it was designed at. If a pill is ever added, check this overlap first.
-          Desktop-only (`xl:flex`) — below that the header's hamburger drawer takes over instead
-          of squeezing or scrolling this bar (the Teams dropdown inside it can't tolerate an
-          overflow-x container, see the note below). */}
+          FOUR interactive elements only: My Work, Teams, Records, References — corrected
+          2026-09-10 to pull Capacity and Incident Logs back off the top level and into Teams/
+          Records respectively. Desktop-only (`xl:flex`) — below that the header's hamburger
+          drawer takes over instead of squeezing or scrolling this bar (the Teams/Records
+          popovers inside it can't tolerate an overflow-x container, see the note below). */}
       <div className="relative z-30 -mt-5 hidden xl:flex justify-center px-6 pointer-events-none">
-        {/* No overflow-x here, deliberately: the Teams dropdown is absolutely positioned INSIDE
-            this nav, and a scroll container would clip it shut. Narrow windows overflow the bar
-            horizontally, which they did before this too. */}
+        {/* No overflow-x here, deliberately: the Teams/Records popovers are absolutely positioned
+            INSIDE this nav, and a scroll container would clip them shut. Narrow windows overflow
+            the bar horizontally, which they did before this too. */}
         <nav className="pill-nav pointer-events-auto">
-          <div className="relative" ref={myWorkRef}>
-            <button
-              onClick={() => setMyWorkOpen((o) => !o)}
-              className={cn("pill", isMyWorkActive && "pill-active")}
-              aria-haspopup="menu"
-              aria-expanded={myWorkOpen}
-            >
-              <Copy serious={PAGE_NAMES[PRIMARY_NAV.page].nav.serious} playful={PAGE_NAMES[PRIMARY_NAV.page].nav.playful} />
-              <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", myWorkOpen && "rotate-180")} />
-            </button>
-            {myWorkOpen && (
-              <div role="menu" className="dropdown-menu">
-                {MY_WORK_MENU.map((item) => {
-                  const active = pathname === item.href;
-                  const name = PAGE_NAMES[item.page].nav;
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      role="menuitem"
-                      className={cn("dropdown-item", active && "dropdown-item-active")}
-                    >
-                      <span>
-                        <Copy serious={name.serious} playful={name.playful} />
-                      </span>
-                      {active && <Check className="w-4 h-4 shrink-0" />}
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          <Link
+            href={PRIMARY_NAV.href}
+            aria-current={isMyWorkActive ? "page" : undefined}
+            className={cn("pill", isMyWorkActive && "pill-active")}
+          >
+            <Copy serious={PAGE_NAMES[PRIMARY_NAV.page].nav.serious} playful={PAGE_NAMES[PRIMARY_NAV.page].nav.playful} />
+            {isMyWorkActive && <GabySparkle />}
+          </Link>
 
-          <div className="relative" ref={dropdownRef}>
+          <div className="relative" ref={teamsRef}>
             <button
+              ref={teamsButtonRef}
               onClick={() => setTeamsOpen((o) => !o)}
               className={cn("pill", isTeamsActive && "pill-active")}
               aria-haspopup="menu"
               aria-expanded={teamsOpen}
             >
               <Copy serious={PAGE_NAMES.teams.nav.serious} playful={PAGE_NAMES.teams.nav.playful} />
+              {isTeamsActive && <GabySparkle />}
               <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", teamsOpen && "rotate-180")} />
             </button>
             {teamsOpen && (
-              <div role="menu" className="dropdown-menu">
-                {teamMenu.map((item) => {
-                  const active = pathname === item.href;
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      role="menuitem"
-                      className={cn("dropdown-item", active && "dropdown-item-active")}
-                    >
-                      <span>
+              <div role="menu" className="dropdown-menu dropdown-menu-lg">
+                <p className="px-2.5 pt-1 pb-2 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+                  <Copy serious="Team Stats" playful="Team Stats" />
+                </p>
+                <div className="flex gap-1.5 px-1 pb-2 flex-wrap">
+                  {teamMenu.length === 0 && (
+                    <p className="px-1.5 text-xs text-neutral-400 italic">No teams loaded — try Refresh Data.</p>
+                  )}
+                  {teamMenu.map((item) => {
+                    const selected = isTeamRoute(item.key, pathname);
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        role="menuitem"
+                        aria-current={selected ? "page" : undefined}
+                        className={cn("team-pill", selected && "team-pill-active")}
+                      >
                         <Copy serious={item.label} playful={item.playful} />
-                      </span>
-                      {active && <Check className="w-4 h-4 shrink-0" />}
-                    </Link>
-                  );
-                })}
+                      </Link>
+                    );
+                  })}
+                </div>
+                <div className="h-px bg-line/70 mx-1.5 mb-1.5" />
+                <TeamsCapacityItem pathname={pathname} />
+                <IndividualStatsItem />
               </div>
             )}
           </div>
 
-          {NAV_ITEMS.map((item) => {
-            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-            const name = PAGE_NAMES[item.page].nav;
-            return (
-              <Link key={item.href} href={item.href} className={cn("pill", active && "pill-active")}>
-                <Copy serious={name.serious} playful={name.playful} />
-              </Link>
-            );
-          })}
+          <div className="relative" ref={recordsRef}>
+            <button
+              ref={recordsButtonRef}
+              onClick={() => setRecordsOpen((o) => !o)}
+              className={cn("pill", isRecordsActive && "pill-active")}
+              aria-haspopup="menu"
+              aria-expanded={recordsOpen}
+            >
+              <Copy serious={PAGE_NAMES.records.nav.serious} playful={PAGE_NAMES.records.nav.playful} />
+              {isRecordsActive && <GabySparkle />}
+              <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", recordsOpen && "rotate-180")} />
+            </button>
+            {recordsOpen && (
+              <div role="menu" className="dropdown-menu dropdown-menu-lg">
+                <p className="px-2.5 pt-1 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+                  <Copy serious="Records" playful="Records" />
+                </p>
+                {RECORDS_MENU.map((item) => (
+                  <RecordsMenuItem key={item.href} item={item} pathname={pathname} />
+                ))}
+              </div>
+            )}
+          </div>
+
+          <Link
+            href={REFERENCES_NAV.href}
+            aria-current={isReferencesActive ? "page" : undefined}
+            className={cn("pill", isReferencesActive && "pill-active")}
+          >
+            <Copy serious={PAGE_NAMES[REFERENCES_NAV.page].nav.serious} playful={PAGE_NAMES[REFERENCES_NAV.page].nav.playful} />
+            {isReferencesActive && <GabySparkle />}
+          </Link>
         </nav>
       </div>
     </>

@@ -16,7 +16,8 @@
  * `nav` is the pill; `title` is the page's own heading. They differ where the heading has always
  * been longer than the tab ("Leave" / "Leave Tracker"), and the playful pair now differs the same
  * way: the pill says "Off-Orbit" and the heading "Off-Orbit Logs". The pill has to stay short —
- * seven of them share one bar, and the straddle in TopNav breaks when that bar gets wide.
+ * six top-level destinations share one bar (2026-09-10 nav redesign), and the straddle in TopNav
+ * breaks if that bar gets wide again.
  */
 
 export type PageKey =
@@ -28,7 +29,9 @@ export type PageKey =
   | "projects"
   | "incidents"
   | "monitoring"
-  | "references";
+  | "references"
+  | "capacity"
+  | "records";
 
 export type PageName = {
   nav: { serious: string; playful: string };
@@ -61,11 +64,11 @@ export const PAGE_NAMES: Record<PageKey, PageName> = {
     title: { serious: "Projects & Initiatives", playful: "Missions" },
   },
   incidents: {
-    // Pill trimmed, heading kept whole — same split as Off-Orbit / Off-Orbit Logs above. At the
-    // full name the playful bar measures ~58px wider than the width the header straddle was
-    // designed around, and that overlap is a documented breakage (see TopNav). The page's own
-    // heading says "Critical Signals"; the pill has to fit next to six others.
-    nav: { serious: "Incident Logs", playful: "Signals" },
+    // `nav` (the Records dropdown row label) reads "Incident Monitoring" per the 2026-09-10 nav
+    // correction — it's a Records menu item now, not a top-level pill, so the old pill-width
+    // justification for trimming it no longer applies. `title` (the page's own heading) is
+    // untouched: this is a nav-label change only, not a page-content change.
+    nav: { serious: "Incident Monitoring", playful: "Signals" },
     title: { serious: "Incident Logs", playful: "Critical Signals" },
   },
   monitoring: {
@@ -75,5 +78,16 @@ export const PAGE_NAMES: Record<PageKey, PageName> = {
   references: {
     nav: { serious: "References", playful: "The Archive" },
     title: { serious: "References", playful: "The Archive" },
+  },
+  capacity: {
+    // nav.playful is what the Teams dropdown row actually shows in Gaby's View; title.playful
+    // (the Capacity page's own heading) is untouched — this is a nav-label change only.
+    nav: { serious: "Capacity", playful: "Team Orbit" },
+    title: { serious: "Capacity & Health", playful: "Mission Readiness" },
+  },
+  records: {
+    // A dropdown trigger, not a route of its own — same role PAGE_NAMES.teams already plays.
+    nav: { serious: "Records", playful: "Logbook" },
+    title: { serious: "Records", playful: "Logbook" },
   },
 };

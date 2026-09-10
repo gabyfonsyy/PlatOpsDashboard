@@ -302,8 +302,14 @@ export default function AdhdEffects() {
           // Failure gets acknowledgement, not confetti. Fixed to the red end of the palette.
           spawn(x, y, 5, { decay: 0.05, size: 1.4, starry: false, sprite: NOPE_BLOCK });
           break;
+        case "success":
         default:
-          spawn(x, y, 18, { decay: 0.02 });
+          // 2026-09-12: bumped from 18/0.02 (~0.8s) — reported as easy to miss for an action like
+          // Add Task, where the burst now fires in the same instant the dialog it came from closes
+          // and the page refreshes underneath it. Not a bug in the pipeline (confirmed: the cursor
+          // trail already proves the effects layer mounts and the event bus delivers fine) — just
+          // a burst too brief/small to register next to that much other motion at once.
+          spawn(x, y, 26, { decay: 0.015, size: 2 + Math.random() * 1.6 });
       }
     }
 
