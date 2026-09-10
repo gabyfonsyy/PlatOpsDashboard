@@ -1,4 +1,4 @@
-import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
 import { getTeams, backlogAgingAssignee, backlogAgingAssigneeLabel, isExcludedIssueType, type TeamConfig } from "@/lib/teams";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString, isoDateDiffDays } from "@/lib/manila-date";
@@ -68,20 +68,22 @@ async function fetchResolvedTickets(
   const rangeEndUtc = new Date(`${endDate}T00:00:00Z`);
   rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
 
-  return fetchAllRows<ResolvedTicketRow>((from, to) => {
+  // Pages requested CONCURRENTLY via fetchAllRowsParallel — see that function's doc comment.
+  // Ordered by issue_key so paging can't silently drop/duplicate rows.
+  return fetchAllRowsParallel<ResolvedTicketRow>((head) => {
     let query = getSupabaseClient()
       .from("tickets")
-      .select("team_key,issue_key,issue_type,resolved_datetime,due_date,assigned_se,assigned_cod")
+      .select(
+        "team_key,issue_key,issue_type,resolved_datetime,due_date,assigned_se,assigned_cod",
+        head ? { count: "exact", head: true } : undefined
+      )
       .in("team_key", teamKeys)
       .not("resolved_datetime", "is", null)
       .gte("resolved_datetime", rangeStartUtc.toISOString())
-      .lte("resolved_datetime", rangeEndUtc.toISOString())
-      // Explicit order so multi-page fetches (fetchAllRows) can't silently drop/duplicate rows —
-      // Postgres has no guaranteed row order without one (see fetchAllRows's own doc comment).
-      .order("issue_key", { ascending: true });
+      .lte("resolved_datetime", rangeEndUtc.toISOString());
     if (issueType) query = query.eq("issue_type", issueType);
-    return query.range(from, to);
-  });
+    return query;
+  }, "issue_key");
 }
 
 /**
@@ -261,19 +263,21 @@ type OpenTicketRow = {
  * Every ticket currently open for the team(s) — no date-range filter at all beyond
  * resolved_datetime IS NULL. "Current backlog" answers "what's open right now," the same way
  * P1 SLA's atRiskTickets() is inherently live/today-relative regardless of the period filter
- * selected elsewhere on the page. Ordered by issue_key so fetchAllRows's paging can't silently
- * drop/duplicate rows (see that function's own doc comment, and the fix already applied above
- * to fetchResolvedTickets).
+ * selected elsewhere on the page. Ordered by issue_key so fetchAllRowsParallel's paging can't
+ * silently drop/duplicate rows (see that function's own doc comment).
  */
 async function fetchOpenTickets(teamKeys: string[]): Promise<OpenTicketRow[]> {
-  return fetchAllRows<OpenTicketRow>((from, to) =>
-    getSupabaseClient()
-      .from("tickets")
-      .select("team_key,issue_key,issue_type,status,created,updated,due_date,priority,product,labels,assigned_se,assigned_cod")
-      .in("team_key", teamKeys)
-      .is("resolved_datetime", null)
-      .order("issue_key", { ascending: true })
-      .range(from, to)
+  return fetchAllRowsParallel<OpenTicketRow>(
+    (head) =>
+      getSupabaseClient()
+        .from("tickets")
+        .select(
+          "team_key,issue_key,issue_type,status,created,updated,due_date,priority,product,labels,assigned_se,assigned_cod",
+          head ? { count: "exact", head: true } : undefined
+        )
+        .in("team_key", teamKeys)
+        .is("resolved_datetime", null),
+    "issue_key"
   );
 }
 
@@ -386,15 +390,15 @@ async function fetchTicketsOpenAsOf(teamKeys: string[], earliestAsOfIso: string,
   const latestUtc = new Date(`${latestAsOfIso}T00:00:00Z`);
   latestUtc.setUTCDate(latestUtc.getUTCDate() + 2);
 
-  return fetchAllRows<OpenAsOfRow>((from, to) =>
-    getSupabaseClient()
-      .from("tickets")
-      .select("team_key,created,resolved_datetime")
-      .in("team_key", teamKeys)
-      .lte("created", latestUtc.toISOString())
-      .or(`resolved_datetime.is.null,resolved_datetime.gte.${earliestUtc.toISOString()}`)
-      .order("issue_key", { ascending: true })
-      .range(from, to)
+  return fetchAllRowsParallel<OpenAsOfRow>(
+    (head) =>
+      getSupabaseClient()
+        .from("tickets")
+        .select("team_key,created,resolved_datetime", head ? { count: "exact", head: true } : undefined)
+        .in("team_key", teamKeys)
+        .lte("created", latestUtc.toISOString())
+        .or(`resolved_datetime.is.null,resolved_datetime.gte.${earliestUtc.toISOString()}`),
+    "issue_key"
   );
 }
 
@@ -422,17 +426,26 @@ type BacklogMetricsDailyRow = {
   overdue_resolved_on_date: number;
 };
 
+/**
+ * Pages are requested CONCURRENTLY via fetchAllRowsParallel — MANDATORY ordering, not a nicety:
+ * see automated-tickets.ts's buildResolvedQuery doc comment for the measured impact of paging
+ * without one. metrics_daily has no single-column primary key (it's team_key, issue_type, date
+ * composite), so every column of that key is ordered on to make the sort total.
+ */
 async function fetchBacklogMetricsDailyRows(teamKeys: string[], startDate: string, endDate: string, issueType?: string): Promise<BacklogMetricsDailyRow[]> {
-  return fetchAllRows<BacklogMetricsDailyRow>((from, to) => {
+  return fetchAllRowsParallel<BacklogMetricsDailyRow>((head) => {
     let q = getSupabaseClient()
       .from("metrics_daily")
-      .select("date,team_key,issue_type,tickets_created_count,tickets_resolved_on_date,overdue_resolved_on_date")
+      .select(
+        "date,team_key,issue_type,tickets_created_count,tickets_resolved_on_date,overdue_resolved_on_date",
+        head ? { count: "exact", head: true } : undefined
+      )
       .in("team_key", teamKeys)
       .gte("date", startDate)
       .lte("date", endDate);
     if (issueType) q = q.eq("issue_type", issueType);
-    return q.range(from, to);
-  });
+    return q;
+  }, ["team_key", "issue_type", "date"]);
 }
 
 function aggregateMetricsDaily(rows: BacklogMetricsDailyRow[]) {

@@ -1,4 +1,4 @@
-import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRows, fetchAllRowsParallel } from "@/lib/supabase";
 import { getTeams, excludedIssueTypes, isExcludedIssueType } from "@/lib/teams";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString } from "@/lib/manila-date";
@@ -247,6 +247,7 @@ function automationOrFilter(automationLabels: readonly string[]): string {
  * period denominator (one column) without three near-identical builders.
  */
 function buildResolvedQuery(
+  head: boolean,
   teamKey: string,
   startDate: string,
   endDate: string,
@@ -266,7 +267,7 @@ function buildResolvedQuery(
   // supabase-js's builder generics until TS reports "type instantiation is excessively deep".
   let q: any = getSupabaseClient()
     .from("tickets")
-    .select(columns)
+    .select(columns, head ? { count: "exact", head: true } : undefined)
     .eq("team_key", teamKey)
     .not("resolved_datetime", "is", null)
     .gte("resolved_datetime", rangeStartUtc.toISOString())
@@ -276,16 +277,19 @@ function buildResolvedQuery(
   if (automationLabels) q = q.or(automationOrFilter(automationLabels));
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
-  // MANDATORY, not a nicety. Callers page through this with .range(), and a PostgREST offset is
-  // only stable under a deterministic sort — without one, concurrent pages overlap and skip rows
-  // outright. Measured on the period denominator here (~8,000 rows, 9 pages): unordered paging
-  // returned 8,025 rows holding just 7,346 distinct issue keys — 679 duplicates AND several
-  // hundred rows never returned at all, giving a different total on each request. issue_key is
-  // the primary key, so this ordering is total. Same fix as fetchSpanRowsParallel in
-  // lib/lead-cycle-time.ts, whose docstring warns about exactly this.
-  return q.order("issue_key");
+  return q;
 }
 
+/**
+ * Stays on the SEQUENTIAL fetchAllRows, unlike countResolvedInPeriod below — the automation `.or()`
+ * filter is a set of `labels.ilike.*x*` clauses, which Postgres can't use an index for. An exact
+ * COUNT over that filter has to scan every candidate row with no early exit, while a plain
+ * LIMIT-bounded SELECT can stop as soon as it's gathered a page — measured on ST's full 2026
+ * population: ~940ms for the count vs ~530ms for the same filter's first page. Since this filter
+ * also narrows the result to a few hundred rows (well under one page), fetchAllRowsParallel's
+ * up-front count would only ever add that ~940ms for zero pagination benefit. `.order("issue_key")`
+ * still guards correctness even on a single page, matching buildResolvedQuery's contract.
+ */
 async function fetchAutomatedRows(
   teamKey: string,
   startDate: string,
@@ -294,7 +298,9 @@ async function fetchAutomatedRows(
   issueType?: string
 ): Promise<AutomatedRow[]> {
   return fetchAllRows<AutomatedRow>((from, to) =>
-    buildResolvedQuery(teamKey, startDate, endDate, issueType, automationLabels, SELECT).range(from, to)
+    buildResolvedQuery(false, teamKey, startDate, endDate, issueType, automationLabels, SELECT)
+      .order("issue_key")
+      .range(from, to)
   );
 }
 
@@ -305,7 +311,7 @@ async function fetchAutomatedRows(
  * already run.
  *
  * This is the one query here that spans many pages (a year is ~8,000 rows), so it is the one that
- * depends on buildResolvedQuery's .order("issue_key") for a stable answer. See the note there.
+ * benefits most from fetchAllRowsParallel's concurrent paging.
  */
 async function countResolvedInPeriod(
   teamKey: string,
@@ -313,8 +319,9 @@ async function countResolvedInPeriod(
   endDate: string,
   issueType?: string
 ): Promise<number> {
-  const rows = await fetchAllRows<{ resolved_datetime: string }>((from, to) =>
-    buildResolvedQuery(teamKey, startDate, endDate, issueType, null, "resolved_datetime").range(from, to)
+  const rows = await fetchAllRowsParallel<{ resolved_datetime: string }>(
+    (head) => buildResolvedQuery(head, teamKey, startDate, endDate, issueType, null, "resolved_datetime"),
+    "issue_key"
   );
   return rows.filter((r) => {
     const iso = toManilaDateString(r.resolved_datetime);
@@ -503,6 +510,9 @@ export async function getAutomatedTicketCount(
     const { startDate, endDate } = resolvePeriodToDateRange(range, period);
     const labels = sanitizeAutomationLabels(automationLabels);
     const labelSet = automationLabelSet(labels);
+    // Sequential fetchAllRows, not the parallel path — see fetchAutomatedRows' doc comment above:
+    // this same automation `.or()` filter makes an up-front exact COUNT slower than just fetching,
+    // for a result set that's already well under one page.
     const rows = await fetchAllRows<{
       assigned_se: string | null;
       labels: string | null;
@@ -511,13 +521,16 @@ export async function getAutomatedTicketCount(
       resolved_datetime: string;
     }>((from, to) =>
       buildResolvedQuery(
+        false,
         team,
         startDate,
         endDate,
         issueType,
         labels,
         "assigned_se,labels,issue_type,status,resolved_datetime"
-      ).range(from, to)
+      )
+        .order("issue_key")
+        .range(from, to)
     );
     return rows.filter((r) => {
       if (isExcludedIssueType(team, r.issue_type)) return false;

@@ -1,4 +1,4 @@
-import { getSupabaseClient, fetchAllRows } from "@/lib/supabase";
+import { getSupabaseClient, fetchAllRows, fetchAllRowsParallel } from "@/lib/supabase";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
 import { ANALYSIS_EXCLUDED_LABELS } from "@/lib/ticket-breakdowns";
@@ -346,16 +346,21 @@ async function fetchStTicketsCreatedBetween(startDate: string, endDate: string):
   const rangeEndUtc = new Date(`${endDate}T00:00:00Z`);
   rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
 
-  return fetchAllRows<TicketRow>((from, to) =>
-    getSupabaseClient()
-      .from("tickets")
-      .select(
-        "issue_key,issue_type,created,first_out_of_backlog_todo,cycle_time_end,assigned_se,assignee_display_name,labels,product,peer_review_cycles_json"
-      )
-      .eq("team_key", "ST")
-      .gte("created", rangeStartUtc.toISOString())
-      .lte("created", rangeEndUtc.toISOString())
-      .range(from, to)
+  // Pages requested CONCURRENTLY via fetchAllRowsParallel, ordered by issue_key — MANDATORY, not
+  // a nicety: an unordered .range() page silently drops and duplicates rows once a query spans
+  // more than one page (see automated-tickets.ts's buildResolvedQuery doc comment).
+  return fetchAllRowsParallel<TicketRow>(
+    (head) =>
+      getSupabaseClient()
+        .from("tickets")
+        .select(
+          "issue_key,issue_type,created,first_out_of_backlog_todo,cycle_time_end,assigned_se,assignee_display_name,labels,product,peer_review_cycles_json",
+          head ? { count: "exact", head: true } : undefined
+        )
+        .eq("team_key", "ST")
+        .gte("created", rangeStartUtc.toISOString())
+        .lte("created", rangeEndUtc.toISOString()),
+    "issue_key"
   );
 }
 
@@ -699,6 +704,11 @@ async function fetchBaselineTickets(): Promise<BaselineRow[]> {
   ];
   const orFilter = wanted.map((l) => `labels.ilike.*${l}*`).join(",");
 
+  // Stays on sequential fetchAllRows, not fetchAllRowsParallel — this `.or()` is a set of
+  // `labels.ilike.*x*` clauses, which Postgres can't use an index for, so every page (parallel or
+  // not) pays a comparably expensive scan; measured on ST's full history (~4,600 matching rows,
+  // 5 pages): concurrent paging saved only ~5%, well within run-to-run noise, not worth the added
+  // complexity. `.order("issue_key")` still guards correctness across those 5 pages.
   return fetchAllRows<BaselineRow>((from, to) =>
     getSupabaseClient()
       .from("tickets")
@@ -707,6 +717,7 @@ async function fetchBaselineTickets(): Promise<BaselineRow[]> {
       )
       .eq("team_key", "ST")
       .or(orFilter)
+      .order("issue_key")
       .range(from, to)
   );
 }

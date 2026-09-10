@@ -135,7 +135,16 @@ async function fetchP1Rows(teamKey: string, startDate: string, endDate: string, 
     if (issueType) q = q.eq("issue_type", issueType);
     if (excluded.length) q = q.not("issue_type", "in", `(${excluded.map((t) => `"${t}"`).join(",")})`);
     /* eslint-enable @typescript-eslint/no-explicit-any */
-    return q.range(from, to);
+    // MANDATORY, not a nicety — see automated-tickets.ts's buildResolvedQuery doc comment for the
+    // measured impact of paging without a deterministic order (duplicated + dropped rows, a
+    // different total on every request). issue_key is the primary key, so this ordering is total.
+    //
+    // Stays on sequential fetchAllRows rather than fetchAllRowsParallel: a P1 cohort is a small
+    // slice of a team's tickets (ST's full 2026 was 973 rows, one page), and the `.ilike` priority
+    // match can't use an index, so an up-front exact COUNT would cost more than it could ever save
+    // — measured ~1.9s for a query whose single-page fetch takes ~150-400ms. Same reasoning as
+    // fetchAutomatedRows in lib/automated-tickets.ts.
+    return q.order("issue_key").range(from, to);
   });
 }
 
