@@ -32,11 +32,12 @@ import {
  * "Add Task" costs nothing to look at, and the form only exists once you have actually asked for
  * it.
  *
- * The dialog does NOT close itself after a successful add. The original form's fields persisted
- * between adds on purpose — capturing five incoming requests was five keystrokes-plus-Enter, and
- * planning six things for Monday meant setting the day once rather than six times — and a popup
- * that closed on every add would undo exactly that. So it clears the title, keeps every other
- * field as it was, and waits for either another task or Cancel/the backdrop to actually leave.
+ * 2026-09-12: the dialog used to stay open after a successful add (fields persisted so several
+ * tasks could be captured back-to-back without resetting the date/quadrant each time), with only
+ * a small caption and a Gaby-View-only confetti burst as the "it worked" signal — easy to miss,
+ * and it read as "did that actually save?" rather than confirmation. She asked for it to close
+ * automatically instead, matching every other add-dialog in this app (References, Projects,
+ * Leave, Incidents) — the closed dialog IS the confirmation now.
  */
 export function AddTaskDialog({
   projects,
@@ -93,7 +94,6 @@ function AddTaskForm({
   const [projectId, setProjectId] = useState<string>(defaultProjectId ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [addedCount, setAddedCount] = useState(0);
 
   /**
    * One form, two destinations. With Repeats set, the same fields describe a SCHEDULE rather than
@@ -136,12 +136,10 @@ function AddTaskForm({
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body?.ok === false) throw new Error(body?.error || `HTTP ${res.status}`);
       celebrate("success");
-      setTitle("");
-      setAddedCount((n) => n + 1);
+      onClose();
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
       setBusy(false);
       inputRef.current?.focus();
     }
@@ -178,7 +176,13 @@ function AddTaskForm({
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div>
+            {/* relative + z-10: when the native date input's calendar is open, it can visually
+                extend past its own cell into the Quadrant cell next to it. Both cells' .form-input
+                fields create their own stacking context (backdrop-blur-sm — see globals.css), so
+                without this the later-painted Quadrant cell can end up on top of the calendar
+                instead of under it. Quadrant doesn't need the same treatment: its own popup is a
+                native <select> list, which browsers already draw above everything on the page. */}
+            <div className="relative z-10">
               <span className="form-label">When</span>
               <div className="flex items-center gap-2">
                 <WhenSelect today={today} value={when} onChange={setWhen} />
@@ -260,16 +264,11 @@ function AddTaskForm({
           )}
 
           <div className="flex items-center justify-end gap-3 pt-2">
-            {error && <p className="form-error mr-auto">{error}</p>}
-            {!error && addedCount > 0 && (
-              <p className="text-xs text-neutral-400 mr-auto">
-                {addedCount} added this round · everything but the title stays set
-              </p>
-            )}
-            <button type="button" onClick={onClose} className="btn-secondary">Done</button>
+            {error && <p className="form-error mr-auto min-w-0">{error}</p>}
+            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
             <button type="submit" disabled={busy || !title.trim()} className="btn-primary">
               <Plus className="w-4 h-4" />
-              Add Task
+              {busy ? "Adding…" : "Add Task"}
             </button>
           </div>
         </form>

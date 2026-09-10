@@ -1,6 +1,7 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getReferences } from "@/lib/references-store";
+import { getReferenceCategories, getReferenceTypes, type ReferenceCategory, type ReferenceTypeRow } from "@/lib/references-taxonomy-store";
 import { PageTitle } from "@/components/ui/PageTitle";
 import { Copy } from "@/components/ui/Copy";
 import { ReferencesView } from "@/components/references/ReferencesView";
@@ -11,10 +12,18 @@ import { ReferencesView } from "@/components/references/ReferencesView";
  * under the My Work dropdown (see TopNav) because it's the same kind of thing: personal,
  * disposable, Supabase-backed for the same reason work_projects is — see references.sql.
  *
- * Site Monitoring is a built-in card here (rendered first, non-deletable, non-reorderable — see
- * ReferencesView) that links out to its own dedicated page at /references/site-monitoring. It is
- * NOT rendered on this page — this page is deliberately just the card launcher, per the 2026-09-04
- * revision that split it out (the full table used to live here directly).
+ * 2026-09-11: gained an independent Category + Type taxonomy (references-taxonomy.sql /
+ * references-taxonomy-store.ts) — references now group into category sections with a sidebar
+ * table of contents. Categories/types are fetched here, alongside references, and can each be
+ * mid-migration independently: `needsSetup` covers work_references itself not existing yet (the
+ * original setup step), `needsTaxonomySetup` covers references-taxonomy.sql specifically not
+ * having been run yet — in that state, existing references still render (ungrouped, exactly as
+ * before this feature), just without category/type sectioning until she runs the new SQL file.
+ *
+ * Site Monitoring is a built-in card here (rendered first, non-deletable, non-reorderable, not
+ * part of the category system — see ReferencesView) that links out to its own dedicated page at
+ * /references/site-monitoring. It is NOT rendered on this page — this page is deliberately just
+ * the card launcher, per the 2026-09-04 revision that split it out.
  */
 export default async function ReferencesPage() {
   const session = await getServerSession(authOptions);
@@ -25,13 +34,31 @@ export default async function ReferencesPage() {
   }
 
   let needsSetup = false;
-  const references = await getReferences(email).catch((err) => {
-    if (err instanceof Error && err.message === "needs-setup") {
-      needsSetup = true;
-      return [];
-    }
-    throw err;
-  });
+  let needsTaxonomySetup = false;
+
+  const [references, categories, types] = await Promise.all([
+    getReferences(email).catch((err) => {
+      if (err instanceof Error && err.message === "needs-setup") {
+        needsSetup = true;
+        return [];
+      }
+      throw err;
+    }),
+    getReferenceCategories(email).catch((err) => {
+      if (err instanceof Error && err.message === "needs-setup") {
+        needsTaxonomySetup = true;
+        return [] as ReferenceCategory[];
+      }
+      throw err;
+    }),
+    getReferenceTypes(email).catch((err) => {
+      if (err instanceof Error && err.message === "needs-setup") {
+        needsTaxonomySetup = true;
+        return [] as ReferenceTypeRow[];
+      }
+      throw err;
+    }),
+  ]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -45,11 +72,13 @@ export default async function ReferencesPage() {
         </p>
       </div>
 
-      <div>
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Reference Library</h2>
-      </div>
-
-      <ReferencesView references={references} needsSetup={needsSetup} />
+      <ReferencesView
+        references={references}
+        categories={categories}
+        types={types}
+        needsSetup={needsSetup}
+        needsTaxonomySetup={needsTaxonomySetup}
+      />
     </div>
   );
 }

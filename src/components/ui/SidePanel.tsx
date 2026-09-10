@@ -32,6 +32,7 @@ export function SidePanel({
   title,
   description,
   width = "standard",
+  glass = false,
   children,
 }: {
   open: boolean;
@@ -45,6 +46,9 @@ export function SidePanel({
    * every screen it is used from.
    */
   width?: "standard" | "wide";
+  /** Opt-in translucent/blurred surface instead of the default solid one — off by default so
+   * every existing caller (check-in, Work Mirror) keeps its current solid look unchanged. */
+  glass?: boolean;
   children: ReactNode;
 }) {
   // Portals need a DOM target, which does not exist during SSR.
@@ -101,7 +105,10 @@ export function SidePanel({
         aria-label={title}
         tabIndex={-1}
         className={cn(
-          "absolute right-0 top-0 h-full w-full bg-surface border-l border-line/70 shadow-2xl",
+          "absolute right-0 top-0 h-full w-full shadow-2xl",
+          glass
+            ? "bg-surface/85 backdrop-blur-xl backdrop-saturate-150 border-l border-[rgb(var(--a-300)/0.3)]"
+            : "bg-surface border-l border-line/70",
           width === "wide" ? "max-w-2xl" : "max-w-md",
           "flex flex-col outline-none transition-transform duration-300 ease-out",
           open ? "translate-x-0" : "translate-x-full"

@@ -328,8 +328,12 @@
 
 @layer components {
   .btn-primary {
+    /* whitespace-nowrap + shrink-0: without them, a button squeezed by a crowded flex row (e.g.
+       sharing a row with status text that grows) can wrap its own label onto two lines instead of
+       the row just overflowing/scrolling — "Add Task" becoming "Add" / "Task" and the button
+       visibly growing taller. A button's own label should never be what gives first. */
     @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-br from-sprout-500 to-sprout-600
-           text-white font-medium text-sm shadow-glow
+           text-white font-medium text-sm shadow-glow whitespace-nowrap shrink-0
            hover:shadow-glow-lg hover:-translate-y-0.5 active:translate-y-0 active:shadow-glow
            transition-all duration-300 ease-out
            disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-glow;
@@ -337,7 +341,7 @@
 
   .btn-secondary {
     @apply inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-surface/60 text-neutral-700 font-medium text-sm
-           border border-line/70 backdrop-blur-md
+           border border-line/70 backdrop-blur-md whitespace-nowrap shrink-0
            hover:bg-surface/90 hover:border-sprout-200 hover:text-sprout-700
            active:bg-surface transition-all duration-200 ease-out;
   }
@@ -387,6 +391,14 @@
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
   }
 
+  /* An outline sibling of .badge — same size, a border instead of a fill. Used where a second
+     badge-like label needs to sit next to a real (filled) Badge without competing for the same
+     "status" read — e.g. References' Category chip next to its Type Badge. */
+  .chip-outline {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+           border border-neutral-300 text-neutral-500;
+  }
+
   /*
    * A status as a point of light.
    *
@@ -411,35 +423,83 @@
     @apply text-sprout-700 bg-sprout-50 shadow-[inset_0_0_0_1px_rgb(var(--a-500)/0.16)];
   }
 
-  /* Segmented pill navigation — floating glass capsule */
+  /* Segmented pill navigation — floating glass capsule.
+     2026-09-10: the translucency wasn't visibly reading as glass — bg-surface/60 against this
+     app's near-white canvas has almost no colour contrast to reveal through, and --line is
+     literal white in Light mode (255 255 255), so ring-line/70 was an all-but-invisible edge.
+     Fixed by (a) a lower fill opacity + backdrop-saturate so content behind genuinely shows
+     through and picks up a touch of colour, and (b) swapping the edge to the accent scale
+     (--a-300, dusty mauve in Light, cyan-leaning in adhd — never white in any theme) so the
+     panel has a visible border in every theme, not just ones where --line happens to be tinted.
+     shadow-glow-lg (previously only used by dropdowns) gives the bar more of a floating lift. */
   .pill-nav {
-    @apply flex items-center gap-1 bg-surface/60 backdrop-blur-xl rounded-full p-1
-           shadow-glow ring-1 ring-line/70;
+    @apply flex items-center gap-1 bg-surface/75 backdrop-blur-xl backdrop-saturate-150 rounded-full p-1
+           shadow-glow-lg ring-1 ring-[rgb(var(--a-300)/0.4)];
   }
 
   .pill {
     @apply inline-flex items-center gap-1 px-4 py-1.5 rounded-full text-sm font-medium text-neutral-500
-           hover:text-sprout-700 transition-all duration-200 whitespace-nowrap;
+           hover:text-sprout-700 transition-all duration-200 whitespace-nowrap
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sprout-400/60;
   }
 
   .pill-active {
     @apply bg-gradient-to-br from-sprout-500 to-sprout-600 text-white shadow-glow;
   }
 
-  /* Fluid dropdown menu */
+  /* Fluid dropdown menu — same glass fix as .pill-nav above: a visible accent-tinted border
+     instead of the near-invisible --line white-on-white, and a bit more translucency (90% was
+     reading as solid) without dropping low enough to hurt text readability over real content. */
   .dropdown-menu {
-    @apply absolute left-0 top-full mt-2 min-w-[12rem] rounded-2xl border border-line/70
-           bg-surface/90 backdrop-blur-xl shadow-glow-lg p-1.5 z-30
+    /* 2026-09-11: /75 read as "confusingly translucent" in real use — page content behind it
+       (tables, coloured badges) showed through strongly enough to compete with the menu's own
+       text. A dropdown carries real content people need to READ, unlike the pill bar, so it gets
+       a much higher floor: near-opaque, with blur/saturate kept only for a soft frosted edge. */
+    @apply absolute left-0 top-full mt-2 min-w-[12rem] rounded-2xl border border-[rgb(var(--a-300)/0.35)]
+           bg-surface/95 backdrop-blur-xl backdrop-saturate-150 shadow-glow-lg p-1.5 z-30
            origin-top animate-dropdown-in;
   }
 
   .dropdown-item {
     @apply flex items-center justify-between gap-3 px-3 py-2 rounded-xl text-sm text-neutral-600
-           hover:bg-sprout-50 hover:text-sprout-700 transition-colors duration-150 cursor-pointer;
+           hover:bg-sprout-50 hover:text-sprout-700 transition-colors duration-150 cursor-pointer
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sprout-400/60;
   }
 
   .dropdown-item-active {
     @apply bg-sprout-50 text-sprout-700 font-medium hover:bg-sprout-50 hover:text-sprout-700;
+  }
+
+  /* Records' icon + title + description rows — a roomier sibling of .dropdown-item, not a
+     parallel system (padding/radius/hover intentionally match). */
+  .dropdown-item-rich {
+    @apply flex items-start gap-3 px-3 py-2.5 rounded-xl text-neutral-600
+           hover:bg-sprout-50 hover:text-sprout-700 transition-colors duration-150 cursor-pointer
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sprout-400/60;
+  }
+
+  /* Records' popover is one item roomier than Teams' (icon + two lines of text per row), so it
+     gets a slightly wider floor than the default .dropdown-menu. */
+  .dropdown-menu-lg {
+    @apply min-w-[16rem];
+  }
+
+  /* Compact segmented pills — Teams popover's SE/DBA/DevOps selector. Deliberately smaller than
+     .pill: these are views within Team Stats, not their own navigation destinations. */
+  /* 2026-09-11: this used to be bg-neutral-100 (near-white) with no border, sitting inside an
+     already-translucent .dropdown-menu — against real page content bleeding through, the pills
+     were reading as functionally invisible ("there's no SE/DBA/DevOps"), not just low-contrast.
+     A solid surface fill + a real border makes each pill read as its own chip regardless of
+     what's behind the popover, independent of the dropdown-menu opacity fix above. */
+  .team-pill {
+    @apply inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium text-neutral-600
+           bg-surface border border-neutral-300 hover:text-sprout-700 hover:border-sprout-300
+           hover:bg-sprout-50 transition-all duration-150 whitespace-nowrap
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sprout-400/60;
+  }
+
+  .team-pill-active {
+    @apply bg-gradient-to-br from-sprout-500 to-sprout-600 text-white shadow-glow;
   }
 }
 
@@ -451,6 +511,20 @@
 .copy-playful { display: none; }
 [data-theme="adhd"] .copy-serious { display: none; }
 [data-theme="adhd"] .copy-playful { display: inline; }
+
+/* A restrained Gaby-only nav accent — a tiny ✦ next to whichever destination is currently
+   active, nowhere else. Invisible in Light/Dark; reuses the existing glow-pulse keyframe
+   (tailwind.config.ts) rather than adding a new one. No backdrop-filter, nothing viewport-wide —
+   follows the same cost-control rule as every other Gaby-only effect in this file. */
+.gaby-sparkle { display: none; }
+[data-theme="adhd"] .gaby-sparkle {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 0.7em;
+  line-height: 1;
+  color: rgb(var(--a-300));
+  animation: glow-pulse 3.5s ease-in-out infinite;
+}
 
 /* ============================================================================
    PRIMARY ACTION ON AN INVERTED RAMP  (dark + Gaby View)
@@ -472,11 +546,16 @@
 
    Both themes share this because they share the cause. If a fourth theme ever
    inverts its ramp, add it here rather than writing a third copy.
+
+   .team-pill-active shares the exact same class list as .pill-active (it's the same gradient at
+   a smaller scale — see globals.css's .team-pill-active rule), so it needs the identical fix.
    ============================================================================ */
 [data-theme="dark"] .btn-primary,
 [data-theme="dark"] .pill-active,
+[data-theme="dark"] .team-pill-active,
 [data-theme="adhd"] .btn-primary,
-[data-theme="adhd"] .pill-active {
+[data-theme="adhd"] .pill-active,
+[data-theme="adhd"] .team-pill-active {
   background-image: linear-gradient(135deg, rgb(var(--a-300)), rgb(var(--a-200)));
   color: rgb(var(--n-950));
   box-shadow: inset 0 1px 0 0 rgb(var(--a-500) / 0.35), 0 8px 22px -10px rgb(var(--a-400) / 0.6);
@@ -555,6 +634,35 @@
   box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.09), var(--shadow-glow-lg);
 }
 
+/* Nav glass, Gaby-only: .pill-nav/.dropdown-menu's base edge uses --a-300 (this theme's
+   interactive cyan), but the brief specifically wants the FLOATING CHROME itself — the bar and
+   its popovers, not buttons — to read as lavender glass with "a subtle purple glow". --g-* is
+   deliberately not used as a general decorative colour elsewhere (see its own comment further
+   up: it means "this is yours", not a status or accent tint) — this is a narrow, intentional
+   exception for exactly this atmospheric, non-semantic use.
+   .dropdown-menu has a real Tailwind `border` utility, so overriding border-color is enough.
+   .pill-nav uses `ring-1` instead (a box-shadow technique, no true border to recolour), so its
+   edge + the glow are replaced together as one explicit box-shadow. */
+[data-theme="adhd"] .dropdown-menu {
+  border-color: rgb(var(--g-500) / 0.4);
+}
+[data-theme="adhd"] .pill-nav,
+[data-theme="adhd"] .dropdown-menu {
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.05), 0 0 0 1px rgb(var(--g-500) / 0.14),
+    var(--shadow-glow-lg);
+}
+
+/* References sidebar picks up the same lavender-glass treatment as the nav chrome above — it's
+   the same kind of thing (floating wayfinding UI, not a button/card), and the active category
+   gets a very subtle glow rather than a hard fill, matching "gentle" not "loud". */
+[data-theme="adhd"] .reference-sidebar {
+  border-color: rgb(var(--g-500) / 0.35);
+  box-shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.05), 0 0 0 1px rgb(var(--g-500) / 0.12), var(--shadow-glow);
+}
+[data-theme="adhd"] .reference-sidebar-item-active {
+  box-shadow: inset 0 0 0 1px rgb(var(--g-500) / 0.3), 0 0 12px -2px rgb(var(--g-400) / 0.35);
+}
+
 /* A metric card that reads as "good news" gets a slow ambient glow. One element,
    6s cycle — calm enough to notice only if you look for it.
 
@@ -585,11 +693,13 @@
 }
 
 [data-theme="adhd"] .btn-secondary:hover,
-[data-theme="adhd"] .pill:hover {
+[data-theme="adhd"] .pill:hover,
+[data-theme="adhd"] .team-pill:hover {
   transform: translateY(-1px);
 }
 [data-theme="adhd"] .btn-secondary,
-[data-theme="adhd"] .pill {
+[data-theme="adhd"] .pill,
+[data-theme="adhd"] .team-pill {
   transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s ease,
     color 0.18s ease, border-color 0.18s ease;
 }
@@ -897,8 +1007,13 @@
 
   html:not([data-motion="force"])[data-theme="adhd"] .card:hover,
   html:not([data-motion="force"])[data-theme="adhd"] .btn-secondary:hover,
-  html:not([data-motion="force"])[data-theme="adhd"] .pill:hover {
+  html:not([data-motion="force"])[data-theme="adhd"] .pill:hover,
+  html:not([data-motion="force"])[data-theme="adhd"] .team-pill:hover {
     transform: none;
+  }
+
+  html:not([data-motion="force"])[data-theme="adhd"] .gaby-sparkle {
+    animation: none;
   }
 
   /* The star field STAYS under reduced motion — it carries no information and asks nothing of
