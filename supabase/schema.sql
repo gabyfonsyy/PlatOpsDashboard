@@ -60,6 +60,10 @@ create table tickets (
   cancellation_reason text,
   total_on_hold_minutes numeric,
   total_in_progress_minutes numeric,
+  -- Per-cycle { enteredAt, exitedAt, assigneeAtEntry, assigneeAtExit } for every "In Progress"
+  -- span, mirroring peer_review_cycles_json below. Backs Account Creation's SE-execution-vs-
+  -- peer-review breakdown (src/lib/account-creation-cycle.ts).
+  se_work_cycles_json jsonb,
   assignee_display_name text,
   reporter_display_name text,
   last_synced_at timestamptz not null default now(),

@@ -174,6 +174,17 @@ export type PeerReviewCycleRaw = {
   reviewerAtEntry?: string;
 };
 
+/** The SE-execution counterpart to PeerReviewCycleRaw — one entry per "In Progress" cycle, from
+ * gas/JiraSync.gs's extractInProgressCycles_. assigneeAtEntry = who did the work (the original
+ * SE); assigneeAtExit = who actually handed it off, which can differ on a reassigned ticket. Used
+ * by lib/account-creation-cycle.ts's SE-execution-vs-peer-review breakdown. */
+export type SeWorkCycleRaw = {
+  enteredAt?: string;
+  exitedAt?: string;
+  assigneeAtEntry?: string;
+  assigneeAtExit?: string;
+};
+
 export type AccountCreationTicketRow = {
   issue_key: string;
   created: string;
@@ -186,6 +197,8 @@ export type AccountCreationTicketRow = {
   /** For SE Efficiency's validator/reviewer time — not SLA math, kept here only because every
    * fetch shares one row shape (same convention as lib/tool-assisted.ts's TicketRow). */
   peer_review_cycles_json: PeerReviewCycleRaw[] | null;
+  /** For the SE-execution-vs-peer-review cycle-time breakdown — same "shared row shape" reasoning as above. */
+  se_work_cycles_json: SeWorkCycleRaw[] | null;
 };
 
 export function deriveTicketSla(row: AccountCreationTicketRow, nowIso: string = new Date().toISOString()): AccountCreationTicketSla {

@@ -5,8 +5,13 @@ import {
   getToolingImpactReport,
   getSePatternsReport,
   getTicketReceiptsReport,
+  getCycleTimeDiagnosticsReport,
+  getSeCycleRoleReport,
+  getAccountCreationBottlenecksReport,
 } from "@/lib/account-creation-report";
 import type { OverallSlaStatus, DataUnavailable } from "@/lib/account-creation-sla";
+import type { DelayArea } from "@/lib/account-creation-cycle";
+import { DELAY_AREA_META } from "@/lib/account-creation-view";
 import { resolveFilters } from "@/lib/date-ranges";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
@@ -14,6 +19,9 @@ import { CountRankTable } from "@/components/dashboard/BreakdownTables";
 import { AccountCreationWatchtowerBoard } from "@/components/dashboard/AccountCreationWatchtowerBoard";
 import { AccountCreationDistributionTable } from "@/components/dashboard/AccountCreationDistributionTable";
 import { AccountCreationDoerValidatorTable } from "@/components/dashboard/AccountCreationDoerValidatorTable";
+import { AccountCreationCycleDistributionTable } from "@/components/dashboard/AccountCreationCycleDistributionTable";
+import { AccountCreationSeCycleRoleTable } from "@/components/dashboard/AccountCreationSeCycleRoleTable";
+import { AccountCreationBottlenecksTable } from "@/components/dashboard/AccountCreationBottlenecksTable";
 import { AccountCreationToolingTable } from "@/components/dashboard/AccountCreationToolingTable";
 import { AccountCreationSeTable } from "@/components/dashboard/AccountCreationSeTable";
 import { AccountCreationReceiptsTable } from "@/components/dashboard/AccountCreationReceiptsTable";
@@ -36,13 +44,16 @@ export default async function AccountCreationPage({
   const { range, period } = resolveFilters(searchParams);
   const overallStatusFilter = typeof searchParams.overallStatus === "string" ? (searchParams.overallStatus as OverallSlaStatus | DataUnavailable) : undefined;
 
-  const [watchtower, performance, efficiency, tooling, patterns, receipts] = await Promise.all([
+  const [watchtower, performance, efficiency, tooling, patterns, receipts, cycleDiagnostics, seCycleRoles, bottlenecks] = await Promise.all([
     getWatchtowerReport(range, period),
     getPerformanceReport(range, period),
     getSeEfficiencyReport(range, period),
     getToolingImpactReport(range, period),
     getSePatternsReport(range, period),
     getTicketReceiptsReport(range, period, { overallStatus: overallStatusFilter }),
+    getCycleTimeDiagnosticsReport(range, period),
+    getSeCycleRoleReport(range, period),
+    getAccountCreationBottlenecksReport(range, period),
   ]);
 
   const jiraBaseUrl = process.env.JIRA_BASE_URL;
@@ -161,6 +172,69 @@ export default async function AccountCreationPage({
         />
       </div>
 
+      {/* 3b. Cycle Time Diagnostics — SE execution vs. peer review breakdown */}
+      <div>
+        <h2 className="font-serif text-lg font-medium text-neutral-900">Cycle Time Diagnostics</h2>
+        <p className="text-sm text-neutral-500 mt-0.5 max-w-3xl">
+          Where the SE-owned stage actually loses time — In Progress → For Peer Review (SE execution) vs. For Peer Review →
+          On Hold/For Checking (peer review). SE-side delay reuses the Day-1 SLA lateness rule above; review-side delay uses
+          one new configurable threshold (2h) since no existing SLA covers review duration.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <MetricCard
+          label="Avg Total Cycle Time"
+          value={formatDaysValue(cycleDiagnostics.total.avgMinutes)}
+          sublabel={[formatDurationBreakdown(cycleDiagnostics.total.avgMinutes), `${formatNumber(cycleDiagnostics.total.count)} tickets`].filter(Boolean).join(" · ")}
+        />
+        <MetricCard
+          label="Avg SE Work Time"
+          value={formatDaysValue(cycleDiagnostics.seWork.avgMinutes)}
+          sublabel={formatDurationBreakdown(cycleDiagnostics.seWork.avgMinutes)}
+        />
+        <MetricCard
+          label="Avg Review Time"
+          value={formatDaysValue(cycleDiagnostics.review.avgMinutes)}
+          sublabel={formatDurationBreakdown(cycleDiagnostics.review.avgMinutes)}
+        />
+        <MetricCard
+          label="% Delayed in SE Work"
+          value={formatPercent(cycleDiagnostics.pctDelayedSeWork)}
+          tooltip="Reuses the existing Day-1 SLA lateness rule — share of measurable tickets where the SE-work stage missed it."
+        />
+        <MetricCard
+          label="% Delayed in Review"
+          value={formatPercent(cycleDiagnostics.pctDelayedReview)}
+          tooltip="Share of measurable tickets whose peer-review time exceeded the 2h configurable threshold."
+        />
+      </div>
+
+      <AccountCreationCycleDistributionTable
+        seWorkDistribution={cycleDiagnostics.seWorkDistribution}
+        reviewDistribution={cycleDiagnostics.reviewDistribution}
+      />
+
+      <CountRankTable
+        title="Where Are Account Creations Getting Delayed?"
+        keyLabel="Delay Area"
+        countLabel="Tickets"
+        rows={(Object.keys(cycleDiagnostics.delayCounts) as DelayArea[]).map((area) => {
+          const total = Object.values(cycleDiagnostics.delayCounts).reduce((s, c) => s + c, 0);
+          return {
+            key: DELAY_AREA_META[area].label,
+            count: cycleDiagnostics.delayCounts[area],
+            share: total ? cycleDiagnostics.delayCounts[area] / total : null,
+          };
+        })}
+        description="Never guessed from the total ticket duration — see 'Unable to Determine' for tickets missing SE-work or review history."
+        emptyMessage="No Account Creation tickets in this period."
+      />
+
+      <AccountCreationSeCycleRoleTable asOriginalSe={seCycleRoles.asOriginalSe} asReviewer={seCycleRoles.asReviewer} />
+
+      <AccountCreationBottlenecksTable rows={bottlenecks.rows} />
+
       {/* 4. Tooling Impact */}
       <AccountCreationToolingTable report={tooling} />
 
@@ -178,7 +252,13 @@ export default async function AccountCreationPage({
       />
 
       {/* 6. Ticket Receipts */}
-      <AccountCreationReceiptsTable tickets={receipts.tickets} totalCount={receipts.totalCount} jiraBaseUrl={jiraBaseUrl} id="receipts" />
+      <AccountCreationReceiptsTable
+        tickets={receipts.tickets}
+        cycles={receipts.cycles}
+        totalCount={receipts.totalCount}
+        jiraBaseUrl={jiraBaseUrl}
+        id="receipts"
+      />
     </div>
   );
 }

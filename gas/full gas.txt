@@ -1465,6 +1465,83 @@ function deleteStPeerReviewTrigger_() {
 }
 
 /**
+ * One-time re-backfill for `se_work_cycles_json` (added alongside the SE-execution-vs-peer-review
+ * breakdown on the Account Creation dashboard) — extractInProgressCycles_ now captures
+ * assigneeAtEntry/assigneeAtExit per cycle, but ordinary incremental sync only revisits tickets
+ * Jira has touched since, so historical Account Creation tickets need this to pick up the new
+ * field. Scoped tightly to Account Creation (not all of ST, unlike runStPeerReviewRebackfill)
+ * since that's the only issue type this feature reads the field for. Copies
+ * runStPeerReviewRebackfill's shape exactly (cursor, stall guard, chained one-time trigger,
+ * completion email) — see that function's comments for why each piece is there.
+ */
+const ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY = 'ACCOUNT_CREATION_SE_WORK_CYCLES_REBACKFILL_CURSOR';
+
+function runAccountCreationSeWorkCyclesRebackfill() {
+  const team = getActiveTeamsConfig_().find((t) => t.team_key === 'ST');
+  if (!team) throw new Error('ST team not found in active config — check TEAMS_CONFIG.');
+
+  const props = PropertiesService.getScriptProperties();
+  const pageToken = props.getProperty(ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY) || undefined;
+
+  const jql = `project = ${team.jira_project_key} AND issuetype = "Account Creation" AND status WAS "In Progress" ORDER BY created ASC`;
+  const fields = buildJiraFieldList_(team);
+
+  let page;
+  try {
+    page = jiraSearchIssues_(jql, pageToken, 100, fields);
+  } catch (err) {
+    deleteAccountCreationSeWorkCyclesTrigger_();
+    if (isExpiredPageTokenError_(err)) {
+      props.deleteProperty(ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY);
+      notifyFailure_(
+        'runAccountCreationSeWorkCyclesRebackfill: page token expired, cursor reset',
+        `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runAccountCreationSeWorkCyclesRebackfill manually to restart from the beginning (upserts are idempotent by issue_key).`
+      );
+      return;
+    }
+    notifyFailure_('runAccountCreationSeWorkCyclesRebackfill: Jira fetch failed', err);
+    ScriptApp.newTrigger('runAccountCreationSeWorkCyclesRebackfill').timeBased().after(5000).create();
+    return;
+  }
+
+  if (page.nextPageToken && page.nextPageToken === pageToken) {
+    notifyFailure_('runAccountCreationSeWorkCyclesRebackfill stalled', 'nextPageToken did not advance — check Jira response.');
+    deleteAccountCreationSeWorkCyclesTrigger_();
+    return;
+  }
+
+  for (const issue of page.issues) {
+    try {
+      processAndUpsertIssue_(team, issue);
+    } catch (issueErr) {
+      Logger.log(`runAccountCreationSeWorkCyclesRebackfill failed for ${issue.key}: ${issueErr}`);
+      logSyncError_(team.team_key, issue.key, 'account_creation_se_work_cycles_rebackfill', '', String(issueErr));
+    }
+  }
+  flushDirtyDates_(team.team_key);
+
+  if (page.nextPageToken && page.issues.length > 0) {
+    props.setProperty(ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY, page.nextPageToken);
+    deleteAccountCreationSeWorkCyclesTrigger_();
+    ScriptApp.newTrigger('runAccountCreationSeWorkCyclesRebackfill').timeBased().after(1000).create();
+    return;
+  }
+
+  props.deleteProperty(ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY);
+  deleteAccountCreationSeWorkCyclesTrigger_();
+  sendAlertEmail_(
+    'Account Creation SE-work-cycles re-backfill complete',
+    'All ST Account Creation tickets that were ever In Progress have been re-processed with se_work_cycles_json populated (per-cycle enteredAt/exitedAt/assigneeAtEntry/assigneeAtExit). Run resetSupabaseMigration() then runSupabaseMigration() next to push this into Supabase — see add-se-work-cycles-column.sql for why the reset is required first.'
+  );
+}
+
+function deleteAccountCreationSeWorkCyclesTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runAccountCreationSeWorkCyclesRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
  * Targeted re-backfill for ST's `resolved_datetime` specifically — a DIFFERENT population than
  * runStPeerReviewRebackfill above. That job's JQL only matches tickets that were EVER in For
  * Peer Review/For Checking/For Product Team/Archived/Rejected, which excludes the exact tickets
@@ -5163,7 +5240,7 @@ const RAW_TICKET_HEADERS = [
   'resolved_datetime', 'resolved_raw_text', 'first_out_of_backlog_todo',
   'fcr_value', 'escalation_value', 'assigned_se', 'assigned_cod', 'due_date',
   'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
-  'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
+  'total_on_hold_minutes', 'total_in_progress_minutes', 'se_work_cycles_json', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
   'cycle_time_start', 'cycle_time_end', 'labels', 'priority', 'archive_reason',
 ];
@@ -5269,6 +5346,10 @@ function processAndUpsertIssue_(team, issue) {
       row.total_in_progress_minutes = round2_(inProgressCycles.reduce((sum, c) => {
         return c.exitedAt ? sum + (new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000 : sum;
       }, 0));
+      // Full per-cycle array (with who — see extractInProgressCycles_) for Account Creation's
+      // SE-execution-vs-peer-review breakdown — stored the same way peer_review_cycles_json is a
+      // few lines below, rather than only the summed minutes above.
+      row.se_work_cycles_json = JSON.stringify(inProgressCycles);
     }
     if (team.has_peer_review_tracking) {
       row.peer_review_cycles_json = JSON.stringify(extractPeerReviewCyclesWithReviewer_(changelog));
@@ -5333,6 +5414,7 @@ function mapIssueToRawRow_(team, issue, resolved) {
     cancellation_reason: extractJiraFieldValue_(fields.customfield_11285),
     total_on_hold_minutes: 0,
     total_in_progress_minutes: 0,
+    se_work_cycles_json: '[]',
     assignee_display_name: fields.assignee ? fields.assignee.displayName : '',
     reporter_display_name: fields.reporter ? fields.reporter.displayName : '',
     labels: Array.isArray(fields.labels) ? fields.labels.join(', ') : '',
@@ -5753,17 +5835,35 @@ function extractSeResolvedAtFallback_(changelog) {
 
 /**
  * Walks the changelog chronologically and returns every In Progress cycle as
- * { enteredAt, exitedAt } — mirrors extractHoldingCyclesWithReasons_'s multi-cycle
- * handling but for "In Progress" and without reason-tracking (not applicable here).
- * Captures active-effort time even for tickets that bounce back into In Progress
- * multiple times (e.g. In Progress -> On Hold -> In Progress -> On Hold -> For Checking).
+ * { enteredAt, exitedAt, assigneeAtEntry, assigneeAtExit } — mirrors
+ * extractHoldingCyclesWithReasons_'s multi-cycle handling but for "In Progress". Captures
+ * active-effort time even for tickets that bounce back into In Progress multiple times
+ * (e.g. In Progress -> On Hold -> In Progress -> On Hold -> For Checking).
+ *
+ * assigneeAtEntry/assigneeAtExit mirror extractPeerReviewCyclesWithReviewer_'s currentAssignee
+ * running-value pattern exactly (assignee item applied before the status item is checked within
+ * the same changelog entry, same reasoning as that function's own doc comment): assigneeAtEntry is
+ * who held the ticket the moment it became In Progress (the ORIGINAL SE — who did the work),
+ * assigneeAtExit is who held it the moment it left (who actually handed it off, which can differ
+ * if the ticket was reassigned mid-cycle). Account Creation's SE-execution breakdown needs both,
+ * the same way the peer-review side needs reviewerAtEntry distinct from reviewer.
  */
 function extractInProgressCycles_(changelog) {
+  let currentAssignee = null;
   const cycles = [];
   let cycleStart = null;
+  let cycleStartAssignee = null;
 
   for (let i = 0; i < changelog.length; i++) {
-    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    const items = changelog[i].items || [];
+
+    items.forEach((item) => {
+      if (item.field === 'assignee' || item.fieldId === 'assignee') {
+        currentAssignee = item.toString || null;
+      }
+    });
+
+    const statusItem = items.find((item) => item.field === 'status');
     if (!statusItem) continue;
 
     const toStatus = (statusItem.toString || '').toLowerCase();
@@ -5771,14 +5871,24 @@ function extractInProgressCycles_(changelog) {
 
     if (toStatus === 'in progress') {
       cycleStart = changelog[i].created;
+      cycleStartAssignee = currentAssignee;
     } else if (fromStatus === 'in progress' && cycleStart) {
-      cycles.push({ enteredAt: cycleStart, exitedAt: changelog[i].created });
+      cycles.push({
+        enteredAt: cycleStart, exitedAt: changelog[i].created,
+        assigneeAtEntry: cycleStartAssignee || '',
+        assigneeAtExit: currentAssignee || '',
+      });
       cycleStart = null;
+      cycleStartAssignee = null;
     }
   }
 
   if (cycleStart) {
-    cycles.push({ enteredAt: cycleStart, exitedAt: null });
+    cycles.push({
+      enteredAt: cycleStart, exitedAt: null,
+      assigneeAtEntry: cycleStartAssignee || '',
+      assigneeAtExit: currentAssignee || '',
+    });
   }
 
   return cycles;
@@ -7837,6 +7947,7 @@ function mapRawTicketRowToSupabase_(teamKey, r) {
     cancellation_reason: toStringOrNull_(r.cancellation_reason),
     total_on_hold_minutes: toNumberOrNull_(r.total_on_hold_minutes),
     total_in_progress_minutes: toNumberOrNull_(r.total_in_progress_minutes),
+    se_work_cycles_json: toJsonOrNull_(r.se_work_cycles_json),
     assignee_display_name: toStringOrNull_(r.assignee_display_name),
     reporter_display_name: toStringOrNull_(r.reporter_display_name),
     last_synced_at: toTimestampOrNull_(r.last_synced_at) || nowIso_(),

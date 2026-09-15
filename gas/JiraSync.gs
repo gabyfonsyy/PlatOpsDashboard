@@ -9,7 +9,7 @@ const RAW_TICKET_HEADERS = [
   'resolved_datetime', 'resolved_raw_text', 'first_out_of_backlog_todo',
   'fcr_value', 'escalation_value', 'assigned_se', 'assigned_cod', 'due_date',
   'product', 'holding_reasons_json', 'rejection_category', 'cancellation_reason',
-  'total_on_hold_minutes', 'total_in_progress_minutes', 'assignee_display_name',
+  'total_on_hold_minutes', 'total_in_progress_minutes', 'se_work_cycles_json', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
   'cycle_time_start', 'cycle_time_end', 'labels', 'priority', 'archive_reason',
 ];
@@ -115,6 +115,10 @@ function processAndUpsertIssue_(team, issue) {
       row.total_in_progress_minutes = round2_(inProgressCycles.reduce((sum, c) => {
         return c.exitedAt ? sum + (new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000 : sum;
       }, 0));
+      // Full per-cycle array (with who — see extractInProgressCycles_) for Account Creation's
+      // SE-execution-vs-peer-review breakdown — stored the same way peer_review_cycles_json is a
+      // few lines below, rather than only the summed minutes above.
+      row.se_work_cycles_json = JSON.stringify(inProgressCycles);
     }
     if (team.has_peer_review_tracking) {
       row.peer_review_cycles_json = JSON.stringify(extractPeerReviewCyclesWithReviewer_(changelog));
@@ -179,6 +183,7 @@ function mapIssueToRawRow_(team, issue, resolved) {
     cancellation_reason: extractJiraFieldValue_(fields.customfield_11285),
     total_on_hold_minutes: 0,
     total_in_progress_minutes: 0,
+    se_work_cycles_json: '[]',
     assignee_display_name: fields.assignee ? fields.assignee.displayName : '',
     reporter_display_name: fields.reporter ? fields.reporter.displayName : '',
     labels: Array.isArray(fields.labels) ? fields.labels.join(', ') : '',
@@ -599,17 +604,35 @@ function extractSeResolvedAtFallback_(changelog) {
 
 /**
  * Walks the changelog chronologically and returns every In Progress cycle as
- * { enteredAt, exitedAt } — mirrors extractHoldingCyclesWithReasons_'s multi-cycle
- * handling but for "In Progress" and without reason-tracking (not applicable here).
- * Captures active-effort time even for tickets that bounce back into In Progress
- * multiple times (e.g. In Progress -> On Hold -> In Progress -> On Hold -> For Checking).
+ * { enteredAt, exitedAt, assigneeAtEntry, assigneeAtExit } — mirrors
+ * extractHoldingCyclesWithReasons_'s multi-cycle handling but for "In Progress". Captures
+ * active-effort time even for tickets that bounce back into In Progress multiple times
+ * (e.g. In Progress -> On Hold -> In Progress -> On Hold -> For Checking).
+ *
+ * assigneeAtEntry/assigneeAtExit mirror extractPeerReviewCyclesWithReviewer_'s currentAssignee
+ * running-value pattern exactly (assignee item applied before the status item is checked within
+ * the same changelog entry, same reasoning as that function's own doc comment): assigneeAtEntry is
+ * who held the ticket the moment it became In Progress (the ORIGINAL SE — who did the work),
+ * assigneeAtExit is who held it the moment it left (who actually handed it off, which can differ
+ * if the ticket was reassigned mid-cycle). Account Creation's SE-execution breakdown needs both,
+ * the same way the peer-review side needs reviewerAtEntry distinct from reviewer.
  */
 function extractInProgressCycles_(changelog) {
+  let currentAssignee = null;
   const cycles = [];
   let cycleStart = null;
+  let cycleStartAssignee = null;
 
   for (let i = 0; i < changelog.length; i++) {
-    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    const items = changelog[i].items || [];
+
+    items.forEach((item) => {
+      if (item.field === 'assignee' || item.fieldId === 'assignee') {
+        currentAssignee = item.toString || null;
+      }
+    });
+
+    const statusItem = items.find((item) => item.field === 'status');
     if (!statusItem) continue;
 
     const toStatus = (statusItem.toString || '').toLowerCase();
@@ -617,14 +640,24 @@ function extractInProgressCycles_(changelog) {
 
     if (toStatus === 'in progress') {
       cycleStart = changelog[i].created;
+      cycleStartAssignee = currentAssignee;
     } else if (fromStatus === 'in progress' && cycleStart) {
-      cycles.push({ enteredAt: cycleStart, exitedAt: changelog[i].created });
+      cycles.push({
+        enteredAt: cycleStart, exitedAt: changelog[i].created,
+        assigneeAtEntry: cycleStartAssignee || '',
+        assigneeAtExit: currentAssignee || '',
+      });
       cycleStart = null;
+      cycleStartAssignee = null;
     }
   }
 
   if (cycleStart) {
-    cycles.push({ enteredAt: cycleStart, exitedAt: null });
+    cycles.push({
+      enteredAt: cycleStart, exitedAt: null,
+      assigneeAtEntry: cycleStartAssignee || '',
+      assigneeAtExit: currentAssignee || '',
+    });
   }
 
   return cycles;
