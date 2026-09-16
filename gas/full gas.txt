@@ -7247,6 +7247,28 @@ function migrateAddPeerReviewCyclesColumn() {
 }
 
 /**
+ * One-time migration: adds `se_work_cycles_json` to every existing RAW_ST_<year> tab
+ * (setupJiraDataSpreadsheet_/getOrCreateRawTab_ only add a new RAW_TICKET_HEADERS column to a
+ * BRAND-NEW tab — an already-provisioned tab's physical header row doesn't grow on its own, same
+ * gap migrateAddPeerReviewCyclesColumn above exists to close). ST-only, mirroring that same
+ * function, since `se_work_cycles_json` is gated by `has_in_progress_tracking`, which only ST has
+ * (confirmed live: DE/DEV are both false). Only populated going forward by the regular sync; run
+ * runAccountCreationSeWorkCyclesRebackfill (Backfill.gs) afterward to fill it in for tickets
+ * already synced before this column existed. Safe to re-run.
+ */
+function migrateAddSeWorkCyclesColumn() {
+  const ss = getJiraDataSpreadsheet_();
+  getAllRawYearsForTeam_('ST').forEach((year) => {
+    const sheet = ss.getSheetByName(`RAW_ST_${year}`);
+    if (appendColumnIfMissing_(sheet, 'se_work_cycles_json')) {
+      Logger.log(`RAW_ST_${year}: added se_work_cycles_json.`);
+    } else {
+      Logger.log(`RAW_ST_${year}: se_work_cycles_json already present.`);
+    }
+  });
+}
+
+/**
  * One-time migration: adds `cycle_time_start` + `cycle_time_end` to every existing
  * RAW_ST_<year> tab (the new SE cycle-time definition: most recent In Progress entry ->
  * most recent For Peer Review entry, computed by extractReviewCycleTimeRange_ in
