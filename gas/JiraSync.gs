@@ -12,6 +12,7 @@ const RAW_TICKET_HEADERS = [
   'total_on_hold_minutes', 'total_in_progress_minutes', 'se_work_cycles_json', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
   'cycle_time_start', 'cycle_time_end', 'labels', 'priority', 'archive_reason',
+  'l3_issue_key', 'l3_endorsed_at', 'l3_completed_at',
 ];
 
 function syncAllTeams() {
@@ -141,6 +142,21 @@ function processAndUpsertIssue_(team, issue) {
     }
   }
 
+  // L3 linkage — Phase 2. Independent of issueNeedsChangelog_ above (that gate is about THIS
+  // issue's own changelog; this is a second, different issue's data). Only ST Account Creation
+  // tickets carrying a linked L3-#### key make the two extra Jira calls (fetchL3Linkage_); every
+  // other ticket keeps mapIssueToRawRow_'s '' defaults for all three new columns.
+  if (team.team_key === 'ST' && row.issue_type === 'Account Creation' && row.l3_issue_key) {
+    try {
+      const linkage = fetchL3Linkage_(row.l3_issue_key);
+      row.l3_endorsed_at = linkage.endorsedAt || '';
+      row.l3_completed_at = linkage.completedAt || '';
+    } catch (err) {
+      Logger.log(`L3 linkage fetch failed for ${issue.key} -> ${row.l3_issue_key}: ${err}`);
+      logSyncError_(team.team_key, issue.key, 'l3_linkage', row.l3_issue_key, String(err));
+    }
+  }
+
   upsertRawTicketRow_(team.team_key, row);
   markDirtyDate_(team.team_key, toIsoDate_(new Date(row.created)));
   // Also mark the resolved date dirty so the resolved-by-resolved-date trend
@@ -199,6 +215,11 @@ function mapIssueToRawRow_(team, issue, resolved) {
     // Archived/Rejected rather than Cancelled. Same extraction as rejection_category/
     // cancellation_reason above.
     archive_reason: extractJiraFieldValue_(fields.customfield_10187),
+    // L3 linkage (Phase 2, Account Creation only) — the linked key is cheap/synchronous to find
+    // here; the two timestamps need extra Jira calls, filled in by processAndUpsertIssue_ below.
+    l3_issue_key: extractLinkedL3IssueKey_(fields),
+    l3_endorsed_at: '',
+    l3_completed_at: '',
   };
 }
 
@@ -239,6 +260,63 @@ function adfToPlainText_(node) {
     const inner = node.content.map(adfToPlainText_).join('');
     const blockTypes = ['doc', 'paragraph', 'heading', 'listItem', 'codeBlock', 'blockquote'];
     return blockTypes.indexOf(node.type) !== -1 ? inner + '\n' : inner;
+  }
+  return '';
+}
+
+/**
+ * Scans this issue's `issuelinks` for a link to Jira's separate L3 project (keys `L3-####`) — the
+ * linked ticket whose own timeline drives day1L3Endorsement/day2/day3 (account-creation-sla.ts).
+ * Checks both inward and outward link directions since a link's direction depends on which side
+ * created it. Returns '' if none found. If more than one L3-shaped link exists (not expected but
+ * not impossible), the first one encountered wins and the rest are silently ignored.
+ */
+function extractLinkedL3IssueKey_(fields) {
+  const links = fields.issuelinks || [];
+  for (let i = 0; i < links.length; i++) {
+    const linked = links[i].outwardIssue || links[i].inwardIssue;
+    if (linked && linked.key && /^L3-\d+$/i.test(linked.key)) return linked.key;
+  }
+  return '';
+}
+
+/**
+ * Resolves ONE linked L3-board ticket's endorsement instant + "For Checking" completion instant.
+ * Needs BOTH a single-issue fetch (jiraGetIssueByKey_, for the L3 ticket's own `created` — the
+ * endorsement instant) AND its full changelog (jiraGetChangelog_, to find WHEN it reached "For
+ * Checking" — its current status alone can't answer that, and the ticket's status can move on
+ * again afterward). Runs on every regular sync for every ST Account Creation ticket that has an L3
+ * link (not just during backfill) — deliberately recomputed in full every time, same
+ * "no incremental diffing" philosophy as every other changelog-derived field in this file, rather
+ * than trying to detect "did anything change since last sync" (which would need a stored-state
+ * read this function doesn't have).
+ *
+ * jiraGetIssueByKey_ returning null (moved-ticket key mismatch, see its own doc comment in
+ * JiraClient.gs) means this L3 key no longer safely identifies that issue — returns blank rather
+ * than trusting a possibly-wrong changelog fetched under a stale key.
+ */
+function fetchL3Linkage_(l3IssueKey) {
+  const l3Issue = jiraGetIssueByKey_(l3IssueKey);
+  if (!l3Issue) return { endorsedAt: '', completedAt: '' };
+
+  const endorsedAt = l3Issue.fields && l3Issue.fields.created ? l3Issue.fields.created : '';
+  const changelog = jiraGetChangelog_(l3IssueKey);
+  const completedAt = extractL3ForCheckingAt_(changelog);
+  return { endorsedAt, completedAt };
+}
+
+/**
+ * First (not latest) changelog entry where the L3 ticket's status moved TO "For Checking" — the
+ * milestone-completion instant for Day 2 (L3 Realm Creation + Site Bindings) and Day 3 (Data
+ * Loading, same signal per spec). Deliberately FIRST-wins: once the L3 ticket reaches For
+ * Checking, the milestone is met — a later reopen/rework on the L3 ticket shouldn't retroactively
+ * un-complete a Day 2/3 deadline that already passed.
+ */
+function extractL3ForCheckingAt_(changelog) {
+  for (let i = 0; i < changelog.length; i++) {
+    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    if (!statusItem) continue;
+    if ((statusItem.toString || '').toLowerCase() === 'for checking') return changelog[i].created;
   }
   return '';
 }

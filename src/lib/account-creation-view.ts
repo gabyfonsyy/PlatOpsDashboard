@@ -37,7 +37,9 @@ export const MILESTONE_STATUS_META: Record<string, { label: string; tone: BadgeT
   at_risk: { label: "At Risk", tone: "warning" },
   pending: { label: "Pending", tone: "neutral" },
   endorsed: { label: "Endorsed", tone: "success" },
-  missing: { label: "Missing", tone: "danger" },
+  // "L3 not needed" vs "L3 needed but never endorsed" isn't distinguishable from data alone — this
+  // reads as an inference from absence of evidence past the deadline, never a confirmed miss.
+  missing: { label: "No Linked L3 Found", tone: "warning" },
   not_applicable: { label: "N/A", tone: "neutral" },
   [DATA_UNAVAILABLE]: { label: "Data unavailable", tone: "neutral" },
 };

@@ -54,7 +54,6 @@ export type WatchtowerReport = {
   counts: WatchtowerCounts;
   day1NotStartedCount: number;
   seStartComplianceRate: number | null;
-  /** Always null in Phase 1 — not yet trackable, never a fabricated 0%/100%. */
   l3EndorsementComplianceRate: number | null;
   l3CompletionComplianceRate: number | null;
   dataLoadingComplianceRate: number | null;
@@ -89,15 +88,28 @@ export async function getWatchtowerReport(range: string, period: string): Promis
       .filter((c): c is Exclude<Day1StartCompliance, "not_applicable"> => c !== "not_applicable");
     const onTimeStart = applicableStart.filter((c) => c === "started_on_time").length;
 
+    // "Applicable" = the milestone reached a real end state (on time, late, or a confirmed-missing
+    // inference) — mirrors seStartComplianceRate's own applicable/onTime split above.
+    const l3Applicable = active.filter((t) =>
+      t.day1L3Endorsement.status === "endorsed" || t.day1L3Endorsement.status === "late" || t.day1L3Endorsement.status === "missing"
+    );
+    const l3OnTime = l3Applicable.filter((t) => t.day1L3Endorsement.status === "endorsed").length;
+
+    const day2Applicable = active.filter((t) => t.day2.status === "completed" || t.day2.status === "late");
+    const day2OnTime = day2Applicable.filter((t) => t.day2.status === "completed").length;
+
+    const day3Applicable = active.filter((t) => t.hasDataLoading && (t.day3.status === "completed" || t.day3.status === "late"));
+    const day3OnTime = day3Applicable.filter((t) => t.day3.status === "completed").length;
+
     return {
       range, period,
       activeCount: active.length,
       counts,
       day1NotStartedCount: active.filter((t) => t.day1SeSetup.status === "not_started" || t.day1SeSetup.status === "at_risk").length,
       seStartComplianceRate: applicableStart.length ? round4(onTimeStart / applicableStart.length) : null,
-      l3EndorsementComplianceRate: null,
-      l3CompletionComplianceRate: null,
-      dataLoadingComplianceRate: null,
+      l3EndorsementComplianceRate: l3Applicable.length ? round4(l3OnTime / l3Applicable.length) : null,
+      l3CompletionComplianceRate: day2Applicable.length ? round4(day2OnTime / day2Applicable.length) : null,
+      dataLoadingComplianceRate: day3Applicable.length ? round4(day3OnTime / day3Applicable.length) : null,
       tickets: active.sort((a, b) => attentionRank(a.overallStatus) - attentionRank(b.overallStatus)).slice(0, BREAKDOWN_TICKET_LIMIT),
     };
   } catch {
@@ -123,10 +135,9 @@ export type PerformanceReport = {
   period: string;
   totalCompleted: number;
   day1SeSetup: PerformanceStageStat;
-  /** null = not yet trackable this phase — never a fabricated stat. */
-  day1L3Endorsement: PerformanceStageStat | null;
-  day2: PerformanceStageStat | null;
-  day3: PerformanceStageStat | null;
+  day1L3Endorsement: PerformanceStageStat;
+  day2: PerformanceStageStat;
+  day3: PerformanceStageStat;
 };
 
 function stageStat(withinSla: number, late: number): PerformanceStageStat {
@@ -142,23 +153,37 @@ export async function getPerformanceReport(range: string, period: string): Promi
 
     // "Completed" here means Day 1 Setup reached a real end state (completed or late) — resolving
     // the whole ticket isn't required for the Day 1 stage's own SLA to be measurable.
-    const measured = rows
-      .map((r) => deriveTicketSla(r, nowIso))
-      .filter((t) => t.day1SeSetup.status === "completed" || t.day1SeSetup.status === "late");
+    const withSla = rows.map((r) => deriveTicketSla(r, nowIso));
+    const measured = withSla.filter((t) => t.day1SeSetup.status === "completed" || t.day1SeSetup.status === "late");
 
     const withinSla = measured.filter((t) => t.day1SeSetup.status === "completed").length;
     const late = measured.filter((t) => t.day1SeSetup.status === "late").length;
+
+    const l3Measured = withSla.filter((t) =>
+      t.day1L3Endorsement.status === "endorsed" || t.day1L3Endorsement.status === "late" || t.day1L3Endorsement.status === "missing"
+    );
+    const day2Measured = withSla.filter((t) => t.day2.status === "completed" || t.day2.status === "late");
+    const day3Measured = withSla.filter((t) => t.hasDataLoading && (t.day3.status === "completed" || t.day3.status === "late"));
 
     return {
       range, period,
       totalCompleted: measured.length,
       day1SeSetup: stageStat(withinSla, late),
-      day1L3Endorsement: null,
-      day2: null,
-      day3: null,
+      day1L3Endorsement: stageStat(
+        l3Measured.filter((t) => t.day1L3Endorsement.status === "endorsed").length,
+        l3Measured.filter((t) => t.day1L3Endorsement.status === "late" || t.day1L3Endorsement.status === "missing").length
+      ),
+      day2: stageStat(
+        day2Measured.filter((t) => t.day2.status === "completed").length,
+        day2Measured.filter((t) => t.day2.status === "late").length
+      ),
+      day3: stageStat(
+        day3Measured.filter((t) => t.day3.status === "completed").length,
+        day3Measured.filter((t) => t.day3.status === "late").length
+      ),
     };
   } catch {
-    return { range, period, totalCompleted: 0, day1SeSetup: stageStat(0, 0), day1L3Endorsement: null, day2: null, day3: null };
+    return { range, period, totalCompleted: 0, day1SeSetup: stageStat(0, 0), day1L3Endorsement: stageStat(0, 0), day2: stageStat(0, 0), day3: stageStat(0, 0) };
   }
 }
 
@@ -396,9 +421,7 @@ export type SeStartPattern = {
 
 export type DelayAttribution = {
   seSideCount: number;
-  /** Phase 1: always false — L3-side delay isn't trackable yet. A literal `false`, not a count of
-   * 0, so the UI can't misread "not yet trackable" as "zero L3-side delays ever happen". */
-  l3SideAvailable: false;
+  l3SideCount: number;
   unknownCount: number;
 };
 
@@ -453,17 +476,25 @@ export async function getSePatternsReport(range: string, period: string): Promis
       };
     }).sort((a, b) => b.ticketCount - a.ticketCount);
 
-    // Every LATE Day1 Setup is, by definition, SE-owned time (the stage itself is the SE's own
-    // portion) — so it's the one bucket Phase 1 can honestly attribute. Everything else, this
-    // phase genuinely can't say.
+    // Day 1 Setup lateness is the confirmed, always-attributable SE-owned signal and takes
+    // precedence — a ticket late on both Day 1 and an L3 stage counts as SE-side only, never both,
+    // so the three buckets always sum to withSla.length.
     const seSideCount = withSla.filter((t) => t.day1SeSetup.status === "late").length;
+    const l3SideCount = withSla.filter((t) =>
+      t.day1SeSetup.status !== "late" &&
+      (t.day1L3Endorsement.status === "late" ||
+        t.day1L3Endorsement.status === "missing" ||
+        t.day2.status === "late" ||
+        (t.hasDataLoading && t.day3.status === "late"))
+    ).length;
+    const unknownCount = withSla.length - seSideCount - l3SideCount;
 
     return {
       range, period, bySe,
-      delayAttribution: { seSideCount, l3SideAvailable: false, unknownCount: withSla.length - seSideCount },
+      delayAttribution: { seSideCount, l3SideCount, unknownCount },
     };
   } catch {
-    return { range, period, bySe: [], delayAttribution: { seSideCount: 0, l3SideAvailable: false, unknownCount: 0 } };
+    return { range, period, bySe: [], delayAttribution: { seSideCount: 0, l3SideCount: 0, unknownCount: 0 } };
   }
 }
 

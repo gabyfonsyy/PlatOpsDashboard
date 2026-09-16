@@ -1542,6 +1542,85 @@ function deleteAccountCreationSeWorkCyclesTrigger_() {
 }
 
 /**
+ * One-time backfill for l3_issue_key/l3_endorsed_at/l3_completed_at (Phase 2 L3-linkage sync) —
+ * ordinary incremental sync only reprocesses tickets Jira has touched since the last checkpoint,
+ * so historical Account Creation tickets need this to pick up the new fields. Scoped to ALL ST
+ * Account Creation tickets, no created-date floor (matching runAccountCreationSeWorkCyclesRebackfill's
+ * own precedent of not using BACKFILL_START_DATE for this issue type) and no status restriction
+ * either — there's no JQL-friendly "has an L3 link" filter, so every ticket is re-walked; the
+ * per-ticket work inside processAndUpsertIssue_ itself only fires the two extra Jira calls for a
+ * ticket that actually carries a linked L3 key, so this stays cheap for the majority that never
+ * needed L3. Copies runAccountCreationSeWorkCyclesRebackfill's shape exactly — see that function's
+ * comments for why each piece (cursor, stall guard, chained trigger, completion email) is there.
+ */
+const L3_LINKAGE_REBACKFILL_CURSOR_KEY = 'L3_LINKAGE_REBACKFILL_CURSOR';
+
+function runL3LinkageRebackfill() {
+  const team = getActiveTeamsConfig_().find((t) => t.team_key === 'ST');
+  if (!team) throw new Error('ST team not found in active config — check TEAMS_CONFIG.');
+
+  const props = PropertiesService.getScriptProperties();
+  const pageToken = props.getProperty(L3_LINKAGE_REBACKFILL_CURSOR_KEY) || undefined;
+
+  const jql = `project = ${team.jira_project_key} AND issuetype = "Account Creation" ORDER BY created ASC`;
+  const fields = buildJiraFieldList_(team);
+
+  let page;
+  try {
+    page = jiraSearchIssues_(jql, pageToken, 100, fields);
+  } catch (err) {
+    deleteL3LinkageRebackfillTrigger_();
+    if (isExpiredPageTokenError_(err)) {
+      props.deleteProperty(L3_LINKAGE_REBACKFILL_CURSOR_KEY);
+      notifyFailure_(
+        'runL3LinkageRebackfill: page token expired, cursor reset',
+        `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runL3LinkageRebackfill manually to restart from the beginning (upserts are idempotent by issue_key).`
+      );
+      return;
+    }
+    notifyFailure_('runL3LinkageRebackfill: Jira fetch failed', err);
+    ScriptApp.newTrigger('runL3LinkageRebackfill').timeBased().after(5000).create();
+    return;
+  }
+
+  if (page.nextPageToken && page.nextPageToken === pageToken) {
+    notifyFailure_('runL3LinkageRebackfill stalled', 'nextPageToken did not advance — check Jira response.');
+    deleteL3LinkageRebackfillTrigger_();
+    return;
+  }
+
+  for (const issue of page.issues) {
+    try {
+      processAndUpsertIssue_(team, issue);
+    } catch (issueErr) {
+      Logger.log(`runL3LinkageRebackfill failed for ${issue.key}: ${issueErr}`);
+      logSyncError_(team.team_key, issue.key, 'l3_linkage_rebackfill', '', String(issueErr));
+    }
+  }
+  flushDirtyDates_(team.team_key);
+
+  if (page.nextPageToken && page.issues.length > 0) {
+    props.setProperty(L3_LINKAGE_REBACKFILL_CURSOR_KEY, page.nextPageToken);
+    deleteL3LinkageRebackfillTrigger_();
+    ScriptApp.newTrigger('runL3LinkageRebackfill').timeBased().after(1000).create();
+    return;
+  }
+
+  props.deleteProperty(L3_LINKAGE_REBACKFILL_CURSOR_KEY);
+  deleteL3LinkageRebackfillTrigger_();
+  sendAlertEmail_(
+    'L3 linkage re-backfill complete',
+    'All ST Account Creation tickets have been re-processed for L3 linkage (l3_issue_key/l3_endorsed_at/l3_completed_at). Run resetSupabaseMigration() then runSupabaseMigration() next to push this into Supabase.'
+  );
+}
+
+function deleteL3LinkageRebackfillTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runL3LinkageRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
  * Targeted re-backfill for ST's `resolved_datetime` specifically — a DIFFERENT population than
  * runStPeerReviewRebackfill above. That job's JQL only matches tickets that were EVER in For
  * Peer Review/For Checking/For Product Team/Archived/Rejected, which excludes the exact tickets
@@ -5191,6 +5270,21 @@ function jiraUpdateIssueFields_(issueKey, fields) {
   });
 }
 
+/**
+ * Fetches ONE issue's created/status by key — used to look up a ticket's linked L3-board issue
+ * (JiraSync.gs's L3-linkage lookup), not the syncing issue itself. Guards against Jira's
+ * key-based-lookup bug (a MOVED issue's old key silently resolves to wherever it now lives — see
+ * runPriorityNullFixup in Backfill.gs, which hit this for real via ST-84399 -> L3-2893): returns
+ * null (not the mismatched payload) if the response's own `key` doesn't match what was requested,
+ * so callers never attribute a wrong issue's data to the key they asked for.
+ */
+function jiraGetIssueByKey_(issueKey) {
+  const base = getScriptProperty_('JIRA_BASE_URL');
+  const response = jiraFetchWithRetry_(`${base}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=created,status`);
+  if (!response || response.key !== issueKey) return null;
+  return response;
+}
+
 /** Fetches the FULL changelog for one issue, transparently paginating (maxResults=100/page). */
 function jiraGetChangelog_(issueKey) {
   const base = getScriptProperty_('JIRA_BASE_URL');
@@ -5209,7 +5303,7 @@ function jiraGetChangelog_(issueKey) {
 
 /** The field IDs every team config needs pulled from Jira, deduped, plus always-needed standard fields. */
 function buildJiraFieldList_(teamConfig) {
-  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels', 'priority'];
+  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels', 'priority', 'issuelinks'];
   const custom = [
     teamConfig.resolved_date_field_id,
     teamConfig.assignee_field_id,
@@ -5243,6 +5337,7 @@ const RAW_TICKET_HEADERS = [
   'total_on_hold_minutes', 'total_in_progress_minutes', 'se_work_cycles_json', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
   'cycle_time_start', 'cycle_time_end', 'labels', 'priority', 'archive_reason',
+  'l3_issue_key', 'l3_endorsed_at', 'l3_completed_at',
 ];
 
 function syncAllTeams() {
@@ -5372,6 +5467,21 @@ function processAndUpsertIssue_(team, issue) {
     }
   }
 
+  // L3 linkage — Phase 2. Independent of issueNeedsChangelog_ above (that gate is about THIS
+  // issue's own changelog; this is a second, different issue's data). Only ST Account Creation
+  // tickets carrying a linked L3-#### key make the two extra Jira calls (fetchL3Linkage_); every
+  // other ticket keeps mapIssueToRawRow_'s '' defaults for all three new columns.
+  if (team.team_key === 'ST' && row.issue_type === 'Account Creation' && row.l3_issue_key) {
+    try {
+      const linkage = fetchL3Linkage_(row.l3_issue_key);
+      row.l3_endorsed_at = linkage.endorsedAt || '';
+      row.l3_completed_at = linkage.completedAt || '';
+    } catch (err) {
+      Logger.log(`L3 linkage fetch failed for ${issue.key} -> ${row.l3_issue_key}: ${err}`);
+      logSyncError_(team.team_key, issue.key, 'l3_linkage', row.l3_issue_key, String(err));
+    }
+  }
+
   upsertRawTicketRow_(team.team_key, row);
   markDirtyDate_(team.team_key, toIsoDate_(new Date(row.created)));
   // Also mark the resolved date dirty so the resolved-by-resolved-date trend
@@ -5430,6 +5540,11 @@ function mapIssueToRawRow_(team, issue, resolved) {
     // Archived/Rejected rather than Cancelled. Same extraction as rejection_category/
     // cancellation_reason above.
     archive_reason: extractJiraFieldValue_(fields.customfield_10187),
+    // L3 linkage (Phase 2, Account Creation only) — the linked key is cheap/synchronous to find
+    // here; the two timestamps need extra Jira calls, filled in by processAndUpsertIssue_ below.
+    l3_issue_key: extractLinkedL3IssueKey_(fields),
+    l3_endorsed_at: '',
+    l3_completed_at: '',
   };
 }
 
@@ -5470,6 +5585,63 @@ function adfToPlainText_(node) {
     const inner = node.content.map(adfToPlainText_).join('');
     const blockTypes = ['doc', 'paragraph', 'heading', 'listItem', 'codeBlock', 'blockquote'];
     return blockTypes.indexOf(node.type) !== -1 ? inner + '\n' : inner;
+  }
+  return '';
+}
+
+/**
+ * Scans this issue's `issuelinks` for a link to Jira's separate L3 project (keys `L3-####`) — the
+ * linked ticket whose own timeline drives day1L3Endorsement/day2/day3 (account-creation-sla.ts).
+ * Checks both inward and outward link directions since a link's direction depends on which side
+ * created it. Returns '' if none found. If more than one L3-shaped link exists (not expected but
+ * not impossible), the first one encountered wins and the rest are silently ignored.
+ */
+function extractLinkedL3IssueKey_(fields) {
+  const links = fields.issuelinks || [];
+  for (let i = 0; i < links.length; i++) {
+    const linked = links[i].outwardIssue || links[i].inwardIssue;
+    if (linked && linked.key && /^L3-\d+$/i.test(linked.key)) return linked.key;
+  }
+  return '';
+}
+
+/**
+ * Resolves ONE linked L3-board ticket's endorsement instant + "For Checking" completion instant.
+ * Needs BOTH a single-issue fetch (jiraGetIssueByKey_, for the L3 ticket's own `created` — the
+ * endorsement instant) AND its full changelog (jiraGetChangelog_, to find WHEN it reached "For
+ * Checking" — its current status alone can't answer that, and the ticket's status can move on
+ * again afterward). Runs on every regular sync for every ST Account Creation ticket that has an L3
+ * link (not just during backfill) — deliberately recomputed in full every time, same
+ * "no incremental diffing" philosophy as every other changelog-derived field in this file, rather
+ * than trying to detect "did anything change since last sync" (which would need a stored-state
+ * read this function doesn't have).
+ *
+ * jiraGetIssueByKey_ returning null (moved-ticket key mismatch, see its own doc comment in
+ * JiraClient.gs) means this L3 key no longer safely identifies that issue — returns blank rather
+ * than trusting a possibly-wrong changelog fetched under a stale key.
+ */
+function fetchL3Linkage_(l3IssueKey) {
+  const l3Issue = jiraGetIssueByKey_(l3IssueKey);
+  if (!l3Issue) return { endorsedAt: '', completedAt: '' };
+
+  const endorsedAt = l3Issue.fields && l3Issue.fields.created ? l3Issue.fields.created : '';
+  const changelog = jiraGetChangelog_(l3IssueKey);
+  const completedAt = extractL3ForCheckingAt_(changelog);
+  return { endorsedAt, completedAt };
+}
+
+/**
+ * First (not latest) changelog entry where the L3 ticket's status moved TO "For Checking" — the
+ * milestone-completion instant for Day 2 (L3 Realm Creation + Site Bindings) and Day 3 (Data
+ * Loading, same signal per spec). Deliberately FIRST-wins: once the L3 ticket reaches For
+ * Checking, the milestone is met — a later reopen/rework on the L3 ticket shouldn't retroactively
+ * un-complete a Day 2/3 deadline that already passed.
+ */
+function extractL3ForCheckingAt_(changelog) {
+  for (let i = 0; i < changelog.length; i++) {
+    const statusItem = (changelog[i].items || []).find((item) => item.field === 'status');
+    if (!statusItem) continue;
+    if ((statusItem.toString || '').toLowerCase() === 'for checking') return changelog[i].created;
   }
   return '';
 }
@@ -7269,6 +7441,27 @@ function migrateAddSeWorkCyclesColumn() {
 }
 
 /**
+ * One-time migration: adds `l3_issue_key`, `l3_endorsed_at`, `l3_completed_at` to every existing
+ * RAW_ST_<year> tab (getOrCreateRawTab_ only adds new RAW_TICKET_HEADERS columns to a BRAND-NEW
+ * tab — same gap migrateAddSeWorkCyclesColumn/migrateAddPeerReviewCyclesColumn above exist to
+ * close, confirmed the hard way by commit 567b078: skipping this step silently drops the new
+ * column's data for every pre-existing sheet tab even though the backfill and Supabase migration
+ * both report success). ST-only — these are only meaningful for Account Creation tickets, which
+ * only exist on ST. Only populated going forward by the regular sync; run runL3LinkageRebackfill
+ * (Backfill.gs) afterward to fill it in for tickets already synced before this column existed.
+ * Safe to re-run.
+ */
+function migrateAddL3LinkageColumns() {
+  const ss = getJiraDataSpreadsheet_();
+  getAllRawYearsForTeam_('ST').forEach((year) => {
+    const sheet = ss.getSheetByName(`RAW_ST_${year}`);
+    ['l3_issue_key', 'l3_endorsed_at', 'l3_completed_at'].forEach((col) => {
+      Logger.log(`RAW_ST_${year}: ${col} ${appendColumnIfMissing_(sheet, col) ? 'added' : 'already present'}.`);
+    });
+  });
+}
+
+/**
  * One-time migration: adds `cycle_time_start` + `cycle_time_end` to every existing
  * RAW_ST_<year> tab (the new SE cycle-time definition: most recent In Progress entry ->
  * most recent For Peer Review entry, computed by extractReviewCycleTimeRange_ in
@@ -7979,6 +8172,9 @@ function mapRawTicketRowToSupabase_(teamKey, r) {
     labels: toStringOrNull_(r.labels),
     priority: toStringOrNull_(r.priority),
     archive_reason: toStringOrNull_(r.archive_reason),
+    l3_issue_key: toStringOrNull_(r.l3_issue_key),
+    l3_endorsed_at: toTimestampOrNull_(r.l3_endorsed_at),
+    l3_completed_at: toTimestampOrNull_(r.l3_completed_at),
   };
 }
 

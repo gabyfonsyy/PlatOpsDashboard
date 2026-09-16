@@ -107,6 +107,21 @@ function jiraUpdateIssueFields_(issueKey, fields) {
   });
 }
 
+/**
+ * Fetches ONE issue's created/status by key — used to look up a ticket's linked L3-board issue
+ * (JiraSync.gs's L3-linkage lookup), not the syncing issue itself. Guards against Jira's
+ * key-based-lookup bug (a MOVED issue's old key silently resolves to wherever it now lives — see
+ * runPriorityNullFixup in Backfill.gs, which hit this for real via ST-84399 -> L3-2893): returns
+ * null (not the mismatched payload) if the response's own `key` doesn't match what was requested,
+ * so callers never attribute a wrong issue's data to the key they asked for.
+ */
+function jiraGetIssueByKey_(issueKey) {
+  const base = getScriptProperty_('JIRA_BASE_URL');
+  const response = jiraFetchWithRetry_(`${base}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=created,status`);
+  if (!response || response.key !== issueKey) return null;
+  return response;
+}
+
 /** Fetches the FULL changelog for one issue, transparently paginating (maxResults=100/page). */
 function jiraGetChangelog_(issueKey) {
   const base = getScriptProperty_('JIRA_BASE_URL');
@@ -125,7 +140,7 @@ function jiraGetChangelog_(issueKey) {
 
 /** The field IDs every team config needs pulled from Jira, deduped, plus always-needed standard fields. */
 function buildJiraFieldList_(teamConfig) {
-  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels', 'priority'];
+  const standard = ['created', 'updated', 'status', 'issuetype', 'assignee', 'reporter', 'resolution', 'duedate', 'labels', 'priority', 'issuelinks'];
   const custom = [
     teamConfig.resolved_date_field_id,
     teamConfig.assignee_field_id,

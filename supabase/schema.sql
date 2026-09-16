@@ -75,7 +75,13 @@ create table tickets (
   priority text,
   -- Archive Reason (customfield_10187) — only meaningful on ST (has_fcr_escalation). Backs the
   -- Archived Tickets drill-down, same as rejection_category/cancellation_reason above.
-  archive_reason text
+  archive_reason text,
+  -- L3-board linkage (Phase 2): the linked L3-#### ticket driving day1L3Endorsement/day2/day3.
+  -- l3_endorsed_at is the L3 ticket's own `created` timestamp; l3_completed_at is the first time
+  -- it reached "For Checking" (see gas/JiraSync.gs's fetchL3Linkage_/extractL3ForCheckingAt_).
+  l3_issue_key text,
+  l3_endorsed_at timestamptz,
+  l3_completed_at timestamptz
 );
 
 create index tickets_team_created_idx on tickets (team_key, created);

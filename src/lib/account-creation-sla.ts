@@ -13,14 +13,13 @@ import {
  * Production/Sandbox/Sandbox+DataLoading classification and the independent per-milestone status
  * model Gaby specced.
  *
- * PHASE 1 vs PHASE 2 — read this before touching milestone logic:
- * Day 1 SE Start (first_out_of_backlog_todo) and Day 1 SE Setup Completion (cycle_time_end) are
- * already-synced data, computed for real below. Day 1 L3 Endorsement, Day 2, and Day 3 need a
- * linked "L3 board" ticket this app doesn't sync yet (Phase 2, not built) — every ticket's
- * `day1L3Endorsement`/`day2`/`day3` field returns DATA_UNAVAILABLE unconditionally until then.
- * `deriveTicketSla`'s signature and `rollupOverallStatus`'s branching are both already written to
- * handle real Phase 2 data, so landing Phase 2 only means filling in those three fields — no
- * rendering logic changes.
+ * Day 1 SE Start (first_out_of_backlog_todo) and Day 1 SE Setup Completion (cycle_time_end) reuse
+ * already-synced data. Day 1 L3 Endorsement, Day 2, and Day 3 (Phase 2) reuse the linked "L3
+ * board" ticket's own `created` timestamp and its first "For Checking" transition
+ * (l3_endorsed_at/l3_completed_at, synced by gas/JiraSync.gs's fetchL3Linkage_). `DATA_UNAVAILABLE`
+ * still surfaces from `rollupOverallStatus` if a row somehow lacks these fields (e.g. a stale
+ * Supabase instance pre-migration) — see account-creation-data.ts's isolated fetch for that
+ * degrade-gracefully path.
  */
 
 // ---------------------------------------------------------------- Track / label classification
@@ -151,18 +150,45 @@ function day1SeSetupStatus(
   return startedAt ? "in_progress" : "not_started";
 }
 
+// ------------------------------------------------------------------- Day 1 L3 Endorsement status
+
+/**
+ * endorsedAt is the linked L3 ticket's own `created` timestamp (gas/JiraSync.gs's
+ * fetchL3Linkage_). "L3 not needed" and "L3 needed but never endorsed" are indistinguishable from
+ * data alone — "missing" must be read strictly as "past its due date with no linked L3 ticket
+ * found," an inference from absence of evidence, not a confirmed non-event (see
+ * account-creation-view.ts's MILESTONE_STATUS_META copy for the matching UI framing).
+ */
+function day1L3EndorsementStatus(endorsedAt: string | null, dueAtIso: string, nowIso: string): Day1L3EndorsementStatus {
+  if (endorsedAt) return endorsedAt <= dueAtIso ? "endorsed" : "late";
+  if (nowIso > dueAtIso) return "missing";
+  return "pending";
+}
+
+// ------------------------------------------------------------------------------ Day 2 status
+
+/** completedAt is the linked L3 ticket's first "For Checking" transition (extractL3ForCheckingAt_). */
+function day2Status(completedAt: string | null, dueAtIso: string, nowIso: string): Day2Status {
+  if (completedAt) return completedAt <= dueAtIso ? "completed" : "late";
+  if (nowIso > dueAtIso) return "late";
+  if (toManilaDateString(nowIso) === toManilaDateString(dueAtIso)) return "at_risk";
+  return "pending";
+}
+
 // ---------------------------------------------------------------------------------- Day 3 status
 
+/** Data Loading shares Day 2's completion signal (the same L3 ticket reaching "For Checking"), per spec. */
 function day3Status(
   hasDataLoading: boolean,
-  day2CompletedAt: string | null,
+  l3CompletedAt: string | null,
   dueAtIso: string | null,
   nowIso: string
-): Day3Status | DataUnavailable {
-  if (!hasDataLoading) return "not_applicable";
-  // Phase 1: Day 3 shares Day 2's completion signal (the same L3 ticket reaching "For Checking"),
-  // but Phase 1 has no L3 data at all — always unavailable until Phase 2, regardless of hasDataLoading.
-  return DATA_UNAVAILABLE;
+): Day3Status {
+  if (!hasDataLoading || !dueAtIso) return "not_applicable";
+  if (l3CompletedAt) return l3CompletedAt <= dueAtIso ? "completed" : "late";
+  if (nowIso > dueAtIso) return "late";
+  if (toManilaDateString(nowIso) === toManilaDateString(dueAtIso)) return "at_risk";
+  return "pending";
 }
 
 // --------------------------------------------------------------------------------- Entry point
@@ -199,6 +225,10 @@ export type AccountCreationTicketRow = {
   peer_review_cycles_json: PeerReviewCycleRaw[] | null;
   /** For the SE-execution-vs-peer-review cycle-time breakdown — same "shared row shape" reasoning as above. */
   se_work_cycles_json: SeWorkCycleRaw[] | null;
+  /** Phase 2 L3 linkage — see gas/JiraSync.gs's fetchL3Linkage_/extractLinkedL3IssueKey_. */
+  l3_issue_key: string | null;
+  l3_endorsed_at: string | null;
+  l3_completed_at: string | null;
 };
 
 export function deriveTicketSla(row: AccountCreationTicketRow, nowIso: string = new Date().toISOString()): AccountCreationTicketSla {
@@ -223,23 +253,23 @@ export function deriveTicketSla(row: AccountCreationTicketRow, nowIso: string = 
   const escalationFieldFlagged = (row.escalation_value || "").trim().toUpperCase() === "L3";
 
   const day1L3Endorsement: Day1L3EndorsementMilestone = {
-    status: DATA_UNAVAILABLE, // Phase 2: needs the linked L3 ticket's own `created` timestamp
-    l3IssueKey: null,
-    endorsedAt: null,
+    status: day1L3EndorsementStatus(row.l3_endorsed_at, day1End, nowIso),
+    l3IssueKey: row.l3_issue_key,
+    endorsedAt: row.l3_endorsed_at,
     dueAt: day1End,
     escalationFieldFlagged,
   };
 
   const day2: Day2Milestone = {
-    status: DATA_UNAVAILABLE, // Phase 2: needs the linked L3 ticket's first "For Checking" transition
-    completedAt: null,
+    status: day2Status(row.l3_completed_at, day2End, nowIso),
+    completedAt: row.l3_completed_at,
     dueAt: day2End,
   };
 
   const day3Due = dataLoading ? endOfManilaDayUtc(day3Date).toISOString() : null;
   const day3: Day3Milestone = {
-    status: day3Status(dataLoading, null, day3Due, nowIso),
-    completedAt: null,
+    status: day3Status(dataLoading, row.l3_completed_at, day3Due, nowIso),
+    completedAt: dataLoading ? row.l3_completed_at : null,
     dueAt: day3Due,
   };
 
