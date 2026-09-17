@@ -184,6 +184,49 @@ function migrateAddPeerReviewCyclesColumn() {
 }
 
 /**
+ * One-time migration: adds `se_work_cycles_json` to every existing RAW_ST_<year> tab
+ * (setupJiraDataSpreadsheet_/getOrCreateRawTab_ only add a new RAW_TICKET_HEADERS column to a
+ * BRAND-NEW tab — an already-provisioned tab's physical header row doesn't grow on its own, same
+ * gap migrateAddPeerReviewCyclesColumn above exists to close). ST-only, mirroring that same
+ * function, since `se_work_cycles_json` is gated by `has_in_progress_tracking`, which only ST has
+ * (confirmed live: DE/DEV are both false). Only populated going forward by the regular sync; run
+ * runAccountCreationSeWorkCyclesRebackfill (Backfill.gs) afterward to fill it in for tickets
+ * already synced before this column existed. Safe to re-run.
+ */
+function migrateAddSeWorkCyclesColumn() {
+  const ss = getJiraDataSpreadsheet_();
+  getAllRawYearsForTeam_('ST').forEach((year) => {
+    const sheet = ss.getSheetByName(`RAW_ST_${year}`);
+    if (appendColumnIfMissing_(sheet, 'se_work_cycles_json')) {
+      Logger.log(`RAW_ST_${year}: added se_work_cycles_json.`);
+    } else {
+      Logger.log(`RAW_ST_${year}: se_work_cycles_json already present.`);
+    }
+  });
+}
+
+/**
+ * One-time migration: adds `l3_issue_key`, `l3_endorsed_at`, `l3_completed_at` to every existing
+ * RAW_ST_<year> tab (getOrCreateRawTab_ only adds new RAW_TICKET_HEADERS columns to a BRAND-NEW
+ * tab — same gap migrateAddSeWorkCyclesColumn/migrateAddPeerReviewCyclesColumn above exist to
+ * close, confirmed the hard way by commit 567b078: skipping this step silently drops the new
+ * column's data for every pre-existing sheet tab even though the backfill and Supabase migration
+ * both report success). ST-only — these are only meaningful for Account Creation tickets, which
+ * only exist on ST. Only populated going forward by the regular sync; run runL3LinkageRebackfill
+ * (Backfill.gs) afterward to fill it in for tickets already synced before this column existed.
+ * Safe to re-run.
+ */
+function migrateAddL3LinkageColumns() {
+  const ss = getJiraDataSpreadsheet_();
+  getAllRawYearsForTeam_('ST').forEach((year) => {
+    const sheet = ss.getSheetByName(`RAW_ST_${year}`);
+    ['l3_issue_key', 'l3_endorsed_at', 'l3_completed_at'].forEach((col) => {
+      Logger.log(`RAW_ST_${year}: ${col} ${appendColumnIfMissing_(sheet, col) ? 'added' : 'already present'}.`);
+    });
+  });
+}
+
+/**
  * One-time migration: adds `cycle_time_start` + `cycle_time_end` to every existing
  * RAW_ST_<year> tab (the new SE cycle-time definition: most recent In Progress entry ->
  * most recent For Peer Review entry, computed by extractReviewCycleTimeRange_ in

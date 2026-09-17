@@ -1,5 +1,6 @@
 import type { BadgeTone } from "@/lib/sla-status";
 import { DATA_UNAVAILABLE, type OverallSlaStatus, type DataUnavailable } from "@/lib/account-creation-sla";
+import type { DelayArea } from "@/lib/account-creation-cycle";
 
 /**
  * Account Creation's Gaby's View label overlay — same partial-overlay pattern as
@@ -36,10 +37,22 @@ export const MILESTONE_STATUS_META: Record<string, { label: string; tone: BadgeT
   at_risk: { label: "At Risk", tone: "warning" },
   pending: { label: "Pending", tone: "neutral" },
   endorsed: { label: "Endorsed", tone: "success" },
-  missing: { label: "Missing", tone: "danger" },
+  // "L3 not needed" vs "L3 needed but never endorsed" isn't distinguishable from data alone — this
+  // reads as an inference from absence of evidence past the deadline, never a confirmed miss.
+  missing: { label: "No Linked L3 Found", tone: "warning" },
   not_applicable: { label: "N/A", tone: "neutral" },
   [DATA_UNAVAILABLE]: { label: "Data unavailable", tone: "neutral" },
 };
+/** Delay-area -> label/tone, neutral language per Section 8's explicit guidance ("delay
+ * concentration"/"bottleneck", never "blame") — reuses the same 3 Badge tones as every other map
+ * on this page rather than inventing a 4th. */
+export const DELAY_AREA_META: Record<DelayArea, { label: string; tone: BadgeTone }> = {
+  se_work_delay: { label: "SE Work Delay", tone: "warning" },
+  peer_review_delay: { label: "Peer Review Delay", tone: "warning" },
+  no_significant_delay: { label: "No Significant Delay", tone: "success" },
+  unable_to_determine: { label: "Unable to Determine", tone: "neutral" },
+};
+
 export const ACCOUNT_CREATION_COPY = {
   professional: {
     pageTitle: "Account Creation Review",
@@ -60,6 +73,10 @@ export const ACCOUNT_CREATION_COPY = {
     historicalIntro: "Actual SLA compliance over completed tickets in the selected period.",
     workloadTitle: "Workload Context",
     workloadIntro: "Account Creation load alongside each SE's total ST volume for the period.",
+    cycleTimeDiagnosticsTitle: "Cycle Time Diagnostics",
+    cycleTimeDiagnosticsIntro: "Where the SE-owned stage actually loses time — execution vs. peer review.",
+    bottlenecksTitle: "Account Creation Bottlenecks",
+    bottlenecksIntro: "Process bottlenecks and workload concentration, not a leaderboard.",
     emptyState: "Nothing in this period.",
   },
   gaby: {
@@ -81,6 +98,10 @@ export const ACCOUNT_CREATION_COPY = {
     historicalIntro: "The SLA says two days. The data has receipts. Let's see what actually happened.",
     workloadTitle: "Workload Context",
     workloadIntro: "Before we point fingers, let's check whether someone's calendar is on fire.",
+    cycleTimeDiagnosticsTitle: "Where'd the Time Go? ⏱",
+    cycleTimeDiagnosticsIntro: "Was it the doing, or the waiting-for-a-thumbs-up? Let's find out.",
+    bottlenecksTitle: "Account Creation Bottlenecks",
+    bottlenecksIntro: "Not a leaderboard, we promise — just where the queue actually backs up.",
     emptyState: "Beautiful. Nothing is currently on fire. 🔥",
   },
 } as const;
@@ -103,6 +124,10 @@ export type AccountCreationCopy = {
   historicalIntro: string;
   workloadTitle: string;
   workloadIntro: string;
+  cycleTimeDiagnosticsTitle: string;
+  cycleTimeDiagnosticsIntro: string;
+  bottlenecksTitle: string;
+  bottlenecksIntro: string;
   emptyState: string;
 };
 

@@ -308,6 +308,162 @@ function deleteStPeerReviewTrigger_() {
 }
 
 /**
+ * One-time re-backfill for `se_work_cycles_json` (added alongside the SE-execution-vs-peer-review
+ * breakdown on the Account Creation dashboard) — extractInProgressCycles_ now captures
+ * assigneeAtEntry/assigneeAtExit per cycle, but ordinary incremental sync only revisits tickets
+ * Jira has touched since, so historical Account Creation tickets need this to pick up the new
+ * field. Scoped tightly to Account Creation (not all of ST, unlike runStPeerReviewRebackfill)
+ * since that's the only issue type this feature reads the field for. Copies
+ * runStPeerReviewRebackfill's shape exactly (cursor, stall guard, chained one-time trigger,
+ * completion email) — see that function's comments for why each piece is there.
+ */
+const ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY = 'ACCOUNT_CREATION_SE_WORK_CYCLES_REBACKFILL_CURSOR';
+
+function runAccountCreationSeWorkCyclesRebackfill() {
+  const team = getActiveTeamsConfig_().find((t) => t.team_key === 'ST');
+  if (!team) throw new Error('ST team not found in active config — check TEAMS_CONFIG.');
+
+  const props = PropertiesService.getScriptProperties();
+  const pageToken = props.getProperty(ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY) || undefined;
+
+  const jql = `project = ${team.jira_project_key} AND issuetype = "Account Creation" AND status WAS "In Progress" ORDER BY created ASC`;
+  const fields = buildJiraFieldList_(team);
+
+  let page;
+  try {
+    page = jiraSearchIssues_(jql, pageToken, 100, fields);
+  } catch (err) {
+    deleteAccountCreationSeWorkCyclesTrigger_();
+    if (isExpiredPageTokenError_(err)) {
+      props.deleteProperty(ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY);
+      notifyFailure_(
+        'runAccountCreationSeWorkCyclesRebackfill: page token expired, cursor reset',
+        `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runAccountCreationSeWorkCyclesRebackfill manually to restart from the beginning (upserts are idempotent by issue_key).`
+      );
+      return;
+    }
+    notifyFailure_('runAccountCreationSeWorkCyclesRebackfill: Jira fetch failed', err);
+    ScriptApp.newTrigger('runAccountCreationSeWorkCyclesRebackfill').timeBased().after(5000).create();
+    return;
+  }
+
+  if (page.nextPageToken && page.nextPageToken === pageToken) {
+    notifyFailure_('runAccountCreationSeWorkCyclesRebackfill stalled', 'nextPageToken did not advance — check Jira response.');
+    deleteAccountCreationSeWorkCyclesTrigger_();
+    return;
+  }
+
+  for (const issue of page.issues) {
+    try {
+      processAndUpsertIssue_(team, issue);
+    } catch (issueErr) {
+      Logger.log(`runAccountCreationSeWorkCyclesRebackfill failed for ${issue.key}: ${issueErr}`);
+      logSyncError_(team.team_key, issue.key, 'account_creation_se_work_cycles_rebackfill', '', String(issueErr));
+    }
+  }
+  flushDirtyDates_(team.team_key);
+
+  if (page.nextPageToken && page.issues.length > 0) {
+    props.setProperty(ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY, page.nextPageToken);
+    deleteAccountCreationSeWorkCyclesTrigger_();
+    ScriptApp.newTrigger('runAccountCreationSeWorkCyclesRebackfill').timeBased().after(1000).create();
+    return;
+  }
+
+  props.deleteProperty(ACCOUNT_CREATION_SE_WORK_CYCLES_CURSOR_KEY);
+  deleteAccountCreationSeWorkCyclesTrigger_();
+  sendAlertEmail_(
+    'Account Creation SE-work-cycles re-backfill complete',
+    'All ST Account Creation tickets that were ever In Progress have been re-processed with se_work_cycles_json populated (per-cycle enteredAt/exitedAt/assigneeAtEntry/assigneeAtExit). Run resetSupabaseMigration() then runSupabaseMigration() next to push this into Supabase — see add-se-work-cycles-column.sql for why the reset is required first.'
+  );
+}
+
+function deleteAccountCreationSeWorkCyclesTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runAccountCreationSeWorkCyclesRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
+ * One-time backfill for l3_issue_key/l3_endorsed_at/l3_completed_at (Phase 2 L3-linkage sync) —
+ * ordinary incremental sync only reprocesses tickets Jira has touched since the last checkpoint,
+ * so historical Account Creation tickets need this to pick up the new fields. Scoped to ALL ST
+ * Account Creation tickets, no created-date floor (matching runAccountCreationSeWorkCyclesRebackfill's
+ * own precedent of not using BACKFILL_START_DATE for this issue type) and no status restriction
+ * either — there's no JQL-friendly "has an L3 link" filter, so every ticket is re-walked; the
+ * per-ticket work inside processAndUpsertIssue_ itself only fires the two extra Jira calls for a
+ * ticket that actually carries a linked L3 key, so this stays cheap for the majority that never
+ * needed L3. Copies runAccountCreationSeWorkCyclesRebackfill's shape exactly — see that function's
+ * comments for why each piece (cursor, stall guard, chained trigger, completion email) is there.
+ */
+const L3_LINKAGE_REBACKFILL_CURSOR_KEY = 'L3_LINKAGE_REBACKFILL_CURSOR';
+
+function runL3LinkageRebackfill() {
+  const team = getActiveTeamsConfig_().find((t) => t.team_key === 'ST');
+  if (!team) throw new Error('ST team not found in active config — check TEAMS_CONFIG.');
+
+  const props = PropertiesService.getScriptProperties();
+  const pageToken = props.getProperty(L3_LINKAGE_REBACKFILL_CURSOR_KEY) || undefined;
+
+  const jql = `project = ${team.jira_project_key} AND issuetype = "Account Creation" ORDER BY created ASC`;
+  const fields = buildJiraFieldList_(team);
+
+  let page;
+  try {
+    page = jiraSearchIssues_(jql, pageToken, 100, fields);
+  } catch (err) {
+    deleteL3LinkageRebackfillTrigger_();
+    if (isExpiredPageTokenError_(err)) {
+      props.deleteProperty(L3_LINKAGE_REBACKFILL_CURSOR_KEY);
+      notifyFailure_(
+        'runL3LinkageRebackfill: page token expired, cursor reset',
+        `${err}\n\nThe stored nextPageToken was rejected by Jira as invalid/expired, so retrying it would fail forever. The cursor has been cleared — re-run runL3LinkageRebackfill manually to restart from the beginning (upserts are idempotent by issue_key).`
+      );
+      return;
+    }
+    notifyFailure_('runL3LinkageRebackfill: Jira fetch failed', err);
+    ScriptApp.newTrigger('runL3LinkageRebackfill').timeBased().after(5000).create();
+    return;
+  }
+
+  if (page.nextPageToken && page.nextPageToken === pageToken) {
+    notifyFailure_('runL3LinkageRebackfill stalled', 'nextPageToken did not advance — check Jira response.');
+    deleteL3LinkageRebackfillTrigger_();
+    return;
+  }
+
+  for (const issue of page.issues) {
+    try {
+      processAndUpsertIssue_(team, issue);
+    } catch (issueErr) {
+      Logger.log(`runL3LinkageRebackfill failed for ${issue.key}: ${issueErr}`);
+      logSyncError_(team.team_key, issue.key, 'l3_linkage_rebackfill', '', String(issueErr));
+    }
+  }
+  flushDirtyDates_(team.team_key);
+
+  if (page.nextPageToken && page.issues.length > 0) {
+    props.setProperty(L3_LINKAGE_REBACKFILL_CURSOR_KEY, page.nextPageToken);
+    deleteL3LinkageRebackfillTrigger_();
+    ScriptApp.newTrigger('runL3LinkageRebackfill').timeBased().after(1000).create();
+    return;
+  }
+
+  props.deleteProperty(L3_LINKAGE_REBACKFILL_CURSOR_KEY);
+  deleteL3LinkageRebackfillTrigger_();
+  sendAlertEmail_(
+    'L3 linkage re-backfill complete',
+    'All ST Account Creation tickets have been re-processed for L3 linkage (l3_issue_key/l3_endorsed_at/l3_completed_at). Run resetSupabaseMigration() then runSupabaseMigration() next to push this into Supabase.'
+  );
+}
+
+function deleteL3LinkageRebackfillTrigger_() {
+  ScriptApp.getProjectTriggers()
+    .filter((t) => t.getHandlerFunction() === 'runL3LinkageRebackfill')
+    .forEach((t) => ScriptApp.deleteTrigger(t));
+}
+
+/**
  * Targeted re-backfill for ST's `resolved_datetime` specifically — a DIFFERENT population than
  * runStPeerReviewRebackfill above. That job's JQL only matches tickets that were EVER in For
  * Peer Review/For Checking/For Product Team/Archived/Rejected, which excludes the exact tickets

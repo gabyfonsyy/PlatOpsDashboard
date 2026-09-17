@@ -17,6 +17,16 @@ import {
   type Day1StartCompliance,
   type PeerReviewCycleRaw,
 } from "@/lib/account-creation-sla";
+import {
+  buildTicketCycleTimeline,
+  summarizeTimeline,
+  deriveDelayAttribution,
+  isQualifyingReviewExit,
+  type DelayArea,
+  type CycleStage,
+  type CycleTimelineSummary,
+  type DelayAttribution as CycleDelayAttribution,
+} from "@/lib/account-creation-cycle";
 
 /**
  * Account Creation page-facing report builders — one per Watchtower/Performance/SE Efficiency/
@@ -44,7 +54,6 @@ export type WatchtowerReport = {
   counts: WatchtowerCounts;
   day1NotStartedCount: number;
   seStartComplianceRate: number | null;
-  /** Always null in Phase 1 — not yet trackable, never a fabricated 0%/100%. */
   l3EndorsementComplianceRate: number | null;
   l3CompletionComplianceRate: number | null;
   dataLoadingComplianceRate: number | null;
@@ -79,15 +88,28 @@ export async function getWatchtowerReport(range: string, period: string): Promis
       .filter((c): c is Exclude<Day1StartCompliance, "not_applicable"> => c !== "not_applicable");
     const onTimeStart = applicableStart.filter((c) => c === "started_on_time").length;
 
+    // "Applicable" = the milestone reached a real end state (on time, late, or a confirmed-missing
+    // inference) — mirrors seStartComplianceRate's own applicable/onTime split above.
+    const l3Applicable = active.filter((t) =>
+      t.day1L3Endorsement.status === "endorsed" || t.day1L3Endorsement.status === "late" || t.day1L3Endorsement.status === "missing"
+    );
+    const l3OnTime = l3Applicable.filter((t) => t.day1L3Endorsement.status === "endorsed").length;
+
+    const day2Applicable = active.filter((t) => t.day2.status === "completed" || t.day2.status === "late");
+    const day2OnTime = day2Applicable.filter((t) => t.day2.status === "completed").length;
+
+    const day3Applicable = active.filter((t) => t.hasDataLoading && (t.day3.status === "completed" || t.day3.status === "late"));
+    const day3OnTime = day3Applicable.filter((t) => t.day3.status === "completed").length;
+
     return {
       range, period,
       activeCount: active.length,
       counts,
       day1NotStartedCount: active.filter((t) => t.day1SeSetup.status === "not_started" || t.day1SeSetup.status === "at_risk").length,
       seStartComplianceRate: applicableStart.length ? round4(onTimeStart / applicableStart.length) : null,
-      l3EndorsementComplianceRate: null,
-      l3CompletionComplianceRate: null,
-      dataLoadingComplianceRate: null,
+      l3EndorsementComplianceRate: l3Applicable.length ? round4(l3OnTime / l3Applicable.length) : null,
+      l3CompletionComplianceRate: day2Applicable.length ? round4(day2OnTime / day2Applicable.length) : null,
+      dataLoadingComplianceRate: day3Applicable.length ? round4(day3OnTime / day3Applicable.length) : null,
       tickets: active.sort((a, b) => attentionRank(a.overallStatus) - attentionRank(b.overallStatus)).slice(0, BREAKDOWN_TICKET_LIMIT),
     };
   } catch {
@@ -113,10 +135,9 @@ export type PerformanceReport = {
   period: string;
   totalCompleted: number;
   day1SeSetup: PerformanceStageStat;
-  /** null = not yet trackable this phase — never a fabricated stat. */
-  day1L3Endorsement: PerformanceStageStat | null;
-  day2: PerformanceStageStat | null;
-  day3: PerformanceStageStat | null;
+  day1L3Endorsement: PerformanceStageStat;
+  day2: PerformanceStageStat;
+  day3: PerformanceStageStat;
 };
 
 function stageStat(withinSla: number, late: number): PerformanceStageStat {
@@ -132,23 +153,37 @@ export async function getPerformanceReport(range: string, period: string): Promi
 
     // "Completed" here means Day 1 Setup reached a real end state (completed or late) — resolving
     // the whole ticket isn't required for the Day 1 stage's own SLA to be measurable.
-    const measured = rows
-      .map((r) => deriveTicketSla(r, nowIso))
-      .filter((t) => t.day1SeSetup.status === "completed" || t.day1SeSetup.status === "late");
+    const withSla = rows.map((r) => deriveTicketSla(r, nowIso));
+    const measured = withSla.filter((t) => t.day1SeSetup.status === "completed" || t.day1SeSetup.status === "late");
 
     const withinSla = measured.filter((t) => t.day1SeSetup.status === "completed").length;
     const late = measured.filter((t) => t.day1SeSetup.status === "late").length;
+
+    const l3Measured = withSla.filter((t) =>
+      t.day1L3Endorsement.status === "endorsed" || t.day1L3Endorsement.status === "late" || t.day1L3Endorsement.status === "missing"
+    );
+    const day2Measured = withSla.filter((t) => t.day2.status === "completed" || t.day2.status === "late");
+    const day3Measured = withSla.filter((t) => t.hasDataLoading && (t.day3.status === "completed" || t.day3.status === "late"));
 
     return {
       range, period,
       totalCompleted: measured.length,
       day1SeSetup: stageStat(withinSla, late),
-      day1L3Endorsement: null,
-      day2: null,
-      day3: null,
+      day1L3Endorsement: stageStat(
+        l3Measured.filter((t) => t.day1L3Endorsement.status === "endorsed").length,
+        l3Measured.filter((t) => t.day1L3Endorsement.status === "late" || t.day1L3Endorsement.status === "missing").length
+      ),
+      day2: stageStat(
+        day2Measured.filter((t) => t.day2.status === "completed").length,
+        day2Measured.filter((t) => t.day2.status === "late").length
+      ),
+      day3: stageStat(
+        day3Measured.filter((t) => t.day3.status === "completed").length,
+        day3Measured.filter((t) => t.day3.status === "late").length
+      ),
     };
   } catch {
-    return { range, period, totalCompleted: 0, day1SeSetup: stageStat(0, 0), day1L3Endorsement: null, day2: null, day3: null };
+    return { range, period, totalCompleted: 0, day1SeSetup: stageStat(0, 0), day1L3Endorsement: stageStat(0, 0), day2: stageStat(0, 0), day3: stageStat(0, 0) };
   }
 }
 
@@ -386,9 +421,7 @@ export type SeStartPattern = {
 
 export type DelayAttribution = {
   seSideCount: number;
-  /** Phase 1: always false — L3-side delay isn't trackable yet. A literal `false`, not a count of
-   * 0, so the UI can't misread "not yet trackable" as "zero L3-side delays ever happen". */
-  l3SideAvailable: false;
+  l3SideCount: number;
   unknownCount: number;
 };
 
@@ -443,17 +476,25 @@ export async function getSePatternsReport(range: string, period: string): Promis
       };
     }).sort((a, b) => b.ticketCount - a.ticketCount);
 
-    // Every LATE Day1 Setup is, by definition, SE-owned time (the stage itself is the SE's own
-    // portion) — so it's the one bucket Phase 1 can honestly attribute. Everything else, this
-    // phase genuinely can't say.
+    // Day 1 Setup lateness is the confirmed, always-attributable SE-owned signal and takes
+    // precedence — a ticket late on both Day 1 and an L3 stage counts as SE-side only, never both,
+    // so the three buckets always sum to withSla.length.
     const seSideCount = withSla.filter((t) => t.day1SeSetup.status === "late").length;
+    const l3SideCount = withSla.filter((t) =>
+      t.day1SeSetup.status !== "late" &&
+      (t.day1L3Endorsement.status === "late" ||
+        t.day1L3Endorsement.status === "missing" ||
+        t.day2.status === "late" ||
+        (t.hasDataLoading && t.day3.status === "late"))
+    ).length;
+    const unknownCount = withSla.length - seSideCount - l3SideCount;
 
     return {
       range, period, bySe,
-      delayAttribution: { seSideCount, l3SideAvailable: false, unknownCount: withSla.length - seSideCount },
+      delayAttribution: { seSideCount, l3SideCount, unknownCount },
     };
   } catch {
-    return { range, period, bySe: [], delayAttribution: { seSideCount: 0, l3SideAvailable: false, unknownCount: 0 } };
+    return { range, period, bySe: [], delayAttribution: { seSideCount: 0, l3SideCount: 0, unknownCount: 0 } };
   }
 }
 
@@ -464,6 +505,18 @@ export type TicketReceiptsFilters = {
   trackType?: TrackType | "unclassified";
   cutoffSide?: CutoffSide;
   overallStatus?: OverallSlaStatus | DataUnavailable;
+  /** Matches against any qualifying peer-review cycle's reviewerAtEntry on the ticket. */
+  reviewer?: string;
+  delayArea?: DelayArea;
+};
+
+/** Per-ticket SE-execution-vs-peer-review data, keyed by issueKey — kept alongside `tickets`
+ * (unchanged shape, AccountCreationTicketSla[]) rather than folded into it, so nothing that
+ * already reads a plain AccountCreationTicketSla[] elsewhere needs to change. */
+export type TicketCycleInfo = {
+  stages: CycleStage[];
+  summary: CycleTimelineSummary;
+  delay: CycleDelayAttribution;
 };
 
 export type TicketReceiptsReport = {
@@ -471,6 +524,7 @@ export type TicketReceiptsReport = {
   period: string;
   totalCount: number;
   tickets: AccountCreationTicketSla[];
+  cycles: Record<string, TicketCycleInfo>;
 };
 
 export async function getTicketReceiptsReport(
@@ -482,18 +536,234 @@ export async function getTicketReceiptsReport(
     const { startDate, endDate } = resolvePeriodToDateRange(range, period);
     const rows = await fetchAccountCreationTicketRows(startDate, endDate);
     const nowIso = new Date().toISOString();
-    let tickets = rows.map((r) => deriveTicketSla(r, nowIso));
 
-    if (filters.seName) tickets = tickets.filter((t) => t.seName === filters.seName);
-    if (filters.trackType) tickets = tickets.filter((t) => (t.trackType ?? "unclassified") === filters.trackType);
-    if (filters.cutoffSide) tickets = tickets.filter((t) => t.cutoffSide === filters.cutoffSide);
-    if (filters.overallStatus) tickets = tickets.filter((t) => t.overallStatus === filters.overallStatus);
+    let computed = rows.map((r) => {
+      const sla = deriveTicketSla(r, nowIso);
+      const stages = buildTicketCycleTimeline(r.se_work_cycles_json, r.peer_review_cycles_json, nowIso);
+      const summary = summarizeTimeline(stages);
+      const delay = deriveDelayAttribution(sla, summary, stages);
+      return { sla, stages, summary, delay };
+    });
 
-    tickets.sort((a, b) => (a.created < b.created ? 1 : -1));
+    if (filters.seName) computed = computed.filter((c) => c.sla.seName === filters.seName);
+    if (filters.trackType) computed = computed.filter((c) => (c.sla.trackType ?? "unclassified") === filters.trackType);
+    if (filters.cutoffSide) computed = computed.filter((c) => c.sla.cutoffSide === filters.cutoffSide);
+    if (filters.overallStatus) computed = computed.filter((c) => c.sla.overallStatus === filters.overallStatus);
+    if (filters.reviewer) {
+      computed = computed.filter((c) => c.stages.some((s) => s.stage === "peer_review" && s.ownerAtStart === filters.reviewer));
+    }
+    if (filters.delayArea) computed = computed.filter((c) => c.delay.area === filters.delayArea);
 
-    return { range, period, totalCount: tickets.length, tickets: tickets.slice(0, BREAKDOWN_TICKET_LIMIT) };
+    computed.sort((a, b) => (a.sla.created < b.sla.created ? 1 : -1));
+
+    const sliced = computed.slice(0, BREAKDOWN_TICKET_LIMIT);
+    const cycles: Record<string, TicketCycleInfo> = {};
+    for (const c of sliced) cycles[c.sla.issueKey] = { stages: c.stages, summary: c.summary, delay: c.delay };
+
+    return { range, period, totalCount: computed.length, tickets: sliced.map((c) => c.sla), cycles };
   } catch {
-    return { range, period, totalCount: 0, tickets: [] };
+    return { range, period, totalCount: 0, tickets: [], cycles: {} };
+  }
+}
+
+// ------------------------------------------------------------- 7. Cycle Time Diagnostics (new)
+
+export type DelayBucketCounts = Record<DelayArea, number>;
+
+export type CycleTimeDiagnosticsReport = {
+  range: string;
+  period: string;
+  seWork: CycleTimeStats;
+  review: CycleTimeStats;
+  total: CycleTimeStats;
+  /** Share of tickets with a measurable SE-work/review time whose delay signal fired — independent
+   * booleans (see DelayAttribution's doc comment), so these two don't sum to 100% and a ticket can
+   * count in both. */
+  pctDelayedSeWork: number | null;
+  pctDelayedReview: number | null;
+  delayCounts: DelayBucketCounts;
+  seWorkDistribution: CycleTimeBucket[];
+  reviewDistribution: CycleTimeBucket[];
+};
+
+const EMPTY_DELAY_COUNTS: DelayBucketCounts = {
+  se_work_delay: 0, peer_review_delay: 0, no_significant_delay: 0, unable_to_determine: 0,
+};
+
+export async function getCycleTimeDiagnosticsReport(range: string, period: string): Promise<CycleTimeDiagnosticsReport> {
+  try {
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const rows = await fetchAccountCreationTicketRows(startDate, endDate);
+    const nowIso = new Date().toISOString();
+
+    const computed = rows.map((r) => {
+      const sla = deriveTicketSla(r, nowIso);
+      const timeline = buildTicketCycleTimeline(r.se_work_cycles_json, r.peer_review_cycles_json, nowIso);
+      const summary = summarizeTimeline(timeline);
+      const delay = deriveDelayAttribution(sla, summary, timeline);
+      return { summary, delay };
+    });
+
+    const seMinutes = computed.map((c) => c.summary.totalSeWorkMinutes).filter((v): v is number => v !== null);
+    const reviewMinutes = computed.map((c) => c.summary.totalReviewMinutes).filter((v): v is number => v !== null);
+    const totalMinutes = computed.map((c) => c.summary.totalWorkflowMinutes).filter((v): v is number => v !== null);
+
+    const delayCounts: DelayBucketCounts = { ...EMPTY_DELAY_COUNTS };
+    for (const c of computed) delayCounts[c.delay.area]++;
+
+    const seDelayedCount = computed.filter((c) => c.delay.seDelayed).length;
+    const reviewDelayedCount = computed.filter((c) => c.delay.reviewDelayed).length;
+    const seMeasurableCount = computed.filter((c) => c.summary.totalSeWorkMinutes !== null).length;
+    const reviewMeasurableCount = computed.filter((c) => c.summary.totalReviewMinutes !== null).length;
+
+    return {
+      range, period,
+      seWork: cycleTimeStats(seMinutes),
+      review: cycleTimeStats(reviewMinutes),
+      total: cycleTimeStats(totalMinutes),
+      pctDelayedSeWork: seMeasurableCount ? round4(seDelayedCount / seMeasurableCount) : null,
+      pctDelayedReview: reviewMeasurableCount ? round4(reviewDelayedCount / reviewMeasurableCount) : null,
+      delayCounts,
+      seWorkDistribution: distribution(seMinutes),
+      reviewDistribution: distribution(reviewMinutes),
+    };
+  } catch {
+    return {
+      range, period, seWork: { ...EMPTY_CYCLE_STATS }, review: { ...EMPTY_CYCLE_STATS }, total: { ...EMPTY_CYCLE_STATS },
+      pctDelayedSeWork: null, pctDelayedReview: null, delayCounts: { ...EMPTY_DELAY_COUNTS },
+      seWorkDistribution: distribution([]), reviewDistribution: distribution([]),
+    };
+  }
+}
+
+// --------------------------------------------------------------- 8. SE Cycle Role Breakdown (new)
+
+export type SeCycleRoleRow = {
+  seName: string;
+  /** Tickets worked (As Original SE) or reviews completed (As Reviewer) — a different unit per role, never combined. */
+  count: number;
+  stats: CycleTimeStats;
+};
+
+export type SeCycleRoleReport = {
+  range: string;
+  period: string;
+  asOriginalSe: SeCycleRoleRow[];
+  asReviewer: SeCycleRoleRow[];
+};
+
+export async function getSeCycleRoleReport(range: string, period: string): Promise<SeCycleRoleReport> {
+  try {
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const rows = await fetchAccountCreationTicketRows(startDate, endDate);
+    const nowIso = new Date().toISOString();
+
+    const byOriginalSe: Record<string, number[]> = {};
+    const byReviewer: Record<string, number[]> = {};
+
+    for (const r of rows) {
+      const timeline = buildTicketCycleTimeline(r.se_work_cycles_json, r.peer_review_cycles_json, nowIso);
+      const summary = summarizeTimeline(timeline);
+
+      // Attributed to the FIRST se_work cycle's owner — the ticket's original SE. A later rework
+      // cycle by a DIFFERENT SE (rare — reassignment mid-ticket) still folds into this same
+      // person's total-SE-work-time bucket, same "one ticket, one original owner" simplification
+      // Section 7's table itself implies ("Tickets worked", not "cycles worked").
+      const firstSeStage = timeline.find((s) => s.stage === "se_work");
+      if (firstSeStage?.ownerAtStart && summary.totalSeWorkMinutes !== null) {
+        (byOriginalSe[firstSeStage.ownerAtStart] ??= []).push(summary.totalSeWorkMinutes);
+      }
+
+      // Reviewer side is per-CYCLE, not per-ticket — Section 7 explicitly counts "Reviews
+      // completed", and a multi-cycle ticket can legitimately have a different reviewer each time.
+      for (const stage of timeline) {
+        if (stage.stage !== "peer_review" || !stage.ownerAtStart || stage.durationMinutes === null) continue;
+        if (!(stage.endedAt === null || isQualifyingReviewExit(stage.exitedToStatus))) continue;
+        (byReviewer[stage.ownerAtStart] ??= []).push(stage.durationMinutes);
+      }
+    }
+
+    const toRows = (map: Record<string, number[]>): SeCycleRoleRow[] =>
+      Object.entries(map)
+        .map(([seName, minutes]) => ({ seName, count: minutes.length, stats: cycleTimeStats(minutes) }))
+        .sort((a, b) => b.count - a.count);
+
+    return { range, period, asOriginalSe: toRows(byOriginalSe), asReviewer: toRows(byReviewer) };
+  } catch {
+    return { range, period, asOriginalSe: [], asReviewer: [] };
+  }
+}
+
+// ----------------------------------------------------------- 9. Account Creation Bottlenecks (new)
+
+export type BottleneckRole = "original_se" | "reviewer";
+
+export type BottleneckRow = {
+  seName: string;
+  role: BottleneckRole;
+  tickets: number;
+  avgMinutes: number | null;
+  medianMinutes: number | null;
+  p90Minutes: number | null;
+  /** Share of this person's own tickets/reviews (in this role) where deriveDelayAttribution
+   * pointed the ticket's delay at them specifically — neutral "delay concentration", not a blame
+   * count, per Section 8's explicit language guidance. */
+  delayRate: number | null;
+};
+
+export type BottlenecksReport = {
+  range: string;
+  period: string;
+  rows: BottleneckRow[];
+};
+
+export async function getAccountCreationBottlenecksReport(range: string, period: string): Promise<BottlenecksReport> {
+  try {
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const rows = await fetchAccountCreationTicketRows(startDate, endDate);
+    const nowIso = new Date().toISOString();
+
+    const seAgg: Record<string, { minutes: number[]; delayed: number }> = {};
+    const reviewerAgg: Record<string, { minutes: number[]; delayed: number }> = {};
+
+    for (const r of rows) {
+      const sla = deriveTicketSla(r, nowIso);
+      const timeline = buildTicketCycleTimeline(r.se_work_cycles_json, r.peer_review_cycles_json, nowIso);
+      const summary = summarizeTimeline(timeline);
+      const delay = deriveDelayAttribution(sla, summary, timeline);
+
+      const firstSeStage = timeline.find((s) => s.stage === "se_work");
+      if (firstSeStage?.ownerAtStart && summary.totalSeWorkMinutes !== null) {
+        const bucket = (seAgg[firstSeStage.ownerAtStart] ??= { minutes: [], delayed: 0 });
+        bucket.minutes.push(summary.totalSeWorkMinutes);
+        if (delay.area === "se_work_delay" && delay.owner === firstSeStage.ownerAtStart) bucket.delayed++;
+      }
+
+      for (const stage of timeline) {
+        if (stage.stage !== "peer_review" || !stage.ownerAtStart || stage.durationMinutes === null) continue;
+        if (!(stage.endedAt === null || isQualifyingReviewExit(stage.exitedToStatus))) continue;
+        const bucket = (reviewerAgg[stage.ownerAtStart] ??= { minutes: [], delayed: 0 });
+        bucket.minutes.push(stage.durationMinutes);
+        if (delay.area === "peer_review_delay" && delay.owner === stage.ownerAtStart) bucket.delayed++;
+      }
+    }
+
+    const toRows = (agg: Record<string, { minutes: number[]; delayed: number }>, role: BottleneckRole): BottleneckRow[] =>
+      Object.entries(agg).map(([seName, { minutes, delayed }]) => {
+        const stats = cycleTimeStats(minutes);
+        return {
+          seName, role, tickets: stats.count, avgMinutes: stats.avgMinutes, medianMinutes: stats.medianMinutes,
+          p90Minutes: stats.p90Minutes, delayRate: stats.count ? round4(delayed / stats.count) : null,
+        };
+      });
+
+    const combined = [...toRows(seAgg, "original_se"), ...toRows(reviewerAgg, "reviewer")].sort(
+      (a, b) => (b.delayRate ?? 0) - (a.delayRate ?? 0)
+    );
+
+    return { range, period, rows: combined };
+  } catch {
+    return { range, period, rows: [] };
   }
 }
 
