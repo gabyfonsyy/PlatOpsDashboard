@@ -396,11 +396,13 @@ export async function getAutomatedTicketsReport(
   range: string,
   period: string,
   issueType?: string,
-  automationLabels: readonly string[] = KNOWN_AUTOMATION_LABELS
+  automationLabels: readonly string[] = KNOWN_AUTOMATION_LABELS,
+  start?: string,
+  end?: string
 ): Promise<AutomatedTicketsReport> {
   const labels = sanitizeAutomationLabels(automationLabels);
   try {
-    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period, start, end);
     const teamConfig = (await getTeams()).find((t) => t.team_key === team);
     if (!teamConfig) throw new Error(`Unknown team: ${team}`);
 

@@ -1,4 +1,6 @@
 import { getServerSession } from "next-auth";
+import Link from "next/link";
+import { BarChart3 } from "lucide-react";
 import { authOptions } from "@/lib/auth";
 import { getMyWork } from "@/lib/work-store";
 import { FOCUS_SOFT_LIMIT, dayLabel, formatDuration, moodByCode, type MyWorkData } from "@/lib/work";
@@ -112,8 +114,14 @@ export default async function MyWorkPage() {
             />
           </p>
         </div>
-        {/* End-of-day surfaces live behind these, not on the board — see DayReviewPanel. */}
-        <DayReviewPanel checkin={checkin} daysAvailable={history.length} />
+        <div className="flex items-center gap-2">
+          <Link href="/my-work/business-review-prep" className="btn-secondary text-sm inline-flex items-center gap-1.5">
+            <BarChart3 className="w-4 h-4" />
+            <Copy serious="Business Review Prep" playful="🚀 Business Review Prep" />
+          </Link>
+          {/* End-of-day surfaces live behind these, not on the board — see DayReviewPanel. */}
+          <DayReviewPanel checkin={checkin} daysAvailable={history.length} />
+        </div>
       </div>
 
       {/* A. Workday, with the scorecards filling the other half of the same row.

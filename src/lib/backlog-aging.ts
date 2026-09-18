@@ -100,10 +100,12 @@ export async function getBacklogAgingReport(
   team: string,
   range: string,
   period: string,
-  issueType?: string
+  issueType?: string,
+  start?: string,
+  end?: string
 ): Promise<BacklogAgingReport> {
   try {
-    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period, start, end);
     const allTeams = await getTeams();
     const teams = team === "ALL" ? allTeams : allTeams.filter((t) => t.team_key === team);
     if (!teams.length) throw new Error(`Unknown team: ${team}`);

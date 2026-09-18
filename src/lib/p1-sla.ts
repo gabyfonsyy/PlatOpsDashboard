@@ -780,10 +780,12 @@ export async function getP1SlaReport(
   range: string,
   period: string,
   issueType?: string,
-  extraExcludedLabels?: readonly string[]
+  extraExcludedLabels?: readonly string[],
+  start?: string,
+  end?: string
 ): Promise<P1SlaReport> {
   try {
-    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period, start, end);
     const teamConfig = (await getTeams()).find((t) => t.team_key === team);
     if (!teamConfig) throw new Error(`Unknown team: ${team}`);
 
