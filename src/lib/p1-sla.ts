@@ -15,6 +15,7 @@ import {
   isRealEscalation,
   escalationTargets,
   BREAKDOWN_TICKET_LIMIT,
+  toCountRows,
   type CountRow,
 } from "@/lib/ticket-breakdowns";
 import { riskTierForConsumed, type RiskTier } from "@/lib/sla-status";
@@ -49,12 +50,6 @@ function round2(n: number): number {
 }
 function round4(n: number): number {
   return Math.round(n * 10000) / 10000;
-}
-
-function toCountRows(counts: Record<string, number>, denominator: number): CountRow[] {
-  return Object.entries(counts)
-    .map(([key, count]) => ({ key, count, share: denominator ? round4(count / denominator) : null }))
-    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 }
 
 /**

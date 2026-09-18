@@ -31,6 +31,23 @@ export type NarrativeFacts = {
   theme: string;
 };
 
+/**
+ * The generic ai_insight_cache table (my-work.sql) keys on (user_email, context, entity_id,
+ * source_version) — this is the ONE place that decides what those last two mean for Business
+ * Review Prep narratives, shared by lib/business-review.ts's cache READ (on every page render,
+ * fast, never calls the model) and api/ai/business-review-narrative/route.ts's cache READ+WRITE
+ * (only on an explicit "get AI take" click). Both must compute the identical key from the same
+ * facts, or a click's result would never be found by the next render's read.
+ */
+export const NARRATIVE_CACHE_CONTEXT = "business_review_narrative";
+
+export function narrativeCacheKey(facts: Pick<NarrativeFacts, "metricLabel" | "current" | "previous" | "driverRows" | "verdict" | "theme">) {
+  return {
+    entityId: facts.metricLabel,
+    version: JSON.stringify({ c: facts.current, p: facts.previous, d: facts.driverRows, v: facts.verdict, t: facts.theme }),
+  };
+}
+
 export function buildNarrativePrompt(facts: NarrativeFacts): string {
   const topDrivers = facts.driverRows
     .filter((r) => r.key !== "Other")
@@ -43,7 +60,7 @@ export function buildNarrativePrompt(facts: NarrativeFacts): string {
     `- Metric: ${facts.metricLabel}`,
     `- Previous: ${facts.previous}`,
     `- Current: ${facts.current}`,
-    `- % change: ${facts.isNew ? "n/a (no prior-period baseline)" : facts.pctDiff === null ? "n/a (no activity)" : `${facts.pctDiff.toFixed(1)}%`}`,
+    `- % change: ${facts.isNew ? "n/a (no prior-period baseline)" : facts.pctDiff === null ? "n/a (no activity)" : `${facts.pctDiff.toFixed(2)}%`}`,
     `- Driver verdict: ${facts.verdict}`,
     "- Top driver rows (dimension: previous -> current, change, contribution to total change):",
     topDrivers || "  (none)",

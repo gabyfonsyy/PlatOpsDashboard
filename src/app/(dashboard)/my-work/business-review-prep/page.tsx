@@ -80,7 +80,7 @@ export default async function BusinessReviewPrepPage({
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {review.metrics.map((metric) => (
-            <MetricComparisonCard key={metric.key} metric={metric} />
+            <MetricComparisonCard key={metric.key} metric={metric} aiAvailable={review.aiAvailable} />
           ))}
         </div>
       </div>

@@ -76,7 +76,14 @@ export function InitiativeTicketsTable({
   }, [manualMap, projectById, labelledProjects]);
 
   const groupingAvailable = labelledProjects.length > 0 || manualMap.size > 0;
-  const [grouped, setGrouped] = useState(groupingAvailable);
+  // null = "not yet touched by the user" -> follow groupingAvailable live; once they toggle the
+  // checkbox, their explicit choice sticks. A plain `useState(groupingAvailable)` only reads that
+  // value once at mount, so it went stale whenever projects/assignments changed later (e.g. after
+  // the Jira sync button's router.refresh()) — same fix as `expanded` below, which already uses
+  // this null-means-derive pattern correctly.
+  const [groupedOverride, setGroupedOverride] = useState<boolean | null>(null);
+  const grouped = groupedOverride ?? groupingAvailable;
+  const setGrouped = setGroupedOverride;
 
   // Teams whose initiatives are pulled from Jira (kept in sync with GAS COD_INITIATIVE_TEAM_KEYS).
   const initiativeTeams = teams.filter((t) => ["DE", "DEV", "ST"].includes(t.team_key));

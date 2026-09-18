@@ -5,6 +5,7 @@ import { getAutomatedTicketsReport } from "@/lib/automated-tickets";
 import { getFcrReport } from "@/lib/ticket-breakdowns";
 import { getBacklogAgingReport, type BacklogAgingTicket } from "@/lib/backlog-aging";
 import { getTicketVolumeBreakdown } from "@/lib/ticket-volume-breakdown";
+import { getEndToEndCycleTimeAverage } from "@/lib/business-review-cycle-time";
 import { compareBreakdowns, classifyDriver, detectAnomaly, type DriverRow, type DriverVerdict, type AnomalyResult } from "@/lib/business-review-drivers";
 import { buildInsightSentence } from "@/lib/business-review-view";
 import {
@@ -16,11 +17,10 @@ import {
   type ReviewMode,
   type ReviewDateRange,
 } from "@/lib/review-periods";
-import { getCachedInsight, saveInsight } from "@/lib/work-store";
+import { getCachedInsight } from "@/lib/work-store";
 import { getChecklistState, getTalkingPoints, seedTalkingPointsIfEmpty } from "@/lib/business-review-store";
-import { buildNarrativePrompt, NARRATIVE_SYSTEM_PROMPT, type NarrativeFacts } from "@/lib/business-review-ai";
-import { chatJson, getAiModel, isAiConfigured } from "@/lib/ai";
-import { voiceForTheme } from "@/lib/ai-voice";
+import { NARRATIVE_CACHE_CONTEXT, narrativeCacheKey, type NarrativeFacts } from "@/lib/business-review-ai";
+import { isAiConfigured } from "@/lib/ai";
 import type { Theme } from "@/lib/theme";
 
 /**
@@ -35,7 +35,6 @@ const PRIOR_PERIOD_COUNT: Record<ReviewMode, number> = { weekly: 8, monthly: 6, 
 
 /** Metrics beyond |15%| or anomaly-flagged are "worth investigating" — named so it's one place to tune. */
 const NOTABLE_PCT_DIFF = 15;
-const NARRATIVE_CONTEXT = "business_review_narrative";
 
 export async function resolveReviewTeam(label: ReviewTeamLabel): Promise<TeamConfig> {
   const teams = await getTeams();
@@ -52,13 +51,17 @@ export type MetricComparison = {
   absoluteDiff: number | null;
   pctDiff: number | null;
   isNew: boolean;
-  unit: "count" | "minutes" | "percent";
+  unit: "count" | "days" | "percent";
   driverAvailable: boolean;
   driverDimensionLabel: string | null;
   driverBreakdown: DriverRow[];
   driverVerdict: DriverVerdict;
   anomaly: AnomalyResult | null;
   insight: string;
+  /** "ai" only when a cached AI narrative was found; the page never calls the model itself.
+   * "deterministic" is what renders while there's no cached AI take yet — MetricComparisonCard
+   * shows a "Get AI take" button in that case, iff `BusinessReview.aiAvailable`. */
+  insightSource: "ai" | "deterministic";
   source: string;
   calculation: string;
   recordCount: number;
@@ -70,6 +73,8 @@ export type ExecutiveSummary = {
 };
 
 export type BusinessReview = {
+  /** Whether AI_API_KEY is configured at all — gates whether "Get AI take" renders anywhere. */
+  aiAvailable: boolean;
   team: ReviewTeamLabel;
   teamKey: string;
   mode: ReviewMode;
@@ -84,18 +89,24 @@ export type BusinessReview = {
   talkingPoints: { id: string; content: string; position: number }[];
 };
 
-function round1(n: number): number {
-  return Math.round(n * 10) / 10;
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 function pctDiffOf(current: number, previous: number): { pctDiff: number | null; isNew: boolean } {
   if (previous === 0 && current === 0) return { pctDiff: null, isNew: false };
   if (previous === 0) return { pctDiff: null, isNew: true };
-  return { pctDiff: round1(((current - previous) / previous) * 100), isNew: false };
+  return { pctDiff: round2(((current - previous) / previous) * 100), isNew: false };
 }
 
 function sumCounts(rows: { count: number }[]): number {
   return rows.reduce((sum, r) => sum + r.count, 0);
+}
+
+const MINUTES_PER_DAY = 1440;
+
+function minutesToDays(minutes: number | null): number | null {
+  return minutes === null ? null : round2(minutes / MINUTES_PER_DAY);
 }
 
 function overdueByIssueType(tickets: BacklogAgingTicket[]) {
@@ -143,32 +154,28 @@ function buildDriver(
   return { rows, verdict: directionsAgree ? classifyDriver(rows) : ("none" as const) };
 }
 
-async function narrativeFor(facts: NarrativeFacts, email: string | null): Promise<string> {
+/**
+ * Reads the AI narrative cache — NEVER calls the model. The only place that calls the model for
+ * Business Review Prep is api/ai/business-review-narrative/route.ts, and only when she explicitly
+ * clicks "Get AI take" on a card (per her instruction: the AI call happens once, and only when
+ * asked — the same on-demand posture the Overview's daily assessment already uses, triggered by
+ * AssessmentHeader rather than generated on every render). Keeping the live call out of this
+ * render path is also what makes the page fast: no metric ever waits on a model round-trip to
+ * paint. Once she's asked for one narrative, every later render of that exact (metric, period)
+ * finds it here and never calls the model again for it.
+ */
+async function narrativeFor(facts: NarrativeFacts, email: string | null): Promise<{ text: string; source: "ai" | "deterministic" }> {
   const fallback = buildInsightSentence(facts.metricLabel, facts.pctDiff, facts.isNew, facts.driverRows, facts.verdict, facts.theme as Theme);
-  if (!email || !isAiConfigured()) return fallback;
+  if (!email) return { text: fallback, source: "deterministic" };
 
-  const entityId = `${facts.metricLabel}`;
-  const version = JSON.stringify({ c: facts.current, p: facts.previous, d: facts.driverRows, v: facts.verdict, t: facts.theme });
   try {
-    const cached = await getCachedInsight<{ narrative: string }>(email, NARRATIVE_CONTEXT, entityId, version);
-    if (cached) return cached.content.narrative || fallback;
-
-    const voice = voiceForTheme(facts.theme);
-    const result = await chatJson<{ narrative?: unknown }>(buildNarrativePrompt(facts), {
-      systemPrompt: `${NARRATIVE_SYSTEM_PROMPT}\n\nVoice: ${voice === "gaby" ? "warm, a bit playful, space-themed — but still fit for presenting to leadership." : "neutral, professional, executive-facing."}`,
-      temperature: 0.3,
-      maxTokens: 300,
-      tier: "fast",
-    });
-    const narrative = String(result.narrative ?? "").trim();
-    if (!narrative) return fallback;
-    await saveInsight(email, NARRATIVE_CONTEXT, entityId, version, { narrative }, getAiModel("fast"));
-    return narrative;
+    const { entityId, version } = narrativeCacheKey(facts);
+    const cached = await getCachedInsight<{ narrative: string }>(email, NARRATIVE_CACHE_CONTEXT, entityId, version);
+    if (cached?.content.narrative) return { text: cached.content.narrative, source: "ai" };
   } catch {
-    // AI is a progressive enhancement here, never a blocking dependency — the deterministic
-    // sentence already computed above is always a complete, correct answer on its own.
-    return fallback;
+    // A cache read failing must behave exactly like a cache miss.
   }
+  return { text: fallback, source: "deterministic" };
 }
 
 type MetricSpec = {
@@ -192,7 +199,7 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
   const driverRows = spec.driver?.rows ?? [];
   const driverVerdict = spec.driver?.verdict ?? "none";
 
-  const insight = await narrativeFor(
+  const { text: insight, source: insightSource } = await narrativeFor(
     {
       metricLabel: spec.label,
       current,
@@ -211,7 +218,7 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
     label: spec.label,
     current: spec.current,
     previous: spec.previous,
-    absoluteDiff: spec.current !== null && spec.previous !== null ? round1(spec.current - spec.previous) : null,
+    absoluteDiff: spec.current !== null && spec.previous !== null ? round2(spec.current - spec.previous) : null,
     pctDiff,
     isNew,
     unit: spec.unit,
@@ -221,6 +228,7 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
     driverVerdict,
     anomaly,
     insight,
+    insightSource,
     source: spec.source,
     calculation: spec.calculation,
     recordCount: spec.recordCount,
@@ -254,18 +262,40 @@ export async function getBusinessReview(
 
   const isSe = teamLabel === "SE";
 
-  const [currentTM, previousTM, ...priorTMs] = await Promise.all([
-    getTicketMetrics(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
-    getTicketMetrics(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
-    ...priorPeriods.map((p) => getTicketMetrics(team.team_key, "custom", key, undefined, p.start, p.end)),
-  ]);
-
-  const [currentVolByType, previousVolByType, currentAging, previousAging] = await Promise.all([
-    getTicketVolumeBreakdown(team.team_key, resolvedCurrent.start, resolvedCurrent.end, "issue_type"),
-    getTicketVolumeBreakdown(team.team_key, resolvedPrevious.start, resolvedPrevious.end, "issue_type"),
-    getBacklogAgingReport(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
-    getBacklogAgingReport(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
-  ]);
+  // All four waves are independent of each other's results (none reads another wave's output to
+  // build its own request), so they're fired together in ONE outer Promise.all — each inner
+  // Promise.all/call still starts immediately, rather than running one after another. This was a
+  // real, measured contributor to the page's slow load: several sequential round-trips instead of
+  // one concurrent one. (Checklist/talking points don't need metrics to be READ — only the later
+  // seed step, which needs keyChanges, does.)
+  const [[currentTM, previousTM, ...priorTMs], [currentVolByType, previousVolByType, currentAging, previousAging], seReports, personalState] =
+    await Promise.all([
+      Promise.all([
+        getTicketMetrics(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
+        getTicketMetrics(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
+        ...priorPeriods.map((p) => getTicketMetrics(team.team_key, "custom", key, undefined, p.start, p.end)),
+      ]),
+      Promise.all([
+        getTicketVolumeBreakdown(team.team_key, resolvedCurrent.start, resolvedCurrent.end, "issue_type"),
+        getTicketVolumeBreakdown(team.team_key, resolvedPrevious.start, resolvedPrevious.end, "issue_type"),
+        getBacklogAgingReport(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
+        getBacklogAgingReport(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
+      ]),
+      isSe
+        ? Promise.all([
+            getP1SlaReport(team.team_key, "custom", key, undefined, undefined, resolvedCurrent.start, resolvedCurrent.end),
+            getP1SlaReport(team.team_key, "custom", key, undefined, undefined, resolvedPrevious.start, resolvedPrevious.end),
+            getAutomatedTicketsReport(team.team_key, "custom", key, undefined, undefined, resolvedCurrent.start, resolvedCurrent.end),
+            getAutomatedTicketsReport(team.team_key, "custom", key, undefined, undefined, resolvedPrevious.start, resolvedPrevious.end),
+            getFcrReport(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
+            getFcrReport(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
+            getEndToEndCycleTimeAverage(team.team_key, resolvedCurrent.start, resolvedCurrent.end),
+            getEndToEndCycleTimeAverage(team.team_key, resolvedPrevious.start, resolvedPrevious.end),
+            Promise.all(priorPeriods.map((p) => getEndToEndCycleTimeAverage(team.team_key, p.start, p.end))),
+          ])
+        : Promise.resolve(null),
+      email ? Promise.all([getChecklistState(email, key), getTalkingPoints(email, key)]) : Promise.resolve(null),
+    ]);
 
   const specs: MetricSpec[] = [
     {
@@ -278,28 +308,28 @@ export async function getBusinessReview(
       recordCount: currentVolByType.totalTickets,
     },
     {
-      key: "lead_time", label: "Lead Time", unit: "minutes",
-      current: currentTM.leadTimeAvgMinutes, previous: previousTM.leadTimeAvgMinutes,
-      history: priorTMs.map((m) => m.leadTimeAvgMinutes).filter((n): n is number => n !== null),
+      key: "lead_time", label: "Lead Time", unit: "days",
+      current: minutesToDays(currentTM.leadTimeAvgMinutes), previous: minutesToDays(previousTM.leadTimeAvgMinutes),
+      history: priorTMs.map((m) => minutesToDays(m.leadTimeAvgMinutes)).filter((n): n is number => n !== null),
       driver: null,
       source: "Supabase tickets (live span average)",
-      calculation: "Average minutes from ticket creation to resolution, for tickets resolved in the period.",
+      calculation: "Average days from ticket creation to resolution, for tickets resolved in the period.",
       recordCount: currentTM.ticketsResolvedInPeriod,
     },
     {
-      key: "cycle_time", label: "Cycle Time", unit: "minutes",
-      current: currentTM.cycleTimeAvgMinutes, previous: previousTM.cycleTimeAvgMinutes,
-      history: priorTMs.map((m) => m.cycleTimeAvgMinutes).filter((n): n is number => n !== null),
+      key: "cycle_time", label: "Cycle Time", unit: "days",
+      current: minutesToDays(currentTM.cycleTimeAvgMinutes), previous: minutesToDays(previousTM.cycleTimeAvgMinutes),
+      history: priorTMs.map((m) => minutesToDays(m.cycleTimeAvgMinutes)).filter((n): n is number => n !== null),
       driver: null,
       source: "Supabase tickets (live span average)",
-      calculation: "Average minutes of active work time, for tickets resolved in the period.",
+      calculation: "Average days of active work time, for tickets resolved in the period.",
       recordCount: currentTM.ticketsResolvedInPeriod,
     },
     {
       key: "ageing_rate", label: "Ageing Rate", unit: "percent",
-      current: currentTM.backlogAgingRate !== null ? round1(currentTM.backlogAgingRate * 100) : null,
-      previous: previousTM.backlogAgingRate !== null ? round1(previousTM.backlogAgingRate * 100) : null,
-      history: priorTMs.map((m) => m.backlogAgingRate).filter((n): n is number => n !== null).map((n) => round1(n * 100)),
+      current: currentTM.backlogAgingRate !== null ? round2(currentTM.backlogAgingRate * 100) : null,
+      previous: previousTM.backlogAgingRate !== null ? round2(previousTM.backlogAgingRate * 100) : null,
+      history: priorTMs.map((m) => m.backlogAgingRate).filter((n): n is number => n !== null).map((n) => round2(n * 100)),
       driver: {
         ...buildDriver(
           overdueByIssueType(previousAging.tickets),
@@ -314,21 +344,26 @@ export async function getBusinessReview(
     },
   ];
 
-  if (isSe) {
-    const [currentP1, previousP1, currentAuto, previousAuto, currentFcr, previousFcr] = await Promise.all([
-      getP1SlaReport(team.team_key, "custom", key, undefined, undefined, resolvedCurrent.start, resolvedCurrent.end),
-      getP1SlaReport(team.team_key, "custom", key, undefined, undefined, resolvedPrevious.start, resolvedPrevious.end),
-      getAutomatedTicketsReport(team.team_key, "custom", key, undefined, undefined, resolvedCurrent.start, resolvedCurrent.end),
-      getAutomatedTicketsReport(team.team_key, "custom", key, undefined, undefined, resolvedPrevious.start, resolvedPrevious.end),
-      getFcrReport(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
-      getFcrReport(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
-    ]);
+  if (isSe && seReports) {
+    const [currentP1, previousP1, currentAuto, previousAuto, currentFcr, previousFcr, currentEte, previousEte, priorEte] = seReports;
+
+    // Cycle Time, for SE only, is the time from Backlog/To Do exit to Archived, Rejected, For
+    // Checking, For Product Team, or For Peer Review (per her explicit correction) — replaces
+    // the base specs array's single-stage placeholder above (which was only ever correct for
+    // DBA/DevOps, who have no validator stage at all and whose cycle_time_end is resolution).
+    const cycleTimeSpec = specs.find((s) => s.key === "cycle_time")!;
+    cycleTimeSpec.current = minutesToDays(currentEte.avgMinutes);
+    cycleTimeSpec.previous = minutesToDays(previousEte.avgMinutes);
+    cycleTimeSpec.history = priorEte.map((e) => minutesToDays(e.avgMinutes)).filter((n): n is number => n !== null);
+    cycleTimeSpec.recordCount = currentEte.recordCount;
+    cycleTimeSpec.calculation =
+      "Average days from when a ticket moved out of Backlog/To Do to when it reached Archived, Rejected, For Checking, For Product Team, or For Peer Review — for tickets whose cycle closed in the period.";
 
     specs.push(
       {
         key: "p1_sla_compliance", label: "P1 SLA Compliance", unit: "percent",
-        current: currentP1.onTimeRate !== null ? round1(currentP1.onTimeRate * 100) : null,
-        previous: previousP1.onTimeRate !== null ? round1(previousP1.onTimeRate * 100) : null,
+        current: currentP1.onTimeRate !== null ? round2(currentP1.onTimeRate * 100) : null,
+        previous: previousP1.onTimeRate !== null ? round2(previousP1.onTimeRate * 100) : null,
         history: [],
         driver: {
           ...buildDriver(
@@ -357,9 +392,9 @@ export async function getBusinessReview(
       },
       {
         key: "fcr", label: "First Contact Resolution", unit: "percent",
-        current: currentTM.fcrRate !== null ? round1(currentTM.fcrRate * 100) : null,
-        previous: previousTM.fcrRate !== null ? round1(previousTM.fcrRate * 100) : null,
-        history: priorTMs.map((m) => m.fcrRate).filter((n): n is number => n !== null).map((n) => round1(n * 100)),
+        current: currentTM.fcrRate !== null ? round2(currentTM.fcrRate * 100) : null,
+        previous: previousTM.fcrRate !== null ? round2(previousTM.fcrRate * 100) : null,
+        history: priorTMs.map((m) => m.fcrRate).filter((n): n is number => n !== null).map((n) => round2(n * 100)),
         driver: {
           ...buildDriver(
             previousFcr.byIssueType,
@@ -386,8 +421,8 @@ export async function getBusinessReview(
   let checklistState: Record<string, boolean> = {};
   let finalTalkingPoints: { id: string; content: string; position: number }[] = [];
 
-  if (email) {
-    const [state, points] = await Promise.all([getChecklistState(email, key), getTalkingPoints(email, key)]);
+  if (email && personalState) {
+    const [state, points] = personalState;
     checklistState = state;
     finalTalkingPoints = points;
     if (points.length === 0 && keyChanges.length > 0) {
@@ -397,6 +432,7 @@ export async function getBusinessReview(
   }
 
   return {
+    aiAvailable: isAiConfigured(),
     team: teamLabel,
     teamKey: team.team_key,
     mode,

@@ -68,32 +68,56 @@ function runInitialBackfill() {
       return; // do not reschedule — needs a human to check the Jira response before retrying
     }
 
-    for (const issue of page.issues) {
-      try {
-        processAndUpsertIssue_(team, issue);
-      } catch (issueErr) {
-        Logger.log(`processAndUpsertIssue_ failed for ${issue.key}: ${issueErr}`);
-        logSyncError_(team.team_key, issue.key, 'upsert', '', String(issueErr));
+    // Everything from here through the end of this team's iteration used to be unguarded —
+    // found via a full-codebase audit: if flushDirtyDates_/writeSyncStatus_/
+    // scheduleBackfillContinuation_/markTeamBackfillComplete_ threw (e.g. a transient Sheets
+    // "internal error" under load, which does happen in Apps Script), the whole execution died
+    // with no notifyFailure_ alert and — since the one-off trigger that fired THIS execution has
+    // already been consumed — no continuation scheduled either. SYNC_CHECKPOINT would keep
+    // showing IN_PROGRESS from the prior successful page, and the backfill would silently stop
+    // advancing until someone happened to check ticket counts. This mirrors the jiraSearchIssues_
+    // try/catch above: on any unexpected failure, alert AND reschedule, rather than strand it.
+    try {
+      for (const issue of page.issues) {
+        try {
+          processAndUpsertIssue_(team, issue);
+        } catch (issueErr) {
+          Logger.log(`processAndUpsertIssue_ failed for ${issue.key}: ${issueErr}`);
+          logSyncError_(team.team_key, issue.key, 'upsert', '', String(issueErr));
+        }
       }
+      flushDirtyDates_(team.team_key);
+
+      const ticketsSoFar = (Number(checkpoint.tickets_synced_last_run) || 0) + page.issues.length;
+
+      if (page.nextPageToken && page.issues.length > 0) {
+        writeSyncStatus_(team.jira_project_key, {
+          backfill_cursor: page.nextPageToken,
+          last_sync_status: 'IN_PROGRESS',
+          last_sync_run_at: nowIso_(),
+          tickets_synced_last_run: ticketsSoFar,
+        });
+        scheduleBackfillContinuation_();
+        return; // end this execution slice — the continuation trigger resumes it
+      }
+
+      markTeamBackfillComplete_(team.jira_project_key, ticketsSoFar);
+      // Falls through to the next team in this SAME execution if there's one —
+      // small teams (DE/DEV) can finish well within one 6-minute run.
+    } catch (continuationErr) {
+      Logger.log(`runInitialBackfill: post-page bookkeeping failed for ${team.jira_project_key}: ${continuationErr}`);
+      try {
+        notifyFailure_(`runInitialBackfill: post-page bookkeeping failed for ${team.jira_project_key}`, continuationErr);
+      } catch (alertErr) {
+        Logger.log(`notifyFailure_ itself failed: ${alertErr}`);
+      }
+      try {
+        scheduleBackfillContinuation_();
+      } catch (scheduleErr) {
+        Logger.log(`scheduleBackfillContinuation_ itself failed: ${scheduleErr}`);
+      }
+      return;
     }
-    flushDirtyDates_(team.team_key);
-
-    const ticketsSoFar = (Number(checkpoint.tickets_synced_last_run) || 0) + page.issues.length;
-
-    if (page.nextPageToken && page.issues.length > 0) {
-      writeSyncStatus_(team.jira_project_key, {
-        backfill_cursor: page.nextPageToken,
-        last_sync_status: 'IN_PROGRESS',
-        last_sync_run_at: nowIso_(),
-        tickets_synced_last_run: ticketsSoFar,
-      });
-      scheduleBackfillContinuation_();
-      return; // end this execution slice — the continuation trigger resumes it
-    }
-
-    markTeamBackfillComplete_(team.jira_project_key, ticketsSoFar);
-    // Falls through to the next team in this SAME execution if there's one —
-    // small teams (DE/DEV) can finish well within one 6-minute run.
   }
 
   deleteBackfillContinuationTrigger_();

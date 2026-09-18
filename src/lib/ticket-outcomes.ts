@@ -10,7 +10,7 @@ import {
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString } from "@/lib/manila-date";
 import { teamLabel } from "@/lib/utils";
-import { BREAKDOWN_TICKET_LIMIT, type CountRow } from "@/lib/ticket-breakdowns";
+import { BREAKDOWN_TICKET_LIMIT, toCountRows, type CountRow } from "@/lib/ticket-breakdowns";
 
 export type OutcomeKind = "cancelled" | "archived" | "rejected";
 
@@ -127,12 +127,6 @@ export type TicketOutcomeCardData = {
 
 function round4(n: number): number {
   return Math.round(n * 10000) / 10000;
-}
-
-function toCountRows(counts: Record<string, number>, denominator: number): CountRow[] {
-  return Object.entries(counts)
-    .map(([key, count]) => ({ key, count, share: denominator ? round4(count / denominator) : null }))
-    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 }
 
 type OutcomeRow = {

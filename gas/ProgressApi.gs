@@ -43,7 +43,10 @@ var ProgressApi = {
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.progress_id === id);
       if (!existing) throw new Error(`Progress row not found: ${id}`);
-      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      // progress_id pinned to the existing value AFTER payload, not before — payload has no field
+      // whitelist (found via a full-codebase audit), so without this a client could pass its own
+      // progress_id and silently reassign this row's identity, orphaning it from future lookups.
+      const record = Object.assign({}, existing, payload, { progress_id: existing.progress_id, updated_at: nowIso_() });
       if (payload.items_processed !== undefined) record.items_processed = Number(payload.items_processed) || 0;
       updateSheetRow_(sheet, existing._row, record);
       const o = stripRowMeta_(record);
