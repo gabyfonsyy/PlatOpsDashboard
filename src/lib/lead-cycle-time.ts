@@ -350,9 +350,11 @@ export async function getLeadCycleTimeAverages(
   teamKeys: string[],
   range: string,
   period: string,
-  issueType?: string
+  issueType?: string,
+  start?: string,
+  end?: string
 ): Promise<{ leadTimeAvgMinutes: number | null; cycleTimeAvgMinutes: number | null }> {
-  const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+  const { startDate, endDate } = resolvePeriodToDateRange(range, period, start, end);
   const teams = (await getTeams()).filter((t) => teamKeys.includes(t.team_key));
 
   // Peer-review teams' Cycle Time is actual-work-average + peer-review-average, not a plain span

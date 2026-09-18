@@ -147,7 +147,8 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function toCountRows(counts: Record<string, number>, denominator: number): CountRow[] {
+/** Exported for lib/ticket-volume-breakdown.ts — the shared implementation, not a fourth copy. */
+export function toCountRows(counts: Record<string, number>, denominator: number): CountRow[] {
   return Object.entries(counts)
     .map(([key, count]) => ({ key, count, share: denominator ? round4(count / denominator) : null }))
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
@@ -196,8 +197,8 @@ async function fetchResolvedRows(
   }, "issue_key");
 }
 
-async function loadScope(team: string, range: string, period: string, issueType?: string) {
-  const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+async function loadScope(team: string, range: string, period: string, issueType?: string, start?: string, end?: string) {
+  const { startDate, endDate } = resolvePeriodToDateRange(range, period, start, end);
   const teamConfig = (await getTeams()).find((t) => t.team_key === team);
   if (!teamConfig) throw new Error(`Unknown team: ${team}`);
 
@@ -389,10 +390,12 @@ export async function getFcrReport(
   team: string,
   range: string,
   period: string,
-  issueType?: string
+  issueType?: string,
+  start?: string,
+  end?: string
 ): Promise<FcrReport> {
   try {
-    const { teamConfig, rows } = await loadScope(team, range, period, issueType);
+    const { teamConfig, rows } = await loadScope(team, range, period, issueType, start, end);
     const isFcrYes = (r: BreakdownRow) => (r.fcr_value || "").trim() === "Yes";
 
     const fcrYes = rows.filter(isFcrYes);

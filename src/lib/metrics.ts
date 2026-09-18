@@ -283,13 +283,20 @@ function rollupDailyRows(
  * proxying through the GAS `metrics` route. Falls back to empty metrics on any failure
  * (bad period, Supabase hiccup) rather than throwing — matches the old GAS-backed behavior.
  */
-export async function getTicketMetrics(team: string, range: string, period: string, issueType?: string): Promise<TicketMetrics> {
+export async function getTicketMetrics(
+  team: string,
+  range: string,
+  period: string,
+  issueType?: string,
+  start?: string,
+  end?: string
+): Promise<TicketMetrics> {
   try {
-    const { startDate, endDate } = resolvePeriodToDateRange(range, period);
+    const { startDate, endDate } = resolvePeriodToDateRange(range, period, start, end);
     const teamKeys = team === "ALL" ? (await getTeams()).map((t) => t.team_key) : [team];
     const [rows, liveAverages] = await Promise.all([
       fetchMetricsDailyRows(teamKeys, startDate, endDate, issueType),
-      getLeadCycleTimeAverages(teamKeys, range, period, issueType),
+      getLeadCycleTimeAverages(teamKeys, range, period, issueType, startDate, endDate),
     ]);
 
     // Lead and Cycle Time come from `tickets` via the drill-down's own basisFor(), NOT from the
