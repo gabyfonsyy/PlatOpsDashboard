@@ -38,7 +38,10 @@ var ProjectsApi = {
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.project_id === id);
       if (!existing) throw new Error(`Project not found: ${id}`);
-      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      // project_id pinned to the existing value AFTER payload, not before — payload has no field
+      // whitelist (found via a full-codebase audit), so without this a client could pass its own
+      // project_id and silently reassign this row's identity, orphaning it from future lookups.
+      const record = Object.assign({}, existing, payload, { project_id: existing.project_id, updated_at: nowIso_() });
       updateSheetRow_(sheet, existing._row, record);
       return stripRowMeta_(record);
     });

@@ -242,7 +242,9 @@ function assigneeCounts(rows: BreakdownRow[], teamConfig: TeamConfig): Record<st
   return counts;
 }
 
-function groupCounts(rows: BreakdownRow[], keyFn: (r: BreakdownRow) => string): Record<string, number> {
+/** Generic so ticket-outcomes.ts/p1-sla.ts/automated-tickets.ts/ticket-volume-breakdown.ts can
+ * share this one implementation instead of each carrying their own identical copy. */
+export function groupCounts<T>(rows: T[], keyFn: (r: T) => string): Record<string, number> {
   const counts: Record<string, number> = {};
   for (const r of rows) {
     const key = keyFn(r);

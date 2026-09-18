@@ -39,7 +39,10 @@ var LeaveApi = {
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.leave_id === id);
       if (!existing) throw new Error(`Leave record not found: ${id}`);
-      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      // leave_id pinned to the existing value AFTER payload, not before — payload has no field
+      // whitelist (found via a full-codebase audit), so without this a client could pass its own
+      // leave_id and silently reassign this row's identity, orphaning it from future lookups.
+      const record = Object.assign({}, existing, payload, { leave_id: existing.leave_id, updated_at: nowIso_() });
       updateSheetRow_(sheet, existing._row, record);
       return stripRowMeta_(record);
     });

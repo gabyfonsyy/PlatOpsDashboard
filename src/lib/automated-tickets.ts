@@ -3,7 +3,7 @@ import { getTeams, excludedIssueTypes, isExcludedIssueType } from "@/lib/teams";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString } from "@/lib/manila-date";
 import { basisFor } from "@/lib/lead-cycle-time";
-import { escalationTargets, BREAKDOWN_TICKET_LIMIT, type CountRow } from "@/lib/ticket-breakdowns";
+import { escalationTargets, BREAKDOWN_TICKET_LIMIT, toCountRows, groupCounts, type CountRow } from "@/lib/ticket-breakdowns";
 import {
   automationLabelSet,
   hasAutomationLabel,
@@ -355,21 +355,6 @@ function durationStats(tickets: AutomatedTicket[]): AutomatedDurationStats {
     cycleAvgMinutes: avg(cycle),
     cycleMedianMinutes: med(cycle),
   };
-}
-
-function toCountRows(counts: Record<string, number>, denominator: number): CountRow[] {
-  return Object.entries(counts)
-    .map(([key, count]) => ({ key, count, share: denominator ? round4(count / denominator) : null }))
-    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
-}
-
-function groupCounts(tickets: AutomatedTicket[], keyFn: (t: AutomatedTicket) => string): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const t of tickets) {
-    const key = keyFn(t);
-    counts[key] = (counts[key] || 0) + 1;
-  }
-  return counts;
 }
 
 /**

@@ -8,6 +8,21 @@ import {
 } from "@/lib/manila-date";
 
 /**
+ * Real-instant comparison, not string comparison. `completedAt`/`endorsedAt` are Postgres
+ * timestamptz values as returned by supabase-js (suffixed `+00:00`), while `dueAtIso`/`nowIso` are
+ * built from JS `Date.toISOString()` (suffixed `Z`, always millisecond-precision) — two valid but
+ * differently-formatted ISO strings for the same moment don't always compare correctly as plain
+ * strings (e.g. `"...T15:59:59+00:00"` vs `"...T15:59:59.999Z"` for times a second apart can sort
+ * the wrong way lexically). Comparing the actual parsed instants is correct regardless of format.
+ */
+function isAtOrBefore(a: string, b: string): boolean {
+  return new Date(a).getTime() <= new Date(b).getTime();
+}
+function isAfter(a: string, b: string): boolean {
+  return new Date(a).getTime() > new Date(b).getTime();
+}
+
+/**
  * Account Creation SLA engine — pure functions, no I/O. Absorbs and generalizes what
  * lib/late-pickup.ts used to do (11 AM Manila cutoff, Day1/Day2 business-day math), plus the
  * Production/Sandbox/Sandbox+DataLoading classification and the independent per-milestone status
@@ -144,8 +159,8 @@ function day1SeSetupStatus(
   dueAtIso: string,
   nowIso: string
 ): Day1SeSetupStatus {
-  if (completedAt) return completedAt <= dueAtIso ? "completed" : "late";
-  if (nowIso > dueAtIso) return "late";
+  if (completedAt) return isAtOrBefore(completedAt, dueAtIso) ? "completed" : "late";
+  if (isAfter(nowIso, dueAtIso)) return "late";
   if (toManilaDateString(nowIso) === toManilaDateString(dueAtIso)) return "at_risk";
   return startedAt ? "in_progress" : "not_started";
 }
@@ -160,8 +175,8 @@ function day1SeSetupStatus(
  * account-creation-view.ts's MILESTONE_STATUS_META copy for the matching UI framing).
  */
 function day1L3EndorsementStatus(endorsedAt: string | null, dueAtIso: string, nowIso: string): Day1L3EndorsementStatus {
-  if (endorsedAt) return endorsedAt <= dueAtIso ? "endorsed" : "late";
-  if (nowIso > dueAtIso) return "missing";
+  if (endorsedAt) return isAtOrBefore(endorsedAt, dueAtIso) ? "endorsed" : "late";
+  if (isAfter(nowIso, dueAtIso)) return "missing";
   return "pending";
 }
 
@@ -169,8 +184,8 @@ function day1L3EndorsementStatus(endorsedAt: string | null, dueAtIso: string, no
 
 /** completedAt is the linked L3 ticket's first "For Checking" transition (extractL3ForCheckingAt_). */
 function day2Status(completedAt: string | null, dueAtIso: string, nowIso: string): Day2Status {
-  if (completedAt) return completedAt <= dueAtIso ? "completed" : "late";
-  if (nowIso > dueAtIso) return "late";
+  if (completedAt) return isAtOrBefore(completedAt, dueAtIso) ? "completed" : "late";
+  if (isAfter(nowIso, dueAtIso)) return "late";
   if (toManilaDateString(nowIso) === toManilaDateString(dueAtIso)) return "at_risk";
   return "pending";
 }
@@ -185,8 +200,8 @@ function day3Status(
   nowIso: string
 ): Day3Status {
   if (!hasDataLoading || !dueAtIso) return "not_applicable";
-  if (l3CompletedAt) return l3CompletedAt <= dueAtIso ? "completed" : "late";
-  if (nowIso > dueAtIso) return "late";
+  if (l3CompletedAt) return isAtOrBefore(l3CompletedAt, dueAtIso) ? "completed" : "late";
+  if (isAfter(nowIso, dueAtIso)) return "late";
   if (toManilaDateString(nowIso) === toManilaDateString(dueAtIso)) return "at_risk";
   return "pending";
 }

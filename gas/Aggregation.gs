@@ -411,7 +411,12 @@ function computeDailyBucket_(team, rows) {
       if (fcr && fcr !== 'N/A') {
         fcrEligible++;
         if (esc === 'N/A' && fcr === 'Yes') fcrNotEscalated++;
-        if (esc && esc !== 'N/A' && fcr === 'No') escalated++;
+        // isRealEscalation_ (not a bare non-N/A check) — 'CA'/'SE' mean "handled inside the
+        // team", same real-escalation definition buildResolvedIndex_/buildResolvedByAssigneeMonth_
+        // already use. Found via a full-codebase audit: this spot (and its twin below/above)
+        // counted any non-N/A value as an escalation, inflating escalated_count relative to the
+        // dashboard's actual Escalation Rate, which is built on the correct definition.
+        if (isRealEscalation_(esc) && fcr === 'No') escalated++;
       }
     }
 
@@ -444,8 +449,10 @@ function computeDailyBucket_(team, rows) {
     }
 
     // Ticket Wait Time (SE): average time spent in "For Peer Review" per completed review cycle.
-    // Same business rule as getPeerReviewWaitReport_ (PeerReviewApi.gs) — only cycles that exited
-    // to On Hold or For Checking count as a real completed wait; other exits (e.g. cancelled) are
+    // Same business rule as lib/lead-cycle-time.ts's sumPeerReviewMinutes (PeerReviewApi.gs, the
+    // GAS-side original this was ported from, was deleted as unreachable dead code) — only cycles
+    // that exited to On Hold or For Checking count as a real completed wait; other exits (e.g.
+    // cancelled) are
     // excluded so the two views of this data never disagree. Bucketed by the ticket's CREATED date
     // (like on-hold pickup above), not by when each cycle actually occurred — a ticket created in
     // an earlier period whose review cycle finishes now still counts against its creation date.
@@ -791,7 +798,12 @@ function computeAssigneeMonthlyBucket_(team, rows) {
       if (fcr && fcr !== 'N/A') {
         fcrEligible++;
         if (esc === 'N/A' && fcr === 'Yes') fcrNotEscalated++;
-        if (esc && esc !== 'N/A' && fcr === 'No') escalated++;
+        // isRealEscalation_ (not a bare non-N/A check) — 'CA'/'SE' mean "handled inside the
+        // team", same real-escalation definition buildResolvedIndex_/buildResolvedByAssigneeMonth_
+        // already use. Found via a full-codebase audit: this spot (and its twin below/above)
+        // counted any non-N/A value as an escalation, inflating escalated_count relative to the
+        // dashboard's actual Escalation Rate, which is built on the correct definition.
+        if (isRealEscalation_(esc) && fcr === 'No') escalated++;
       }
     }
 

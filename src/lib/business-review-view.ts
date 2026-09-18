@@ -17,7 +17,7 @@ import { topDriver, type DriverRow, type DriverVerdict } from "@/lib/business-re
 export function formatPct(pctDiff: number | null): string {
   if (pctDiff === null) return "—";
   const sign = pctDiff > 0 ? "+" : "";
-  return `${sign}${pctDiff.toFixed(1)}%`;
+  return `${sign}${pctDiff.toFixed(2)}%`;
 }
 
 function topDriverPhrase(rows: DriverRow[]): { key: string; change: number } | null {

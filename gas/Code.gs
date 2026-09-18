@@ -17,12 +17,30 @@ function doPost(e) {
   return handleRequest_(e, 'POST');
 }
 
+/**
+ * Hashes both sides before comparing, so a timing difference can't leak how many of the raw
+ * secret's leading bytes an attacker's guess matched — a plain `!==` short-circuits on the first
+ * mismatched character, which is exactly what a timing side-channel attack measures. This is the
+ * one gate the whole GAS backend relies on (found via a full-codebase security audit), so it gets
+ * the constant-time treatment even though Apps Script's own network jitter already makes the
+ * attack impractical in practice — defense-in-depth, not a response to a live exploit.
+ */
+function timingSafeEqual_(a, b) {
+  const digestA = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(a));
+  const digestB = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(b));
+  let diff = 0;
+  for (let i = 0; i < digestA.length; i++) {
+    diff |= digestA[i] ^ digestB[i];
+  }
+  return diff === 0;
+}
+
 function handleRequest_(e, method) {
   try {
     assertConfigured_();
     const params = (e && e.parameter) || {};
 
-    if (params.apiKey !== getScriptProperty_('API_SHARED_SECRET')) {
+    if (!timingSafeEqual_(params.apiKey, getScriptProperty_('API_SHARED_SECRET'))) {
       return jsonResponse_({ ok: false, error: 'Unauthorized' });
     }
 
@@ -95,9 +113,11 @@ function handleRequest_(e, method) {
       // 'backlog-aging-report', 'lead-cycle-time-report', 'late-pickup-report',
       // 'peer-review-wait-report', and 'tool-assisted-cycle-time' were removed here — Phase 4
       // moved every one of those reads to query Supabase directly (src/lib/*.ts), so nothing in
-      // the Next.js app calls them anymore. Their implementations still exist (MetricsApi.gs,
-      // BacklogAgingApi.gs, LeadCycleTimeApi.gs, LatePickupApi.gs, PeerReviewApi.gs,
-      // ToolAssistedApi.gs) — left in place, unreachable, rather than deleted outright.
+      // the Next.js app calls them anymore. MetricsApi.gs is still live (Insights.gs calls it for
+      // AI narrative generation); the other five implementations (BacklogAgingApi.gs,
+      // LeadCycleTimeApi.gs, LatePickupApi.gs, PeerReviewApi.gs, ToolAssistedApi.gs) were verified
+      // fully unreachable end-to-end via a full-codebase audit and deleted outright rather than
+      // left as dead weight.
 
       default:
         return jsonResponse_({ ok: false, error: `Unknown route: ${route}` });

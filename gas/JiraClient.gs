@@ -98,7 +98,22 @@ function jiraSearchIssues_(jql, pageToken, maxResults, fields) {
  * Retrying is safe: the only call sets a field to a fixed value, so a replayed request lands on the
  * same state. Jira returns 204 with no body, so a successful call is simply one that doesn't throw.
  */
+/**
+ * The only field this integration is allowed to write. A closed list rather than trusting every
+ * caller to only ever pass the right thing — this function imposed no restriction of its own
+ * before (found via a full-codebase security audit), so a future caller passing through
+ * client-supplied field data would have silently gained the ability to overwrite ANY Jira field
+ * on ANY issue. Today there is exactly one caller (IncidentsApi.removeTicket, clearing Report
+ * Tagging) and exactly one field it's allowed to touch; extend this list deliberately if that
+ * ever changes, don't just widen the caller.
+ */
+const JIRA_WRITABLE_FIELDS_ = ['customfield_10262'];
+
 function jiraUpdateIssueFields_(issueKey, fields) {
+  const disallowed = Object.keys(fields).filter((f) => JIRA_WRITABLE_FIELDS_.indexOf(f) === -1);
+  if (disallowed.length) {
+    throw new Error(`jiraUpdateIssueFields_: field(s) not in the writable allowlist: ${disallowed.join(', ')}`);
+  }
   const base = getScriptProperty_('JIRA_BASE_URL');
   jiraFetchWithRetry_(`${base}/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
     method: 'put',

@@ -1,7 +1,7 @@
 import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
 import { excludedIssueTypes, isExcludedIssueType } from "@/lib/teams";
 import { toManilaDateString } from "@/lib/manila-date";
-import { meaningfulLabels, toCountRows, type CountRow } from "@/lib/ticket-breakdowns";
+import { meaningfulLabels, toCountRows, groupCounts, type CountRow } from "@/lib/ticket-breakdowns";
 
 /**
  * Business Review Prep's own "what's driving Ticket Volume" breakdown. None of the existing
@@ -55,15 +55,6 @@ async function fetchCreatedRows(teamKey: string, startDate: string, endDate: str
     /* eslint-enable @typescript-eslint/no-explicit-any */
     return q;
   }, "issue_key");
-}
-
-function groupCounts<T>(rows: T[], keyFn: (r: T) => string): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const r of rows) {
-    const key = keyFn(r);
-    counts[key] = (counts[key] || 0) + 1;
-  }
-  return counts;
 }
 
 /**
