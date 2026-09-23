@@ -415,6 +415,34 @@ create table project_phases (
 
 create index project_phases_project_position_idx on project_phases (project_id, position);
 
+-- Phase 4 (notes + activity log) -- see project-notes-and-activity.sql for the create-table path
+-- on an existing database.
+create table project_notes (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  phase_id uuid references project_phases(id) on delete cascade,
+  note_type text not null default 'update'
+    check (note_type in ('update', 'decision', 'risk', 'blocker', 'followup')),
+  content text not null,
+  author_email text not null,
+  resolved boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index project_notes_project_created_idx on project_notes (project_id, created_at desc);
+
+create table project_activity_log (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  event_type text not null,
+  summary text not null,
+  actor_email text not null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index project_activity_log_project_created_idx on project_activity_log (project_id, created_at desc);
+
 -- ============================================================================
 -- My Work (personal work tracking) lives in its own file: supabase/my-work.sql
 --
@@ -439,7 +467,8 @@ begin
         'sync_checkpoint', 'agg_checkpoint', 'error_log', 'roster', 'leave', 'rto',
         'insights_cache', 'app_config', 'incident_tickets', 'incident_logs',
         'projects', 'initiative_tickets',
-        'ticket_project_map', 'project_progress', 'project_tasks', 'project_phases'
+        'ticket_project_map', 'project_progress', 'project_tasks', 'project_phases',
+        'project_notes', 'project_activity_log'
       )
   loop
     execute format('alter table %I enable row level security;', t);

@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ChevronDown, ChevronRight, ChevronUp, Trash2 } from "lucide-react";
-import { PHASE_STATUSES, PHASE_STATUS_META, isPhaseDelayed, type ProjectPhase } from "@/lib/project-tracking";
+import { PHASE_STATUSES, PHASE_STATUS_META, isPhaseDelayed, type ProjectNote, type ProjectPhase } from "@/lib/project-tracking";
 import { formatManilaDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { NotesSection } from "@/components/projects/NotesSection";
 
 /**
  * A project's phases, ordered by `position` — collapsed rows for a quick scan (status, progress,
@@ -13,7 +14,15 @@ import { cn } from "@/lib/utils";
  * phase past its neighbor and PATCHes the FULL id order for the project (see `reorderPhases` —
  * a partial list would leave the phases that didn't move with stale positions).
  */
-export function PhasesPanel({ projectId, phases }: { projectId: string; phases: ProjectPhase[] }) {
+export function PhasesPanel({
+  projectId,
+  phases,
+  notesByPhase,
+}: {
+  projectId: string;
+  phases: ProjectPhase[];
+  notesByPhase: Record<string, ProjectNote[]>;
+}) {
   const router = useRouter();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [name, setName] = useState("");
@@ -233,6 +242,10 @@ export function PhasesPanel({ projectId, phases }: { projectId: string; phases: 
                   className="form-input text-sm"
                   placeholder="Notes"
                 />
+                <div className="border-t border-neutral-200 pt-2 mt-1">
+                  <p className="text-[11px] uppercase tracking-wide text-neutral-400 mb-2">Discussion</p>
+                  <NotesSection projectId={projectId} phaseId={phase.id} notes={notesByPhase[phase.id] ?? []} />
+                </div>
               </div>
             )}
           </div>

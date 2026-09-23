@@ -1,12 +1,18 @@
 import { getSupabaseClient } from "@/lib/supabase";
-import type {
-  InitiativeTicket,
-  Project,
-  ProjectPhase,
-  ProjectProgress,
-  ProjectTask,
-  TicketAssignment,
+import {
+  healthLabel,
+  PHASE_STATUS_META,
+  projectQuadrantOf,
+  type InitiativeTicket,
+  type Project,
+  type ProjectActivityEntry,
+  type ProjectNote,
+  type ProjectPhase,
+  type ProjectProgress,
+  type ProjectTask,
+  type TicketAssignment,
 } from "@/lib/project-tracking";
+import { QUADRANT_META } from "@/lib/work";
 
 /**
  * Server-only data access for Records -> Project Tracking, reading/writing the live
@@ -34,6 +40,34 @@ function numOrBlank(v: unknown): number | "" {
 
 function blankToNull(v: number | "" | undefined): number | null {
   return v === "" || v === undefined || v === null ? null : Number(v);
+}
+
+/**
+ * Writes one activity-log entry. Called from every tracked mutation site (status/health/priority
+ * change, phase create/status/target-date change, ticket link/unlink) — never surfaced as its own
+ * endpoint, since nothing client-side writes activity directly.
+ *
+ * Deliberately swallows its own failure rather than throwing: this is a secondary audit trail, and
+ * before `project_activity_log` exists (she hasn't run this phase's migration yet), every one of
+ * those mutation sites would otherwise start failing an otherwise-successful write just because the
+ * new table isn't there yet.
+ */
+export async function logActivity(
+  projectId: string,
+  eventType: string,
+  summary: string,
+  actorEmail: string,
+  metadata: Record<string, unknown> = {}
+): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from("project_activity_log").insert({
+    project_id: projectId,
+    event_type: eventType,
+    summary,
+    actor_email: actorEmail,
+    metadata,
+  });
+  if (error) console.error(`Could not log activity (${eventType} on project ${projectId}): ${error.message}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +165,7 @@ export async function createProject(
   return rowToProject(data);
 }
 
-export async function updateProject(id: string, payload: Partial<Project>): Promise<Project> {
+export async function updateProject(id: string, payload: Partial<Project>, actorEmail?: string): Promise<Project> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from("projects")
@@ -140,7 +174,35 @@ export async function updateProject(id: string, payload: Partial<Project>): Prom
     .select("*")
     .single();
   if (error) throw new Error(`Could not update project ${id}: ${error.message}`);
-  return rowToProject(data);
+  const project = rowToProject(data);
+
+  // Activity log, one entry per tracked field actually present in this PATCH — every caller in
+  // this app only ever sends one semantic change at a time (a single select/QuadrantSelect firing
+  // one PATCH), so this doesn't need to diff against the pre-update row.
+  if (actorEmail) {
+    if ("status" in payload) {
+      await logActivity(id, "status_changed", `Status changed to "${project.status}"`, actorEmail);
+    }
+    if ("health" in payload) {
+      await logActivity(
+        id,
+        "health_changed",
+        project.health ? `Health changed to "${healthLabel(project.health)}"` : "Health cleared",
+        actorEmail
+      );
+    }
+    if ("urgent" in payload || "important" in payload) {
+      const quadrant = projectQuadrantOf(project);
+      await logActivity(
+        id,
+        "priority_changed",
+        quadrant ? `Priority changed to "${QUADRANT_META[quadrant].verb}"` : "Priority cleared (unsorted)",
+        actorEmail
+      );
+    }
+  }
+
+  return project;
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -330,8 +392,31 @@ export async function assignTickets(payload: {
   const projectId = payload.project_id ? String(payload.project_id) : "";
   if (!keys.length) return { assigned: 0, unassigned: 0 };
 
+  // Read prior assignments first so a move/unassign logs against the project(s) tickets are
+  // actually LEAVING, not just the one (if any) they're joining.
+  const { data: existingRows } = await supabase
+    .from("ticket_project_map")
+    .select("issue_key, project_id")
+    .in("issue_key", keys);
+  const priorProjectByKey = new Map((existingRows ?? []).map((r) => [r.issue_key, r.project_id]));
+
   const { error: deleteError } = await supabase.from("ticket_project_map").delete().in("issue_key", keys);
   if (deleteError) throw new Error(`Could not update ticket assignments: ${deleteError.message}`);
+
+  // Group by the project each ticket is leaving — excludes a ticket simply re-saved onto the same
+  // project it was already on, which isn't really a move.
+  const leftProjects = new Map<string, string[]>();
+  for (const key of keys) {
+    const prior = priorProjectByKey.get(key);
+    if (prior && prior !== projectId) {
+      if (!leftProjects.has(prior)) leftProjects.set(prior, []);
+      leftProjects.get(prior)!.push(key);
+    }
+  }
+  for (const [pid, issueKeys] of Array.from(leftProjects.entries())) {
+    await logActivity(pid, "ticket_unlinked", `Unlinked ${issueKeys.join(", ")}`, payload.assigned_by, { issue_keys: issueKeys });
+  }
+
   if (!projectId) return { assigned: 0, unassigned: keys.length };
 
   const now = nowIso();
@@ -343,6 +428,7 @@ export async function assignTickets(payload: {
   }));
   const { error: insertError } = await supabase.from("ticket_project_map").insert(rows);
   if (insertError) throw new Error(`Could not assign tickets: ${insertError.message}`);
+  await logActivity(projectId, "ticket_linked", `Linked ${keys.join(", ")}`, payload.assigned_by, { issue_keys: keys });
   return { assigned: keys.length, unassigned: 0 };
 }
 
@@ -447,10 +533,12 @@ export async function createPhase(email: string, payload: Partial<ProjectPhase>)
   };
   const { data, error } = await supabase.from("project_phases").insert(record).select("*").single();
   if (error) throw new Error(`Could not create phase: ${error.message}`);
-  return rowToPhase(data);
+  const phase = rowToPhase(data);
+  await logActivity(phase.project_id, "phase_created", `Phase "${phase.name}" added`, email);
+  return phase;
 }
 
-export async function updatePhase(id: string, payload: Partial<ProjectPhase>): Promise<ProjectPhase> {
+export async function updatePhase(id: string, payload: Partial<ProjectPhase>, actorEmail?: string): Promise<ProjectPhase> {
   const supabase = getSupabaseClient();
   const { id: _ignored, ...rest } = payload as Partial<ProjectPhase> & { id?: string };
   void _ignored;
@@ -461,7 +549,28 @@ export async function updatePhase(id: string, payload: Partial<ProjectPhase>): P
     .select("*")
     .single();
   if (error) throw new Error(`Could not update phase ${id}: ${error.message}`);
-  return rowToPhase(data);
+  const phase = rowToPhase(data);
+
+  if (actorEmail) {
+    if ("status" in payload) {
+      await logActivity(
+        phase.project_id,
+        "phase_status_changed",
+        `Phase "${phase.name}" status changed to "${PHASE_STATUS_META[phase.status].label}"`,
+        actorEmail
+      );
+    }
+    if ("target_date" in payload) {
+      await logActivity(
+        phase.project_id,
+        "phase_target_date_changed",
+        `Phase "${phase.name}" target date changed to ${phase.target_date || "none"}`,
+        actorEmail
+      );
+    }
+  }
+
+  return phase;
 }
 
 export async function deletePhase(id: string): Promise<void> {
@@ -486,4 +595,95 @@ export async function reorderPhases(order: string[]): Promise<void> {
     return { error: failed?.error };
   });
   if (error) throw new Error(`Could not reorder phases: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Project + phase notes (Phase 4)
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToNote(row: any): ProjectNote {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    phase_id: row.phase_id ?? null,
+    note_type: row.note_type ?? "update",
+    content: row.content ?? "",
+    author_email: row.author_email ?? "",
+    resolved: row.resolved === true,
+    created_at: row.created_at,
+  };
+}
+
+export async function getNotes(params: { project_id?: string; phase_id?: string } = {}): Promise<ProjectNote[]> {
+  const supabase = getSupabaseClient();
+  let query = supabase.from("project_notes").select("*").order("created_at", { ascending: false });
+  if (params.project_id) query = query.eq("project_id", params.project_id);
+  if (params.phase_id) query = query.eq("phase_id", params.phase_id);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not load notes: ${error.message}`);
+  return (data ?? []).map(rowToNote);
+}
+
+export async function addNote(email: string, payload: Partial<ProjectNote>): Promise<ProjectNote> {
+  const supabase = getSupabaseClient();
+  const { id: _ignored, author_email: _ignoredAuthor, ...rest } = payload as Partial<ProjectNote> & {
+    id?: string;
+  };
+  void _ignored;
+  void _ignoredAuthor;
+  const record = {
+    phase_id: null,
+    note_type: "update",
+    resolved: false,
+    ...rest,
+    author_email: email,
+    created_at: nowIso(),
+  };
+  const { data, error } = await supabase.from("project_notes").insert(record).select("*").single();
+  if (error) throw new Error(`Could not add note: ${error.message}`);
+  return rowToNote(data);
+}
+
+/** Author-only, enforced here rather than left to the UI to hide the button — a delete request
+ * for someone else's note is rejected outright, not silently ignored. */
+export async function deleteNote(id: string, requestorEmail: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { data: existing, error: fetchError } = await supabase
+    .from("project_notes")
+    .select("author_email")
+    .eq("id", id)
+    .single();
+  if (fetchError) throw new Error(`Could not delete note ${id}: ${fetchError.message}`);
+  if (existing.author_email !== requestorEmail) {
+    throw new Error("Only the note's author can delete it.");
+  }
+  const { error } = await supabase.from("project_notes").delete().eq("id", id);
+  if (error) throw new Error(`Could not delete note ${id}: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Activity log (Phase 4) — read-only from Next.js; written by logActivity above
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToActivity(row: any): ProjectActivityEntry {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    event_type: row.event_type ?? "",
+    summary: row.summary ?? "",
+    actor_email: row.actor_email ?? "",
+    metadata: row.metadata ?? {},
+    created_at: row.created_at,
+  };
+}
+
+export async function getActivityLog(params: { project_id?: string } = {}): Promise<ProjectActivityEntry[]> {
+  const supabase = getSupabaseClient();
+  let query = supabase.from("project_activity_log").select("*").order("created_at", { ascending: false });
+  if (params.project_id) query = query.eq("project_id", params.project_id);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not load activity log: ${error.message}`);
+  return (data ?? []).map(rowToActivity);
 }

@@ -6,8 +6,10 @@ import {
   getProjectProgress,
   getProjectTasks,
   getPhases,
+  getNotes,
+  getActivityLog,
 } from "@/lib/project-tracking-store";
-import type { ProjectPhase, ProjectTask } from "@/lib/project-tracking";
+import type { ProjectActivityEntry, ProjectNote, ProjectPhase, ProjectTask } from "@/lib/project-tracking";
 import { ProjectForm } from "@/components/forms/ProjectForm";
 import { ProjectsView } from "@/components/forms/ProjectsView";
 import { ProgressRecordsTable } from "@/components/forms/ProgressRecordsTable";
@@ -27,7 +29,7 @@ export default async function ProjectsPage({
 }) {
   const team = typeof searchParams.team === "string" ? searchParams.team : undefined;
 
-  const [teams, allProjects, tickets, assignments, progress, tasks, phases] = await Promise.all([
+  const [teams, allProjects, tickets, assignments, progress, tasks, phases, notes, activity] = await Promise.all([
     getTeams().catch(() => []),
     getProjects({}).catch(() => []),
     getInitiativeTickets().catch(() => []),
@@ -35,6 +37,8 @@ export default async function ProjectsPage({
     getProjectProgress().catch(() => []),
     getProjectTasks().catch(() => []),
     getPhases().catch(() => []),
+    getNotes().catch(() => []),
+    getActivityLog().catch(() => []),
   ]);
 
   // The team pills scope the Records table/portfolio widgets below, but the progress log and
@@ -77,6 +81,19 @@ export default async function ProjectsPage({
     (phasesByProject[p.project_id] ??= []).push(p);
   }
 
+  // Notes per project (getNotes is already newest-first) — split into project-level vs
+  // phase-level happens in ProjectDrilldownPanel, since both live in the same table/query.
+  const notesByProject: Record<string, ProjectNote[]> = {};
+  for (const n of notes) {
+    (notesByProject[n.project_id] ??= []).push(n);
+  }
+
+  // Activity log per project (getActivityLog is already newest-first).
+  const activityByProject: Record<string, ProjectActivityEntry[]> = {};
+  for (const a of activity) {
+    (activityByProject[a.project_id] ??= []).push(a);
+  }
+
   const projectOptions = allProjects.map((r) => ({
     project_id: r.project_id,
     project_name: r.project_name,
@@ -107,6 +124,8 @@ export default async function ProjectsPage({
             processedByProject={processedByProject}
             tasksByProject={tasksByProject}
             phasesByProject={phasesByProject}
+            notesByProject={notesByProject}
+            activityByProject={activityByProject}
           />
         )}
       </div>

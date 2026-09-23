@@ -226,6 +226,70 @@ export function isPhaseDelayed(
   return target.getTime() < today.getTime();
 }
 
+// ---------------------------------------------------------------------------- notes + activity (Phase 4)
+
+export const NOTE_TYPES = ["update", "decision", "risk", "blocker", "followup"] as const;
+export type ProjectNoteType = (typeof NOTE_TYPES)[number];
+
+export const NOTE_TYPE_META: Record<ProjectNoteType, { label: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
+  update: { label: "Update", tone: "neutral" },
+  decision: { label: "Decision", tone: "success" },
+  risk: { label: "Risk", tone: "warning" },
+  blocker: { label: "Blocker", tone: "danger" },
+  followup: { label: "Follow-up", tone: "neutral" },
+};
+
+/** A note against a project, or against one of its phases (`phase_id` set). `resolved` only means
+ * something for `note_type: "blocker"` today — Phase 5 derives "is this project blocked" from an
+ * unresolved blocker note; every other type just leaves it false. */
+export type ProjectNote = {
+  id: string;
+  project_id: string;
+  phase_id: string | null;
+  note_type: ProjectNoteType;
+  content: string;
+  author_email: string;
+  resolved: boolean;
+  created_at: string;
+};
+
+/** Known event types the app itself writes — kept as labels for the log to read naturally, not as
+ * a closed set: `logActivity` accepts any string, so a future phase can add its own event type
+ * without this list needing to grow in lockstep. */
+export const ACTIVITY_EVENT_LABELS: Record<string, string> = {
+  status_changed: "Status changed",
+  health_changed: "Health changed",
+  priority_changed: "Priority changed",
+  phase_created: "Phase added",
+  phase_status_changed: "Phase status changed",
+  phase_target_date_changed: "Phase target date changed",
+  ticket_linked: "Ticket linked",
+  ticket_unlinked: "Ticket unlinked",
+  blocker_raised: "Blocker raised",
+  blocker_resolved: "Blocker resolved",
+  risk_added: "Risk added",
+};
+
+/** A human label for an event type — the known ones read naturally, an unrecognised one still
+ * renders (title-cased from its snake_case) rather than showing raw plumbing. */
+export function activityEventLabel(eventType: string): string {
+  if (ACTIVITY_EVENT_LABELS[eventType]) return ACTIVITY_EVENT_LABELS[eventType];
+  return eventType
+    .split("_")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+export type ProjectActivityEntry = {
+  id: string;
+  project_id: string;
+  event_type: string;
+  summary: string;
+  actor_email: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
 /** Counts for the team-filtered project list — `active` means not archived and not yet Done,
  * `blocked` reads the workflow `status`, `onTrack`/`atRisk` read the separately-set `health`
  * judgment. */

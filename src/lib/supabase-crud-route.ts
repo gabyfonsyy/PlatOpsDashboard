@@ -11,7 +11,10 @@ import { authOptions } from "@/lib/auth";
  */
 export function createSupabaseCrudRouteHandlers<T>(table: {
   create: (email: string, payload: Record<string, unknown>) => Promise<T>;
-  update: (id: string, payload: Record<string, unknown>) => Promise<T>;
+  // `email` here is the acting user, for stores that log activity off a PATCH (e.g. updateProject,
+  // updatePhase) — a store that doesn't need it can just declare fewer parameters and ignore it,
+  // same as every other table passed to this factory already does.
+  update: (id: string, payload: Record<string, unknown>, email: string) => Promise<T>;
   remove: (id: string) => Promise<void>;
 }) {
   async function requireSessionEmail() {
@@ -45,7 +48,7 @@ export function createSupabaseCrudRouteHandlers<T>(table: {
       try {
         const { id, ...payload } = await req.json();
         if (!id) throw new Error("id is required.");
-        const data = await table.update(id, payload);
+        const data = await table.update(id, payload, email);
         return NextResponse.json({ ok: true, data });
       } catch (err) {
         return fail(err);
