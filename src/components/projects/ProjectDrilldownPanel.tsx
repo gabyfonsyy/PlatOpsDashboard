@@ -7,7 +7,7 @@ import { Pencil } from "lucide-react";
 import { SidePanel } from "@/components/ui/SidePanel";
 import { QuadrantSelect } from "@/components/work/Quadrant";
 import type { Triage } from "@/lib/work";
-import { HEALTH_META, type Project, type ProjectTask } from "@/lib/project-tracking";
+import { HEALTH_META, type Project, type ProjectPhase, type ProjectTask } from "@/lib/project-tracking";
 import { resolveDisplayPercent } from "@/lib/projection";
 import { formatManilaDate } from "@/lib/format";
 import { Badge } from "@/components/ui/Badge";
@@ -15,6 +15,8 @@ import type { TeamConfig } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { EditProjectDialog } from "@/components/forms/EditProjectDialog";
 import { ProjectOnePager } from "@/components/projects/ProjectOnePager";
+import { PhasesPanel } from "@/components/projects/PhasesPanel";
+import { ProjectPhaseGanttChart } from "@/components/projects/ProjectPhaseGanttChart";
 
 const STATUS_OPTIONS: Project["status"][] = ["Not Started", "In Progress", "Blocked", "Done"];
 
@@ -32,6 +34,7 @@ export function ProjectDrilldownPanel({
   teams,
   processedByProject,
   tasksByProject,
+  phasesByProject,
 }: {
   project: Project | null;
   open: boolean;
@@ -39,6 +42,7 @@ export function ProjectDrilldownPanel({
   teams: TeamConfig[];
   processedByProject: Record<string, number>;
   tasksByProject: Record<string, ProjectTask[]>;
+  phasesByProject: Record<string, ProjectPhase[]>;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -78,6 +82,7 @@ export function ProjectDrilldownPanel({
   const hasTasks = tasks.length > 0;
   const taskStats = hasTasks ? { total: tasks.length, done: tasks.filter((t) => t.done).length } : undefined;
   const pct = resolveDisplayPercent(project, processedByProject[project.project_id], taskStats);
+  const phases = phasesByProject[project.project_id] ?? [];
 
   return (
     <>
@@ -152,6 +157,14 @@ export function ProjectDrilldownPanel({
                 <div className="h-full rounded-full bg-sprout-500" style={{ width: `${pct}%` }} />
               </div>
               <span className="text-sm font-medium text-neutral-900">{pct}%</span>
+            </div>
+          </div>
+
+          <div className="border-t border-line/70 pt-4">
+            <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Phases</p>
+            <div className="flex flex-col gap-4">
+              {phases.length > 0 && <ProjectPhaseGanttChart phases={phases} />}
+              <PhasesPanel projectId={project.project_id} phases={phases} />
             </div>
           </div>
 

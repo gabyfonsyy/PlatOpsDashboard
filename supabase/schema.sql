@@ -392,6 +392,29 @@ create table project_tasks (
   updated_at timestamptz not null default now()
 );
 
+-- Phase 3 (phases + phase-aware Gantt) -- see project-phases.sql for the create-table path on an
+-- existing database.
+create table project_phases (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  name text not null,
+  description text default '',
+  owner text default '',
+  status text not null default 'not_started'
+    check (status in ('not_started', 'in_progress', 'blocked', 'done')),
+  progress integer not null default 0 check (progress between 0 and 100),
+  start_date date,
+  target_date date,
+  actual_completion_date date,
+  notes text default '',
+  position integer not null default 0,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index project_phases_project_position_idx on project_phases (project_id, position);
+
 -- ============================================================================
 -- My Work (personal work tracking) lives in its own file: supabase/my-work.sql
 --
@@ -416,7 +439,7 @@ begin
         'sync_checkpoint', 'agg_checkpoint', 'error_log', 'roster', 'leave', 'rto',
         'insights_cache', 'app_config', 'incident_tickets', 'incident_logs',
         'projects', 'initiative_tickets',
-        'ticket_project_map', 'project_progress', 'project_tasks'
+        'ticket_project_map', 'project_progress', 'project_tasks', 'project_phases'
       )
   loop
     execute format('alter table %I enable row level security;', t);

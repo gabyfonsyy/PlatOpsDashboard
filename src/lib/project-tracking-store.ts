@@ -2,6 +2,7 @@ import { getSupabaseClient } from "@/lib/supabase";
 import type {
   InitiativeTicket,
   Project,
+  ProjectPhase,
   ProjectProgress,
   ProjectTask,
   TicketAssignment,
@@ -386,4 +387,103 @@ export async function getInitiativeTickets(
     rows = rows.filter((r) => r.labels.split(",").map((s) => s.trim()).includes(label));
   }
   return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Project phases (Phase 3)
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToPhase(row: any): ProjectPhase {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    name: row.name ?? "",
+    description: row.description ?? "",
+    owner: row.owner ?? "",
+    status: row.status ?? "not_started",
+    progress: Number(row.progress) || 0,
+    start_date: row.start_date ?? "",
+    target_date: row.target_date ?? "",
+    actual_completion_date: row.actual_completion_date ?? "",
+    notes: row.notes ?? "",
+    position: Number(row.position) || 0,
+    created_by: row.created_by ?? "",
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function getPhases(params: { project_id?: string } = {}): Promise<ProjectPhase[]> {
+  const supabase = getSupabaseClient();
+  let query = supabase.from("project_phases").select("*").order("position", { ascending: true });
+  if (params.project_id) query = query.eq("project_id", params.project_id);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not load phases: ${error.message}`);
+  return (data ?? []).map(rowToPhase);
+}
+
+export async function createPhase(email: string, payload: Partial<ProjectPhase>): Promise<ProjectPhase> {
+  const supabase = getSupabaseClient();
+  const now = nowIso();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectPhase> & { id?: string };
+  void _ignored;
+  // New phases append to the end unless a position was explicitly given.
+  let position = rest.position;
+  if (position === undefined && rest.project_id) {
+    position = (await getPhases({ project_id: rest.project_id })).length;
+  }
+  const record = {
+    description: "",
+    owner: "",
+    notes: "",
+    status: "not_started",
+    progress: 0,
+    ...rest,
+    position: position ?? 0,
+    created_by: email,
+    created_at: now,
+    updated_at: now,
+  };
+  const { data, error } = await supabase.from("project_phases").insert(record).select("*").single();
+  if (error) throw new Error(`Could not create phase: ${error.message}`);
+  return rowToPhase(data);
+}
+
+export async function updatePhase(id: string, payload: Partial<ProjectPhase>): Promise<ProjectPhase> {
+  const supabase = getSupabaseClient();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectPhase> & { id?: string };
+  void _ignored;
+  const { data, error } = await supabase
+    .from("project_phases")
+    .update({ ...rest, updated_at: nowIso() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw new Error(`Could not update phase ${id}: ${error.message}`);
+  return rowToPhase(data);
+}
+
+export async function deletePhase(id: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from("project_phases").delete().eq("id", id);
+  if (error) throw new Error(`Could not delete phase ${id}: ${error.message}`);
+}
+
+/** Bulk reorder: `order` is the COMPLETE list of one project's phase ids, in their new order —
+ * each phase's `position` becomes its index. A partial list would leave phases not included in it
+ * with stale positions relative to the ones that moved, so callers always pass every phase id for
+ * that project, never just the ones that moved. */
+export async function reorderPhases(order: string[]): Promise<void> {
+  const supabase = getSupabaseClient();
+  const now = nowIso();
+  const { error } = await Promise.all(
+    order.map((id, index) =>
+      supabase.from("project_phases").update({ position: index, updated_at: now }).eq("id", id)
+    )
+  ).then((results) => {
+    const failed = results.find((r) => r.error);
+    return { error: failed?.error };
+  });
+  if (error) throw new Error(`Could not reorder phases: ${error.message}`);
 }

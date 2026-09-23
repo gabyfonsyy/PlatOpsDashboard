@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { QUADRANT_ORDER, type Triage } from "@/lib/work";
 import { QuadrantCell, QuadrantSelect } from "@/components/work/Quadrant";
-import { projectMatrixTally, type Project, type ProjectTask } from "@/lib/project-tracking";
+import { projectMatrixTally, type Project, type ProjectPhase, type ProjectTask } from "@/lib/project-tracking";
 import { ProjectDrilldownPanel } from "@/components/projects/ProjectDrilldownPanel";
 import type { TeamConfig } from "@/lib/teams";
 import { cn } from "@/lib/utils";
@@ -20,11 +20,13 @@ export function ProjectMatrix({
   teams,
   processedByProject,
   tasksByProject,
+  phasesByProject,
 }: {
   projects: Project[];
   teams: TeamConfig[];
   processedByProject: Record<string, number>;
   tasksByProject: Record<string, ProjectTask[]>;
+  phasesByProject: Record<string, ProjectPhase[]>;
 }) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -114,6 +116,7 @@ export function ProjectMatrix({
         teams={teams}
         processedByProject={processedByProject}
         tasksByProject={tasksByProject}
+        phasesByProject={phasesByProject}
       />
     </div>
   );

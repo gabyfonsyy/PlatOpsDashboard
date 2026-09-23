@@ -180,6 +180,52 @@ export type PortfolioSummary = {
   dueSoon: number;
 };
 
+// ---------------------------------------------------------------------------- phases (Phase 3)
+
+export const PHASE_STATUSES = ["not_started", "in_progress", "blocked", "done"] as const;
+export type ProjectPhaseStatus = (typeof PHASE_STATUSES)[number];
+
+export const PHASE_STATUS_META: Record<ProjectPhaseStatus, { label: string; tone: "success" | "warning" | "danger" | "neutral" }> = {
+  not_started: { label: "Not Started", tone: "neutral" },
+  in_progress: { label: "In Progress", tone: "warning" },
+  blocked: { label: "Blocked", tone: "danger" },
+  done: { label: "Done", tone: "success" },
+};
+
+/** One phase of a project (mirrors the live `project_phases` table). Ordered by `position`, which
+ * IS the plan — see the note on `lib/work.ts`'s own `ProjectPhase.id` for why order is never
+ * re-derived from anything else. A distinct type from that one: this is Records data, its own
+ * table, not a jsonb array on `work_projects`. */
+export type ProjectPhase = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  owner: string;
+  status: ProjectPhaseStatus;
+  progress: number;
+  start_date: string;
+  target_date: string;
+  actual_completion_date: string;
+  notes: string;
+  position: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** A phase reads as delayed when it has a target date in the past and isn't Done — Actual
+ * Completion Date is what a phase records once it finishes, never used to silently clear this. */
+export function isPhaseDelayed(
+  phase: Pick<ProjectPhase, "status" | "target_date">,
+  today = new Date()
+): boolean {
+  if (phase.status === "done" || !phase.target_date) return false;
+  const target = new Date(`${phase.target_date}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return false;
+  return target.getTime() < today.getTime();
+}
+
 /** Counts for the team-filtered project list — `active` means not archived and not yet Done,
  * `blocked` reads the workflow `status`, `onTrack`/`atRisk` read the separately-set `health`
  * judgment. */

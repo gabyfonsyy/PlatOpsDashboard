@@ -5,8 +5,9 @@ import {
   getTicketAssignments,
   getProjectProgress,
   getProjectTasks,
+  getPhases,
 } from "@/lib/project-tracking-store";
-import type { ProjectTask } from "@/lib/project-tracking";
+import type { ProjectPhase, ProjectTask } from "@/lib/project-tracking";
 import { ProjectForm } from "@/components/forms/ProjectForm";
 import { ProjectsView } from "@/components/forms/ProjectsView";
 import { ProgressRecordsTable } from "@/components/forms/ProgressRecordsTable";
@@ -26,13 +27,14 @@ export default async function ProjectsPage({
 }) {
   const team = typeof searchParams.team === "string" ? searchParams.team : undefined;
 
-  const [teams, allProjects, tickets, assignments, progress, tasks] = await Promise.all([
+  const [teams, allProjects, tickets, assignments, progress, tasks, phases] = await Promise.all([
     getTeams().catch(() => []),
     getProjects({}).catch(() => []),
     getInitiativeTickets().catch(() => []),
     getTicketAssignments().catch(() => []),
     getProjectProgress().catch(() => []),
     getProjectTasks().catch(() => []),
+    getPhases().catch(() => []),
   ]);
 
   // The team pills scope the Records table/portfolio widgets below, but the progress log and
@@ -69,6 +71,12 @@ export default async function ProjectsPage({
     (tasksByProject[t.project_id] ??= []).push(t);
   }
 
+  // Phases per project, from PROJECT_PHASES (already position-ordered by getPhases).
+  const phasesByProject: Record<string, ProjectPhase[]> = {};
+  for (const p of phases) {
+    (phasesByProject[p.project_id] ??= []).push(p);
+  }
+
   const projectOptions = allProjects.map((r) => ({
     project_id: r.project_id,
     project_name: r.project_name,
@@ -98,6 +106,7 @@ export default async function ProjectsPage({
             teams={teams}
             processedByProject={processedByProject}
             tasksByProject={tasksByProject}
+            phasesByProject={phasesByProject}
           />
         )}
       </div>
