@@ -3,9 +3,16 @@ import { portfolioSummary } from "@/lib/project-tracking";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 
 /** Five glanceable counts above the matrix — server component, pure derivation off the
- * already-team-filtered project list (no separate fetch). */
-export function PortfolioSummaryStrip({ projects }: { projects: Project[] }) {
-  const s = portfolioSummary(projects);
+ * already-team-filtered project list (no separate fetch). `blockedProjectIds` (Phase 5) makes
+ * "Blocked" count a project stuck for EITHER reason — workflow status or an active blocker note. */
+export function PortfolioSummaryStrip({
+  projects,
+  blockedProjectIds,
+}: {
+  projects: Project[];
+  blockedProjectIds?: Set<string>;
+}) {
+  const s = portfolioSummary(projects, blockedProjectIds);
   return (
     <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
       <MetricCard label="Active" value={String(s.active)} sublabel={`of ${s.total} total`} />

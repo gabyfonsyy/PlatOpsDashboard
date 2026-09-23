@@ -9,10 +9,14 @@ import { QuadrantSelect } from "@/components/work/Quadrant";
 import type { Triage } from "@/lib/work";
 import {
   HEALTH_META,
+  isBlocked,
   type Project,
   type ProjectActivityEntry,
+  type ProjectDependency,
+  type ProjectMilestone,
   type ProjectNote,
   type ProjectPhase,
+  type ProjectRisk,
   type ProjectTask,
 } from "@/lib/project-tracking";
 import { resolveDisplayPercent } from "@/lib/projection";
@@ -26,6 +30,9 @@ import { PhasesPanel } from "@/components/projects/PhasesPanel";
 import { ProjectPhaseGanttChart } from "@/components/projects/ProjectPhaseGanttChart";
 import { NotesSection } from "@/components/projects/NotesSection";
 import { ActivityLog } from "@/components/projects/ActivityLog";
+import { MilestonesChecklist } from "@/components/projects/MilestonesChecklist";
+import { DependenciesList } from "@/components/projects/DependenciesList";
+import { RisksRegister } from "@/components/projects/RisksRegister";
 
 const STATUS_OPTIONS: Project["status"][] = ["Not Started", "In Progress", "Blocked", "Done"];
 
@@ -46,6 +53,9 @@ export function ProjectDrilldownPanel({
   phasesByProject,
   notesByProject,
   activityByProject,
+  milestonesByProject,
+  dependenciesByProject,
+  risksByProject,
 }: {
   project: Project | null;
   open: boolean;
@@ -56,6 +66,9 @@ export function ProjectDrilldownPanel({
   phasesByProject: Record<string, ProjectPhase[]>;
   notesByProject: Record<string, ProjectNote[]>;
   activityByProject: Record<string, ProjectActivityEntry[]>;
+  milestonesByProject: Record<string, ProjectMilestone[]>;
+  dependenciesByProject: Record<string, ProjectDependency[]>;
+  risksByProject: Record<string, ProjectRisk[]>;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -104,6 +117,10 @@ export function ProjectDrilldownPanel({
     if (n.phase_id) (notesByPhase[n.phase_id] ??= []).push(n);
   }
   const activity = activityByProject[project.project_id] ?? [];
+  const milestones = milestonesByProject[project.project_id] ?? [];
+  const dependencies = dependenciesByProject[project.project_id] ?? [];
+  const risks = risksByProject[project.project_id] ?? [];
+  const blocked = isBlocked(allNotes);
 
   return (
     <>
@@ -123,6 +140,7 @@ export function ProjectDrilldownPanel({
                 <Pencil className="w-3.5 h-3.5" /> Edit
               </button>
               {project.archived && <Badge tone="neutral">Archived</Badge>}
+              {blocked && <Badge tone="danger">Blocked</Badge>}
             </div>
             <button
               onClick={() => patch({ archived: !project.archived })}
@@ -184,9 +202,24 @@ export function ProjectDrilldownPanel({
           <div className="border-t border-line/70 pt-4">
             <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Phases</p>
             <div className="flex flex-col gap-4">
-              {phases.length > 0 && <ProjectPhaseGanttChart phases={phases} />}
+              {phases.length > 0 && <ProjectPhaseGanttChart phases={phases} milestones={milestones} />}
               <PhasesPanel projectId={project.project_id} phases={phases} notesByPhase={notesByPhase} />
             </div>
+          </div>
+
+          <div className="border-t border-line/70 pt-4">
+            <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Milestones</p>
+            <MilestonesChecklist projectId={project.project_id} milestones={milestones} />
+          </div>
+
+          <div className="border-t border-line/70 pt-4">
+            <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Dependencies</p>
+            <DependenciesList projectId={project.project_id} dependencies={dependencies} />
+          </div>
+
+          <div className="border-t border-line/70 pt-4">
+            <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Risks</p>
+            <RisksRegister projectId={project.project_id} risks={risks} />
           </div>
 
           <div className="border-t border-line/70 pt-4">

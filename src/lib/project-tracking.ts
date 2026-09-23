@@ -290,16 +290,83 @@ export type ProjectActivityEntry = {
   created_at: string;
 };
 
+// ---------------------------------------------------------------------------- milestones, dependencies, risks (Phase 5)
+
+export type ProjectMilestone = {
+  id: string;
+  project_id: string;
+  name: string;
+  done: boolean;
+  target_date: string;
+  position: number;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export const DEPENDENCY_STATUSES = ["open", "resolved"] as const;
+export type DependencyStatus = (typeof DEPENDENCY_STATUSES)[number];
+
+/** A blocking external dependency — optionally scoped to one phase via `phase_id`, otherwise
+ * project-level. Distinct from a blocker note: a dependency is "waiting on something outside this
+ * project," a blocker note is "this project itself can't move." */
+export type ProjectDependency = {
+  id: string;
+  project_id: string;
+  phase_id: string | null;
+  label: string;
+  status: DependencyStatus;
+  created_by: string;
+  created_at: string;
+};
+
+export const RISK_LEVELS = ["low", "medium", "high"] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number] | "";
+
+export const RISK_LEVEL_META: Record<Exclude<RiskLevel, "">, { label: string; tone: "success" | "warning" | "danger" }> = {
+  low: { label: "Low", tone: "success" },
+  medium: { label: "Medium", tone: "warning" },
+  high: { label: "High", tone: "danger" },
+};
+
+export const RISK_STATUSES = ["open", "mitigated", "closed"] as const;
+export type RiskStatus = (typeof RISK_STATUSES)[number];
+
+export type ProjectRisk = {
+  id: string;
+  project_id: string;
+  risk: string;
+  impact: RiskLevel;
+  likelihood: RiskLevel;
+  mitigation: string;
+  owner: string;
+  status: RiskStatus;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+/** "Blocked" is derived, never stored on the project itself — a project is blocked exactly when it
+ * has an unresolved `note_type: "blocker"` note. Reusing `project_notes` (Phase 4) rather than a
+ * dedicated table/flag means resolving the blocker note IS un-blocking the project, with no second
+ * place for the two facts to disagree. */
+export function isBlocked(notes: Array<Pick<ProjectNote, "note_type" | "resolved">>): boolean {
+  return notes.some((n) => n.note_type === "blocker" && !n.resolved);
+}
+
 /** Counts for the team-filtered project list — `active` means not archived and not yet Done,
  * `blocked` reads the workflow `status`, `onTrack`/`atRisk` read the separately-set `health`
  * judgment. */
-export function portfolioSummary(projects: Project[]): PortfolioSummary {
+/** `blockedProjectIds` (Phase 5's `getActiveBlockersForProjects`) is optional so callers from
+ * before Phase 5 still work — when given, `blocked` counts a project as blocked by EITHER the
+ * workflow `status` or an active blocker note, since a project can be stuck for either reason. */
+export function portfolioSummary(projects: Project[], blockedProjectIds?: Set<string>): PortfolioSummary {
   return {
     total: projects.length,
     active: projects.filter((p) => !p.archived && p.status !== "Done").length,
     onTrack: projects.filter((p) => p.health === "on_track").length,
     atRisk: projects.filter((p) => p.health === "at_risk").length,
-    blocked: projects.filter((p) => p.status === "Blocked").length,
+    blocked: projects.filter((p) => p.status === "Blocked" || blockedProjectIds?.has(p.project_id)).length,
     dueSoon: projects.filter((p) => isDueSoon(p)).length,
   };
 }

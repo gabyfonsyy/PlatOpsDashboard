@@ -443,6 +443,51 @@ create table project_activity_log (
 
 create index project_activity_log_project_created_idx on project_activity_log (project_id, created_at desc);
 
+-- Phase 5 (Milestones, Dependencies, Risks, Blockers) -- see
+-- project-milestones-dependencies-risks.sql for the create-table path on an existing database.
+-- Blockers reuse project_notes (note_type = 'blocker', resolved) -- no table of their own.
+create table project_milestones (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  name text not null,
+  done boolean not null default false,
+  target_date date,
+  position integer not null default 0,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index project_milestones_project_position_idx on project_milestones (project_id, position);
+
+create table project_dependencies (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  phase_id uuid references project_phases(id) on delete cascade,
+  label text not null,
+  status text not null default 'open' check (status in ('open', 'resolved')),
+  created_by text,
+  created_at timestamptz not null default now()
+);
+
+create index project_dependencies_project_idx on project_dependencies (project_id);
+
+create table project_risks (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  risk text not null,
+  impact text check (impact in ('low', 'medium', 'high')),
+  likelihood text check (likelihood in ('low', 'medium', 'high')),
+  mitigation text default '',
+  owner text default '',
+  status text not null default 'open' check (status in ('open', 'mitigated', 'closed')),
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index project_risks_project_idx on project_risks (project_id);
+
 -- ============================================================================
 -- My Work (personal work tracking) lives in its own file: supabase/my-work.sql
 --
@@ -468,7 +513,8 @@ begin
         'insights_cache', 'app_config', 'incident_tickets', 'incident_logs',
         'projects', 'initiative_tickets',
         'ticket_project_map', 'project_progress', 'project_tasks', 'project_phases',
-        'project_notes', 'project_activity_log'
+        'project_notes', 'project_activity_log',
+        'project_milestones', 'project_dependencies', 'project_risks'
       )
   loop
     execute format('alter table %I enable row level security;', t);

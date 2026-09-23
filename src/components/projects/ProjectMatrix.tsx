@@ -2,14 +2,18 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { AlertTriangle } from "lucide-react";
 import { QUADRANT_ORDER, type Triage } from "@/lib/work";
 import { QuadrantCell, QuadrantSelect } from "@/components/work/Quadrant";
 import {
   projectMatrixTally,
   type Project,
   type ProjectActivityEntry,
+  type ProjectDependency,
+  type ProjectMilestone,
   type ProjectNote,
   type ProjectPhase,
+  type ProjectRisk,
   type ProjectTask,
 } from "@/lib/project-tracking";
 import { ProjectDrilldownPanel } from "@/components/projects/ProjectDrilldownPanel";
@@ -30,6 +34,10 @@ export function ProjectMatrix({
   phasesByProject,
   notesByProject,
   activityByProject,
+  milestonesByProject,
+  dependenciesByProject,
+  risksByProject,
+  blockedProjectIds,
 }: {
   projects: Project[];
   teams: TeamConfig[];
@@ -38,6 +46,10 @@ export function ProjectMatrix({
   phasesByProject: Record<string, ProjectPhase[]>;
   notesByProject: Record<string, ProjectNote[]>;
   activityByProject: Record<string, ProjectActivityEntry[]>;
+  milestonesByProject: Record<string, ProjectMilestone[]>;
+  dependenciesByProject: Record<string, ProjectDependency[]>;
+  risksByProject: Record<string, ProjectRisk[]>;
+  blockedProjectIds: Set<string>;
 }) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -92,6 +104,7 @@ export function ProjectMatrix({
                     pending={pendingId === p.project_id}
                     onQuadrantChange={onQuadrantChange}
                     onOpen={openDrilldown}
+                    blocked={blockedProjectIds.has(p.project_id)}
                   />
                 ))}
               </ol>
@@ -114,6 +127,7 @@ export function ProjectMatrix({
                 pending={pendingId === p.project_id}
                 onQuadrantChange={onQuadrantChange}
                 onOpen={openDrilldown}
+                blocked={blockedProjectIds.has(p.project_id)}
               />
             ))}
           </ol>
@@ -130,6 +144,9 @@ export function ProjectMatrix({
         phasesByProject={phasesByProject}
         notesByProject={notesByProject}
         activityByProject={activityByProject}
+        milestonesByProject={milestonesByProject}
+        dependenciesByProject={dependenciesByProject}
+        risksByProject={risksByProject}
       />
     </div>
   );
@@ -141,16 +158,23 @@ function ProjectMatrixRow({
   pending,
   onQuadrantChange,
   onOpen,
+  blocked,
 }: {
   index: number;
   project: Project;
   pending: boolean;
   onQuadrantChange: (project: Project, next: Triage) => void;
   onOpen: (project: Project) => void;
+  blocked: boolean;
 }) {
   return (
     <li className={cn("flex items-center gap-2 text-sm", pending && "opacity-60")}>
       <span className="text-neutral-300 w-4 text-right shrink-0">{index}.</span>
+      {blocked && (
+        <span title="Has an unresolved blocker note" className="text-red-500 shrink-0">
+          <AlertTriangle className="w-3.5 h-3.5" />
+        </span>
+      )}
       <button
         type="button"
         onClick={() => onOpen(project)}

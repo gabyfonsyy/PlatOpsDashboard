@@ -8,8 +8,20 @@ import {
   getPhases,
   getNotes,
   getActivityLog,
+  getMilestones,
+  getDependencies,
+  getRisks,
 } from "@/lib/project-tracking-store";
-import type { ProjectActivityEntry, ProjectNote, ProjectPhase, ProjectTask } from "@/lib/project-tracking";
+import {
+  isBlocked,
+  type ProjectActivityEntry,
+  type ProjectDependency,
+  type ProjectMilestone,
+  type ProjectNote,
+  type ProjectPhase,
+  type ProjectRisk,
+  type ProjectTask,
+} from "@/lib/project-tracking";
 import { ProjectForm } from "@/components/forms/ProjectForm";
 import { ProjectsView } from "@/components/forms/ProjectsView";
 import { ProgressRecordsTable } from "@/components/forms/ProgressRecordsTable";
@@ -29,7 +41,20 @@ export default async function ProjectsPage({
 }) {
   const team = typeof searchParams.team === "string" ? searchParams.team : undefined;
 
-  const [teams, allProjects, tickets, assignments, progress, tasks, phases, notes, activity] = await Promise.all([
+  const [
+    teams,
+    allProjects,
+    tickets,
+    assignments,
+    progress,
+    tasks,
+    phases,
+    notes,
+    activity,
+    milestones,
+    dependencies,
+    risks,
+  ] = await Promise.all([
     getTeams().catch(() => []),
     getProjects({}).catch(() => []),
     getInitiativeTickets().catch(() => []),
@@ -39,6 +64,9 @@ export default async function ProjectsPage({
     getPhases().catch(() => []),
     getNotes().catch(() => []),
     getActivityLog().catch(() => []),
+    getMilestones().catch(() => []),
+    getDependencies().catch(() => []),
+    getRisks().catch(() => []),
   ]);
 
   // The team pills scope the Records table/portfolio widgets below, but the progress log and
@@ -94,6 +122,27 @@ export default async function ProjectsPage({
     (activityByProject[a.project_id] ??= []).push(a);
   }
 
+  // Milestones/dependencies/risks per project (Phase 5).
+  const milestonesByProject: Record<string, ProjectMilestone[]> = {};
+  for (const m of milestones) {
+    (milestonesByProject[m.project_id] ??= []).push(m);
+  }
+  const dependenciesByProject: Record<string, ProjectDependency[]> = {};
+  for (const d of dependencies) {
+    (dependenciesByProject[d.project_id] ??= []).push(d);
+  }
+  const risksByProject: Record<string, ProjectRisk[]> = {};
+  for (const r of risks) {
+    (risksByProject[r.project_id] ??= []).push(r);
+  }
+
+  // Which projects currently have an active blocker note — derived from `notesByProject`, already
+  // in hand, rather than a second query (see `getActiveBlockersForProjects` in the store for the
+  // batched-query version, for callers that don't already have every note loaded).
+  const blockedProjectIds = new Set(
+    allProjects.filter((p) => isBlocked(notesByProject[p.project_id] ?? [])).map((p) => p.project_id)
+  );
+
   const projectOptions = allProjects.map((r) => ({
     project_id: r.project_id,
     project_name: r.project_name,
@@ -116,7 +165,7 @@ export default async function ProjectsPage({
 
       <div className="flex flex-col gap-4">
         <TeamPills teams={teams} team={team ?? ""} />
-        <PortfolioSummaryStrip projects={records} />
+        <PortfolioSummaryStrip projects={records} blockedProjectIds={blockedProjectIds} />
         {team && (
           <ProjectMatrix
             projects={records}
@@ -126,6 +175,10 @@ export default async function ProjectsPage({
             phasesByProject={phasesByProject}
             notesByProject={notesByProject}
             activityByProject={activityByProject}
+            milestonesByProject={milestonesByProject}
+            dependenciesByProject={dependenciesByProject}
+            risksByProject={risksByProject}
+            blockedProjectIds={blockedProjectIds}
           />
         )}
       </div>

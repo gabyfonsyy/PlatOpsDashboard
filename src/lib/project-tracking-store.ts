@@ -6,9 +6,12 @@ import {
   type InitiativeTicket,
   type Project,
   type ProjectActivityEntry,
+  type ProjectDependency,
+  type ProjectMilestone,
   type ProjectNote,
   type ProjectPhase,
   type ProjectProgress,
+  type ProjectRisk,
   type ProjectTask,
   type TicketAssignment,
 } from "@/lib/project-tracking";
@@ -642,7 +645,27 @@ export async function addNote(email: string, payload: Partial<ProjectNote>): Pro
   };
   const { data, error } = await supabase.from("project_notes").insert(record).select("*").single();
   if (error) throw new Error(`Could not add note: ${error.message}`);
-  return rowToNote(data);
+  const note = rowToNote(data);
+  if (note.note_type === "blocker") {
+    await logActivity(note.project_id, "blocker_raised", `Blocker raised: "${note.content}"`, email);
+  }
+  return note;
+}
+
+/** Only used today to toggle `resolved` — nothing else about a note is editable after it's
+ * written. Not author-restricted like delete: whoever fixed a blocker should be able to resolve
+ * it, not just whoever originally raised it. */
+export async function updateNote(id: string, payload: Partial<ProjectNote>, actorEmail?: string): Promise<ProjectNote> {
+  const supabase = getSupabaseClient();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectNote> & { id?: string };
+  void _ignored;
+  const { data, error } = await supabase.from("project_notes").update(rest).eq("id", id).select("*").single();
+  if (error) throw new Error(`Could not update note ${id}: ${error.message}`);
+  const note = rowToNote(data);
+  if (actorEmail && "resolved" in payload && note.resolved && note.note_type === "blocker") {
+    await logActivity(note.project_id, "blocker_resolved", `Blocker resolved: "${note.content}"`, actorEmail);
+  }
+  return note;
 }
 
 /** Author-only, enforced here rather than left to the UI to hide the button — a delete request
@@ -686,4 +709,215 @@ export async function getActivityLog(params: { project_id?: string } = {}): Prom
   const { data, error } = await query;
   if (error) throw new Error(`Could not load activity log: ${error.message}`);
   return (data ?? []).map(rowToActivity);
+}
+
+// ---------------------------------------------------------------------------
+// Project milestones (Phase 5)
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToMilestone(row: any): ProjectMilestone {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    name: row.name ?? "",
+    done: row.done === true,
+    target_date: row.target_date ?? "",
+    position: Number(row.position) || 0,
+    created_by: row.created_by ?? "",
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function getMilestones(params: { project_id?: string } = {}): Promise<ProjectMilestone[]> {
+  const supabase = getSupabaseClient();
+  let query = supabase.from("project_milestones").select("*").order("position", { ascending: true });
+  if (params.project_id) query = query.eq("project_id", params.project_id);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not load milestones: ${error.message}`);
+  return (data ?? []).map(rowToMilestone);
+}
+
+export async function createMilestone(email: string, payload: Partial<ProjectMilestone>): Promise<ProjectMilestone> {
+  const supabase = getSupabaseClient();
+  const now = nowIso();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectMilestone> & { id?: string };
+  void _ignored;
+  let position = rest.position;
+  if (position === undefined && rest.project_id) {
+    position = (await getMilestones({ project_id: rest.project_id })).length;
+  }
+  const record = {
+    done: false,
+    ...rest,
+    position: position ?? 0,
+    created_by: email,
+    created_at: now,
+    updated_at: now,
+  };
+  const { data, error } = await supabase.from("project_milestones").insert(record).select("*").single();
+  if (error) throw new Error(`Could not create milestone: ${error.message}`);
+  return rowToMilestone(data);
+}
+
+export async function updateMilestone(id: string, payload: Partial<ProjectMilestone>): Promise<ProjectMilestone> {
+  const supabase = getSupabaseClient();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectMilestone> & { id?: string };
+  void _ignored;
+  const { data, error } = await supabase
+    .from("project_milestones")
+    .update({ ...rest, updated_at: nowIso() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw new Error(`Could not update milestone ${id}: ${error.message}`);
+  return rowToMilestone(data);
+}
+
+export async function deleteMilestone(id: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from("project_milestones").delete().eq("id", id);
+  if (error) throw new Error(`Could not delete milestone ${id}: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Project dependencies (Phase 5)
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToDependency(row: any): ProjectDependency {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    phase_id: row.phase_id ?? null,
+    label: row.label ?? "",
+    status: row.status ?? "open",
+    created_by: row.created_by ?? "",
+    created_at: row.created_at,
+  };
+}
+
+export async function getDependencies(params: { project_id?: string } = {}): Promise<ProjectDependency[]> {
+  const supabase = getSupabaseClient();
+  let query = supabase.from("project_dependencies").select("*").order("created_at", { ascending: true });
+  if (params.project_id) query = query.eq("project_id", params.project_id);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not load dependencies: ${error.message}`);
+  return (data ?? []).map(rowToDependency);
+}
+
+export async function createDependency(email: string, payload: Partial<ProjectDependency>): Promise<ProjectDependency> {
+  const supabase = getSupabaseClient();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectDependency> & { id?: string };
+  void _ignored;
+  const record = { phase_id: null, status: "open", ...rest, created_by: email, created_at: nowIso() };
+  const { data, error } = await supabase.from("project_dependencies").insert(record).select("*").single();
+  if (error) throw new Error(`Could not create dependency: ${error.message}`);
+  return rowToDependency(data);
+}
+
+export async function updateDependency(id: string, payload: Partial<ProjectDependency>): Promise<ProjectDependency> {
+  const supabase = getSupabaseClient();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectDependency> & { id?: string };
+  void _ignored;
+  const { data, error } = await supabase.from("project_dependencies").update(rest).eq("id", id).select("*").single();
+  if (error) throw new Error(`Could not update dependency ${id}: ${error.message}`);
+  return rowToDependency(data);
+}
+
+export async function deleteDependency(id: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from("project_dependencies").delete().eq("id", id);
+  if (error) throw new Error(`Could not delete dependency ${id}: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Project risks (Phase 5)
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToRisk(row: any): ProjectRisk {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    risk: row.risk ?? "",
+    impact: row.impact ?? "",
+    likelihood: row.likelihood ?? "",
+    mitigation: row.mitigation ?? "",
+    owner: row.owner ?? "",
+    status: row.status ?? "open",
+    created_by: row.created_by ?? "",
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function getRisks(params: { project_id?: string } = {}): Promise<ProjectRisk[]> {
+  const supabase = getSupabaseClient();
+  let query = supabase.from("project_risks").select("*").order("created_at", { ascending: true });
+  if (params.project_id) query = query.eq("project_id", params.project_id);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not load risks: ${error.message}`);
+  return (data ?? []).map(rowToRisk);
+}
+
+export async function createRisk(email: string, payload: Partial<ProjectRisk>): Promise<ProjectRisk> {
+  const supabase = getSupabaseClient();
+  const now = nowIso();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectRisk> & { id?: string };
+  void _ignored;
+  const record = {
+    mitigation: "",
+    owner: "",
+    status: "open",
+    ...rest,
+    created_by: email,
+    created_at: now,
+    updated_at: now,
+  };
+  const { data, error } = await supabase.from("project_risks").insert(record).select("*").single();
+  if (error) throw new Error(`Could not create risk: ${error.message}`);
+  const risk = rowToRisk(data);
+  await logActivity(risk.project_id, "risk_added", `Risk added: "${risk.risk}"`, email);
+  return risk;
+}
+
+export async function updateRisk(id: string, payload: Partial<ProjectRisk>): Promise<ProjectRisk> {
+  const supabase = getSupabaseClient();
+  const { id: _ignored, ...rest } = payload as Partial<ProjectRisk> & { id?: string };
+  void _ignored;
+  const { data, error } = await supabase
+    .from("project_risks")
+    .update({ ...rest, updated_at: nowIso() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw new Error(`Could not update risk ${id}: ${error.message}`);
+  return rowToRisk(data);
+}
+
+export async function deleteRisk(id: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from("project_risks").delete().eq("id", id);
+  if (error) throw new Error(`Could not delete risk ${id}: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Active blockers (Phase 5) — batched across many projects, not N+1
+// ---------------------------------------------------------------------------
+
+/** Which of the given projects currently have at least one unresolved `note_type: "blocker"`
+ * note — one query for the whole set, not one per project. */
+export async function getActiveBlockersForProjects(projectIds: string[]): Promise<Set<string>> {
+  if (!projectIds.length) return new Set();
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("project_notes")
+    .select("project_id")
+    .eq("note_type", "blocker")
+    .eq("resolved", false)
+    .in("project_id", projectIds);
+  if (error) throw new Error(`Could not load active blockers: ${error.message}`);
+  return new Set((data ?? []).map((r) => r.project_id));
 }
