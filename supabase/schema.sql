@@ -326,6 +326,9 @@ create table projects (
     check (health in ('on_track', 'at_risk', 'off_track', 'not_started', 'blocked', '')),
   batch_tracking_enabled boolean not null default false,
   contributors text[] not null default '{}',
+  -- Phase 2 (project drill-down panel's Archive action) -- see
+  -- add-project-archived-column.sql for the ALTER path on an existing database.
+  archived boolean not null default false,
   problem_context text,
   objective text,
   expected_outcome text,

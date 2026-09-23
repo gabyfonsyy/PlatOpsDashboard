@@ -140,23 +140,26 @@ export function ProjectsTable({
             const canExpandTasks = r.tracking_mode === "tasks" || hasTasks;
             return (
               <Fragment key={r.project_id}>
-              <tr>
+              <tr className={r.archived ? "opacity-50" : undefined}>
                 <td className="px-4 py-3 font-medium text-neutral-900">
-                  {canExpandTasks ? (
-                    <button
-                      onClick={() => toggleExpanded(r.project_id)}
-                      className="inline-flex items-center gap-1.5 text-left hover:text-sprout-700"
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                      ) : (
-                        <ChevronRight className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                      )}
-                      {r.project_name}
-                    </button>
-                  ) : (
-                    r.project_name
-                  )}
+                  <div className="flex items-center gap-2">
+                    {canExpandTasks ? (
+                      <button
+                        onClick={() => toggleExpanded(r.project_id)}
+                        className="inline-flex items-center gap-1.5 text-left hover:text-sprout-700"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                        ) : (
+                          <ChevronRight className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                        )}
+                        {r.project_name}
+                      </button>
+                    ) : (
+                      r.project_name
+                    )}
+                    {r.archived && <Badge tone="neutral">Archived</Badge>}
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <Badge tone="success">{labelFor(r.owning_team)}</Badge>

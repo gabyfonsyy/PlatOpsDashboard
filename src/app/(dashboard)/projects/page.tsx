@@ -92,7 +92,14 @@ export default async function ProjectsPage({
       <div className="flex flex-col gap-4">
         <TeamPills teams={teams} team={team ?? ""} />
         <PortfolioSummaryStrip projects={records} />
-        {team && <ProjectMatrix projects={records} />}
+        {team && (
+          <ProjectMatrix
+            projects={records}
+            teams={teams}
+            processedByProject={processedByProject}
+            tasksByProject={tasksByProject}
+          />
+        )}
       </div>
 
       <ProjectForm teams={teams} />

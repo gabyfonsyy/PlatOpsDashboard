@@ -68,6 +68,9 @@ export type Project = {
   scope: string;
   out_of_scope: string;
   success_metrics: string;
+  /** Lifecycle/visibility flag (Phase 2), separate from `status` on purpose — archiving isn't a
+   * workflow state, it's "stop showing this as active." */
+  archived: boolean;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -177,13 +180,13 @@ export type PortfolioSummary = {
   dueSoon: number;
 };
 
-/** Counts for the team-filtered project list — `active` means not yet Done, `blocked` reads the
- * workflow `status` (there's no `archived` flag until a later phase), `onTrack`/`atRisk` read the
- * separately-set `health` judgment. */
+/** Counts for the team-filtered project list — `active` means not archived and not yet Done,
+ * `blocked` reads the workflow `status`, `onTrack`/`atRisk` read the separately-set `health`
+ * judgment. */
 export function portfolioSummary(projects: Project[]): PortfolioSummary {
   return {
     total: projects.length,
-    active: projects.filter((p) => p.status !== "Done").length,
+    active: projects.filter((p) => !p.archived && p.status !== "Done").length,
     onTrack: projects.filter((p) => p.health === "on_track").length,
     atRisk: projects.filter((p) => p.health === "at_risk").length,
     blocked: projects.filter((p) => p.status === "Blocked").length,

@@ -4,19 +4,43 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { QUADRANT_ORDER, type Triage } from "@/lib/work";
 import { QuadrantCell, QuadrantSelect } from "@/components/work/Quadrant";
-import { projectMatrixTally, type Project } from "@/lib/project-tracking";
+import { projectMatrixTally, type Project, type ProjectTask } from "@/lib/project-tracking";
+import { ProjectDrilldownPanel } from "@/components/projects/ProjectDrilldownPanel";
+import type { TeamConfig } from "@/lib/teams";
 import { cn } from "@/lib/utils";
 
 /**
  * Eisenhower matrix for the team-filtered project list, built from the same shared pieces My
  * Work's board uses (QuadrantCell/QuadrantSelect) — the UI concept is borrowed, the data is not:
- * this reads/writes `projects`, never `work_projects`.
+ * this reads/writes `projects`, never `work_projects`. A row click (anywhere but the quadrant
+ * select itself) opens the Phase 2 drill-down panel for that project.
  */
-export function ProjectMatrix({ projects }: { projects: Project[] }) {
+export function ProjectMatrix({
+  projects,
+  teams,
+  processedByProject,
+  tasksByProject,
+}: {
+  projects: Project[];
+  teams: TeamConfig[];
+  processedByProject: Record<string, number>;
+  tasksByProject: Record<string, ProjectTask[]>;
+}) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Selection persists across close (only ever set, never cleared to null) so the drill-down keeps
+  // showing the last-viewed project while the SidePanel's own slide-out transition plays, instead
+  // of the content vanishing mid-animation — same approach OverviewQuickPanel uses for its data.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [drilldownOpen, setDrilldownOpen] = useState(false);
   const { cells, unsorted } = projectMatrixTally(projects);
+  const selectedProject = projects.find((p) => p.project_id === selectedId) ?? null;
+
+  function openDrilldown(project: Project) {
+    setSelectedId(project.project_id);
+    setDrilldownOpen(true);
+  }
 
   async function onQuadrantChange(project: Project, next: Triage) {
     setPendingId(project.project_id);
@@ -54,6 +78,7 @@ export function ProjectMatrix({ projects }: { projects: Project[] }) {
                     project={p}
                     pending={pendingId === p.project_id}
                     onQuadrantChange={onQuadrantChange}
+                    onOpen={openDrilldown}
                   />
                 ))}
               </ol>
@@ -75,11 +100,21 @@ export function ProjectMatrix({ projects }: { projects: Project[] }) {
                 project={p}
                 pending={pendingId === p.project_id}
                 onQuadrantChange={onQuadrantChange}
+                onOpen={openDrilldown}
               />
             ))}
           </ol>
         </div>
       )}
+
+      <ProjectDrilldownPanel
+        project={selectedProject}
+        open={drilldownOpen}
+        onClose={() => setDrilldownOpen(false)}
+        teams={teams}
+        processedByProject={processedByProject}
+        tasksByProject={tasksByProject}
+      />
     </div>
   );
 }
@@ -89,18 +124,25 @@ function ProjectMatrixRow({
   project,
   pending,
   onQuadrantChange,
+  onOpen,
 }: {
   index: number;
   project: Project;
   pending: boolean;
   onQuadrantChange: (project: Project, next: Triage) => void;
+  onOpen: (project: Project) => void;
 }) {
   return (
     <li className={cn("flex items-center gap-2 text-sm", pending && "opacity-60")}>
       <span className="text-neutral-300 w-4 text-right shrink-0">{index}.</span>
-      <span className="flex-1 min-w-0 truncate text-neutral-800" title={project.project_name}>
+      <button
+        type="button"
+        onClick={() => onOpen(project)}
+        className="flex-1 min-w-0 truncate text-left text-neutral-800 hover:text-sprout-700 transition-colors"
+        title={project.project_name}
+      >
         {project.project_name}
-      </span>
+      </button>
       <QuadrantSelect
         value={project as Triage}
         onChange={(next) => onQuadrantChange(project, next)}
