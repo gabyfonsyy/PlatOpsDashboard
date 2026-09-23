@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { cn } from "@/lib/utils";
 import {
   progressSchema,
   buildProgressPayload,
@@ -16,9 +17,13 @@ import {
 export function ProgressForm({
   projects,
   tickets,
+  bare = false,
 }: {
   projects: ProgressProjectOption[];
   tickets: ProgressTicketOption[];
+  /** Skip the outer `.card` + heading — for embedding inside a SidePanel that already shows a
+   * title/description in its own header. */
+  bare?: boolean;
 }) {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
@@ -32,7 +37,7 @@ export function ProgressForm({
     setSubmitting(true);
     setMessage(null);
     try {
-      const res = await fetch("/api/gas/project-progress", {
+      const res = await fetch("/api/project-tracking/progress", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildProgressPayload(values)),
@@ -55,16 +60,20 @@ export function ProgressForm({
   }
 
   return (
-    <form onSubmit={form.handleSubmit(onSubmit)} className="card p-5 border-t-4 border-t-sprout-500">
-      <h2 className="text-base font-semibold text-neutral-900 flex items-center gap-2">
-        <span className="inline-block h-2.5 w-2.5 rounded-full bg-sprout-500" />
-        Processed Batches
-      </h2>
-      <p className="text-sm text-neutral-500 mt-1">
-        Log how many items (e.g. databases) each batch processed. Totals drive each project&apos;s
-        progress bar and completion forecast.
-      </p>
-      <div className="grid grid-cols-2 gap-4 mt-4">
+    <form onSubmit={form.handleSubmit(onSubmit)} className={bare ? undefined : "card p-5 border-t-4 border-t-sprout-500"}>
+      {!bare && (
+        <>
+          <h2 className="text-base font-semibold text-neutral-900 flex items-center gap-2">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-sprout-500" />
+            Processed Batches
+          </h2>
+          <p className="text-sm text-neutral-500 mt-1">
+            Log how many items (e.g. databases) each batch processed. Totals drive each project&apos;s
+            progress bar and completion forecast.
+          </p>
+        </>
+      )}
+      <div className={cn("grid grid-cols-2 gap-4", !bare && "mt-4")}>
         <ProgressFormFields form={form} projects={projects} tickets={tickets} />
         <div className="col-span-2 flex items-center gap-3">
           <button type="submit" disabled={submitting} className="btn-primary">

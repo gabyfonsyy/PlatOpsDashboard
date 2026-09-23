@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { RefreshCw, ChevronRight } from "lucide-react";
-import type { InitiativeTicket, TicketAssignment } from "@/lib/types";
+import type { InitiativeTicket, TicketAssignment } from "@/lib/project-tracking";
 import type { TeamConfig } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { formatManilaDate } from "@/lib/format";
@@ -148,7 +148,7 @@ export function InitiativeTicketsTable({
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const res = await fetch("/api/gas/initiatives", { method: "POST" });
+      const res = await fetch("/api/project-tracking/initiative-tickets", { method: "POST" });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body?.ok === false) throw new Error(body?.error || `HTTP ${res.status}`);
       const n = body.data?.synced;
@@ -166,7 +166,7 @@ export function InitiativeTicketsTable({
     setAssigning(true);
     setSyncMsg(null);
     try {
-      const res = await fetch("/api/gas/ticket-projects", {
+      const res = await fetch("/api/project-tracking/ticket-map", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ issue_keys: Array.from(selected), project_id: assignTarget }),

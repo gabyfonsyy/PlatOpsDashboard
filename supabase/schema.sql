@@ -318,6 +318,20 @@ create table projects (
   batches_per_week integer,
   weekly_plan_json jsonb not null default '[]'::jsonb,
   notes text,
+  -- Phase 1 (team pills, portfolio summary, Eisenhower matrix) additions -- see
+  -- add-project-eisenhower-onepager-columns.sql for the ALTER path on an existing database.
+  urgent boolean,
+  important boolean,
+  health text not null default ''
+    check (health in ('on_track', 'at_risk', 'off_track', 'not_started', 'blocked', '')),
+  batch_tracking_enabled boolean not null default false,
+  contributors text[] not null default '{}',
+  problem_context text,
+  objective text,
+  expected_outcome text,
+  scope text,
+  out_of_scope text,
+  success_metrics text,
   created_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

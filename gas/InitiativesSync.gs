@@ -1,13 +1,27 @@
 /**
- * Pulls Jira "cod-initiative" tickets into the Initiatives workbook, split into one tab per team
- * (INITIATIVE_TICKETS_<team>, e.g. INITIATIVE_TICKETS_DE / INITIATIVE_TICKETS_DEV /
- * INITIATIVE_TICKETS_ST) so each team's initiatives are easy to eyeball in the sheet. Scoped to
- * the teams in COD_INITIATIVE_TEAM_KEYS (DBA/DevOps + Support Experts) and to tickets created in
- * 2026 onward. The label is per team (see COD_INITIATIVE_LABEL_BY_TEAM): DE/DEV use
- * 'cod-initiative', SE/ST uses 'se-initiative'. SE/ST is wired in but stays empty until those
- * tickets actually carry 'se-initiative' in Jira. Volume is low, so each run does a full re-pull
- * and upserts by issue_key (reuses JiraClient.gs jiraSearchIssues_ — no changelog needed here).
+ * Pulls Jira "cod-initiative" tickets straight into Supabase's `initiative_tickets` table
+ * (schema: supabase/schema.sql, primary key (team_key, issue_key)) instead of the old per-team
+ * INITIATIVE_TICKETS_<team> Sheets tabs. Scoped to the teams in COD_INITIATIVE_TEAM_KEYS
+ * (DBA/DevOps + Support Experts) and to tickets created in 2026 onward. The label is per team
+ * (see COD_INITIATIVE_LABEL_BY_TEAM): DE/DEV use 'cod-initiative', SE/ST uses 'se-initiative'.
+ * Volume is low, so each run does a full re-pull and upserts by (team_key, issue_key) (reuses
+ * JiraClient.gs's jiraSearchIssues_ — no changelog needed here).
+ *
+ * Row shape/coercion matches SupabaseMigration.gs's migrateInitiativeTicketsTeamToSupabase_
+ * exactly (same table, same helpers from SupabaseClient.gs) so a live sync and a historical
+ * backfill can never disagree on shape. Used to write the per-team Sheets tabs directly; moved
+ * onto Supabase so Records -> Project Tracking reads/writes one consistent backend instead of
+ * splitting parent projects (already migrated to Supabase, see gas/SupabaseMigration.gs's
+ * migrateProjectsToSupabase) from their linked tickets (previously Sheets-only).
  */
+
+// Legacy per-team Sheets tab name, e.g. 'DE' -> 'INITIATIVE_TICKETS_DE'. The live sync no longer
+// writes these (see syncInitiativeTickets below), but Setup.gs still creates them on a fresh
+// install for historical continuity, and SupabaseMigration.gs/InitiativesApi.gs still read them
+// (a one-time historical backfill path / now-unused list route) — kept here since both need it.
+function initiativeTicketsTabName_(teamKey) {
+  return `INITIATIVE_TICKETS_${teamKey}`;
+}
 
 const INITIATIVE_TICKET_HEADERS = [
   'issue_key', 'project_key', 'summary', 'issue_type', 'status', 'labels',
@@ -51,34 +65,33 @@ function syncInitiativeTickets() {
     .filter((id, i, arr) => id && arr.indexOf(id) === i);
   const fields = [
     'summary', 'labels', 'status', 'issuetype', 'assignee', 'reporter',
-    'created', 'updated', 'duedate', 'resolution',
+    'created', 'updated', 'duedate', 'resolution', 'priority',
   ].concat(resolvedFields);
-
-  // One {sheet, index} per team tab, created lazily as tickets for that team are seen.
-  const tabs = {};
-  const getTab = function (teamKey) {
-    if (!tabs[teamKey]) {
-      const sheet = getOrCreateInitiativeTicketsTab_(teamKey);
-      tabs[teamKey] = { sheet: sheet, index: getInitiativeTicketIndex_(sheet) };
-    }
-    return tabs[teamKey];
-  };
 
   let pageToken;
   let count = 0;
+  let batch = [];
+  const flush = function () {
+    if (!batch.length) return;
+    const deduped = dedupeByKey_(batch, (r) => `${r.team_key}|${r.issue_key}`);
+    supabaseUpsert_('initiative_tickets', deduped, 'team_key,issue_key');
+    batch = [];
+  };
+
   while (true) {
     const page = jiraSearchIssues_(jql, pageToken, 100, fields);
     page.issues.forEach((issue) => {
       const projectKey = projectKeyFromIssueKey_(issue.key);
       const team = teamByProjectKey[projectKey];
-      const teamKey = team ? team.team_key : projectKey; // team_key == project_key for DE/DEV
-      const tab = getTab(teamKey);
-      upsertInitiativeTicketRow_(tab.sheet, tab.index, mapInitiativeIssueToRow_(team, issue));
+      if (!team) return; // defensive — every issue in the JQL result should match a configured team
+      batch.push(mapInitiativeIssueToRow_(team, issue, projectKey));
       count++;
+      if (batch.length >= 500) flush();
     });
     if (!page.nextPageToken || page.issues.length === 0 || page.nextPageToken === pageToken) break;
     pageToken = page.nextPageToken;
   }
+  flush();
 
   Logger.log(`syncInitiativeTickets: upserted ${count} ticket(s).`);
   return { synced: count };
@@ -91,90 +104,26 @@ function projectKeyFromIssueKey_(issueKey) {
   return i > 0 ? key.slice(0, i) : key;
 }
 
-function mapInitiativeIssueToRow_(team, issue) {
+/** Same field shape/coercion as SupabaseMigration.gs's migrateInitiativeTicketsTeamToSupabase_. */
+function mapInitiativeIssueToRow_(team, issue, projectKey) {
   const f = issue.fields || {};
-  const resolved = team ? parseResolvedDateField_(team, f, issue.key) : { value: null };
+  const resolved = parseResolvedDateField_(team, f, issue.key);
   return {
     issue_key: issue.key,
-    project_key: projectKeyFromIssueKey_(issue.key),
-    summary: f.summary || '',
-    issue_type: f.issuetype ? f.issuetype.name : '',
-    status: f.status ? f.status.name : '',
-    labels: Array.isArray(f.labels) ? f.labels.join(', ') : '',
-    assignee_display_name: f.assignee ? f.assignee.displayName : '',
-    reporter_display_name: f.reporter ? f.reporter.displayName : '',
-    created: f.created || '',
-    updated: f.updated || '',
-    duedate: extractJiraFieldValue_(f.duedate),
-    resolution: f.resolution ? f.resolution.name : '',
-    resolved_datetime: resolved.value ? resolved.value.toISOString() : '',
+    team_key: team.team_key,
+    project_key: projectKey,
+    summary: toStringOrNull_(f.summary),
+    issue_type: toStringOrNull_(f.issuetype ? f.issuetype.name : ''),
+    status: toStringOrNull_(f.status ? f.status.name : ''),
+    priority: toStringOrNull_(f.priority ? f.priority.name : ''),
+    labels: toStringOrNull_(Array.isArray(f.labels) ? f.labels.join(', ') : ''),
+    assignee_display_name: toStringOrNull_(f.assignee ? f.assignee.displayName : ''),
+    reporter_display_name: toStringOrNull_(f.reporter ? f.reporter.displayName : ''),
+    created: toTimestampOrNull_(f.created),
+    updated: toTimestampOrNull_(f.updated),
+    duedate: toDateOrNull_(extractJiraFieldValue_(f.duedate)),
+    resolution: toStringOrNull_(f.resolution ? f.resolution.name : ''),
+    resolved_datetime: resolved.value ? resolved.value.toISOString() : null,
     last_synced_at: nowIso_(),
   };
-}
-
-/** Per-team initiative-tickets tab name, e.g. 'DE' -> 'INITIATIVE_TICKETS_DE'. */
-function initiativeTicketsTabName_(teamKey) {
-  return `INITIATIVE_TICKETS_${teamKey}`;
-}
-
-function getOrCreateInitiativeTicketsTab_(teamKey) {
-  const ss = getInitiativesSpreadsheet_();
-  const name = initiativeTicketsTabName_(teamKey);
-  let sheet = ss.getSheetByName(name);
-  if (!sheet) {
-    sheet = ss.insertSheet(name);
-    sheet.getRange(1, 1, 1, INITIATIVE_TICKET_HEADERS.length).setValues([INITIATIVE_TICKET_HEADERS]).setFontWeight('bold');
-    sheet.setFrozenRows(1);
-  }
-  return sheet;
-}
-
-/**
- * One-time migration: splits a legacy single INITIATIVE_TICKETS tab into per-team tabs by
- * project_key, then leaves the old tab for you to delete once verified. Safe to re-run — if the
- * legacy tab is gone it just ensures the per-team tabs exist. (Re-running syncInitiativeTickets
- * also repopulates them from Jira via a full re-pull, so this migration is optional.)
- */
-function migrateSplitInitiativeTickets() {
-  const ss = getInitiativesSpreadsheet_();
-  COD_INITIATIVE_TEAM_KEYS.forEach((tk) => getOrCreateInitiativeTicketsTab_(tk));
-
-  const legacy = ss.getSheetByName('INITIATIVE_TICKETS');
-  if (!legacy) { Logger.log('No legacy INITIATIVE_TICKETS tab — per-team tabs ensured.'); return; }
-
-  const tabs = {};
-  let moved = 0;
-  sheetToObjects_(legacy).forEach((r) => {
-    const tk = String(r.project_key || '').trim();
-    if (!tk) return;
-    if (!tabs[tk]) {
-      const sheet = getOrCreateInitiativeTicketsTab_(tk);
-      tabs[tk] = { sheet: sheet, index: getInitiativeTicketIndex_(sheet) };
-    }
-    upsertInitiativeTicketRow_(tabs[tk].sheet, tabs[tk].index, stripRowMeta_(r));
-    moved++;
-  });
-  Logger.log(`migrateSplitInitiativeTickets: moved ${moved} row(s) into per-team tabs. `
-    + 'Delete the old INITIATIVE_TICKETS tab manually once verified.');
-}
-
-/** issue_key -> row number, computed once per run (mirrors JiraSync.gs getRawTicketIndex_). */
-function getInitiativeTicketIndex_(sheet) {
-  const lastRow = sheet.getLastRow();
-  const map = {};
-  if (lastRow > 1) {
-    sheet.getRange(2, 1, lastRow - 1, 1).getValues().forEach((r, i) => { if (r[0]) map[r[0]] = i + 2; });
-  }
-  return { map: map, nextRow: lastRow + 1 };
-}
-
-function upsertInitiativeTicketRow_(sheet, index, row) {
-  const existing = index.map[row.issue_key];
-  if (existing) {
-    updateSheetRow_(sheet, existing, row);
-  } else {
-    appendObjectToSheet_(sheet, row);
-    index.map[row.issue_key] = index.nextRow;
-    index.nextRow += 1;
-  }
 }

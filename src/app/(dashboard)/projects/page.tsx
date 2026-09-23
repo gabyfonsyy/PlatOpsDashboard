@@ -1,18 +1,23 @@
 import { getTeams } from "@/lib/teams";
-import { fetchGas } from "@/lib/gas-client";
-import { getInitiativeTickets } from "@/lib/initiatives";
-import { getTicketAssignments } from "@/lib/ticket-projects";
-import { getProjectProgress } from "@/lib/progress";
-import { getProjectTasks } from "@/lib/tasks";
-import type { ProjectRecord, TaskRecord } from "@/lib/types";
+import {
+  getProjects,
+  getInitiativeTickets,
+  getTicketAssignments,
+  getProjectProgress,
+  getProjectTasks,
+} from "@/lib/project-tracking-store";
+import type { ProjectTask } from "@/lib/project-tracking";
 import { ProjectForm } from "@/components/forms/ProjectForm";
 import { ProjectsView } from "@/components/forms/ProjectsView";
-import { ProgressForm } from "@/components/forms/ProgressForm";
 import { ProgressRecordsTable } from "@/components/forms/ProgressRecordsTable";
 import type { ProgressTicketOption } from "@/components/forms/progress-fields";
-import { BatchCalculator } from "@/components/forms/BatchCalculator";
+import { ProcessedBatchesPanel } from "@/components/forms/ProcessedBatchesPanel";
+import { BatchCalculatorPanel } from "@/components/forms/BatchCalculatorPanel";
 import { InitiativeTicketsTable } from "@/components/dashboard/InitiativeTicketsTable";
 import { PageTitle } from "@/components/ui/PageTitle";
+import { TeamPills } from "@/components/projects/TeamPills";
+import { PortfolioSummaryStrip } from "@/components/projects/PortfolioSummaryStrip";
+import { ProjectMatrix } from "@/components/projects/ProjectMatrix";
 
 export default async function ProjectsPage({
   searchParams,
@@ -21,19 +26,25 @@ export default async function ProjectsPage({
 }) {
   const team = typeof searchParams.team === "string" ? searchParams.team : undefined;
 
-  const [teams, records, tickets, assignments, progress, tasks] = await Promise.all([
+  const [teams, allProjects, tickets, assignments, progress, tasks] = await Promise.all([
     getTeams().catch(() => []),
-    fetchGas<ProjectRecord[]>("projects", { team }, { cache: "no-store" }).catch(() => []),
+    getProjects({}).catch(() => []),
     getInitiativeTickets().catch(() => []),
     getTicketAssignments().catch(() => []),
     getProjectProgress().catch(() => []),
     getProjectTasks().catch(() => []),
   ]);
 
+  // The team pills scope the Records table/portfolio widgets below, but the progress log and
+  // ticket-linking data span every team regardless of which pill is active — so lookups that
+  // resolve a ticket/progress row's OWN project (which may belong to a different team than the
+  // one currently selected) always read off the full, unfiltered project list, never `records`.
+  const records = team ? allProjects.filter((p) => p.owning_team === team) : allProjects;
+
   // Resolved linked-ticket count per project: manual assignment wins, else first label match.
   // `ticketProject` also feeds the progress form's ticket dropdown so it can scope by project.
   const manualByKey = new Map(assignments.filter((a) => a.project_id).map((a) => [a.issue_key, a.project_id]));
-  const labelledProjects = records.filter((r) => String(r.jira_label || "").trim());
+  const labelledProjects = allProjects.filter((r) => String(r.jira_label || "").trim());
   const linkedCount: Record<string, number> = {};
   const ticketProject = new Map<string, string>();
   for (const t of tickets) {
@@ -53,12 +64,12 @@ export default async function ProjectsPage({
   }
 
   // Task checklist per project, from the PROJECT_TASKS log.
-  const tasksByProject: Record<string, TaskRecord[]> = {};
+  const tasksByProject: Record<string, ProjectTask[]> = {};
   for (const t of tasks) {
     (tasksByProject[t.project_id] ??= []).push(t);
   }
 
-  const projectOptions = records.map((r) => ({
+  const projectOptions = allProjects.map((r) => ({
     project_id: r.project_id,
     project_name: r.project_name,
     owning_team: r.owning_team,
@@ -78,6 +89,12 @@ export default async function ProjectsPage({
         </p>
       </div>
 
+      <div className="flex flex-col gap-4">
+        <TeamPills teams={teams} team={team ?? ""} />
+        <PortfolioSummaryStrip projects={records} />
+        {team && <ProjectMatrix projects={records} />}
+      </div>
+
       <ProjectForm teams={teams} />
 
       <ProjectsView
@@ -90,20 +107,18 @@ export default async function ProjectsPage({
         jiraBaseUrl={process.env.JIRA_BASE_URL}
       />
 
-      <section className="flex flex-col gap-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
-          <ProgressForm projects={projectOptions} tickets={progressTicketOptions} />
-          <BatchCalculator />
-        </div>
+      {/* Both render nothing in the page flow — each is a fixed edge tab + the SidePanel it
+          opens, same mechanism as the "Today" overview tab. */}
+      <ProcessedBatchesPanel projects={projectOptions} tickets={progressTicketOptions} />
+      <BatchCalculatorPanel />
 
-        <ProgressRecordsTable
-          records={progress}
-          projects={projectOptions}
-          teams={teams}
-          tickets={progressTicketOptions}
-          jiraBaseUrl={process.env.JIRA_BASE_URL}
-        />
-      </section>
+      <ProgressRecordsTable
+        records={progress}
+        projects={projectOptions}
+        teams={teams}
+        tickets={progressTicketOptions}
+        jiraBaseUrl={process.env.JIRA_BASE_URL}
+      />
 
       <InitiativeTicketsTable
         tickets={tickets}

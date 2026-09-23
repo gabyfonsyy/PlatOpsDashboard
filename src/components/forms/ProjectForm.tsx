@@ -16,16 +16,25 @@ export function ProjectForm({ teams }: { teams: TeamConfig[] }) {
   const router = useRouter();
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const defaultValues: Partial<ProjectFormValues> = {
+    status: "Not Started",
+    tracking_mode: "manual",
+    percent_complete: 0,
+    teams_involved: [],
+    weekly_plan: [],
+    health: "",
+    batch_tracking_enabled: false,
+  };
   const form = useForm<ProjectFormValues>({
     resolver: zodResolver(projectSchema),
-    defaultValues: { status: "Not Started", tracking_mode: "manual", percent_complete: 0, teams_involved: [], weekly_plan: [] },
+    defaultValues,
   });
 
   async function onSubmit(values: ProjectFormValues) {
     setSubmitting(true);
     setMessage(null);
     try {
-      const res = await fetch("/api/gas/projects", {
+      const res = await fetch("/api/project-tracking/projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildProjectPayload(values)),
@@ -35,7 +44,7 @@ export function ProjectForm({ teams }: { teams: TeamConfig[] }) {
         throw new Error(body?.error || `Request failed (HTTP ${res.status})`);
       }
       setMessage({ type: "success", text: `Project “${values.project_name}” added.` });
-      form.reset({ status: "Not Started", tracking_mode: "manual", percent_complete: 0, teams_involved: [], weekly_plan: [] });
+      form.reset(defaultValues);
       router.refresh();
     } catch (err) {
       setMessage({

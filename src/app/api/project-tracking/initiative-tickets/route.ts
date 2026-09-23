@@ -3,7 +3,10 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { fetchGas } from "@/lib/gas-client";
 
-/** POST /api/gas/initiatives — triggers a manual Jira pull (InitiativesApi.sync in GAS). */
+/** POST /api/project-tracking/initiative-tickets — triggers a manual Jira pull. GAS still owns
+ * the Jira JQL/auth (gas/InitiativesSync.gs's syncInitiativeTickets), it just writes straight to
+ * Supabase's initiative_tickets table now instead of a Sheets tab. Reuses the existing GAS route
+ * name ("initiatives") since that side of the GAS deployment is unchanged. */
 export async function POST() {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) {

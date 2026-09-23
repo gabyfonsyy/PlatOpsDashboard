@@ -3,9 +3,11 @@
 import { Fragment, useState } from "react";
 import { Pencil, ChevronRight, ChevronDown } from "lucide-react";
 import type { TeamConfig } from "@/lib/teams";
-import type { ProjectRecord, TaskRecord } from "@/lib/types";
+import type { Project as ProjectRecord, ProjectTask as TaskRecord } from "@/lib/project-tracking";
+import { HEALTH_META, projectQuadrantOf } from "@/lib/project-tracking";
+import { QUADRANT_META } from "@/lib/work";
 import { computeProjection, hasProjectionInputs, resolveDisplayPercent, type WeeklyOverride } from "@/lib/projection";
-import { teamLabel } from "@/lib/utils";
+import { teamLabel, cn } from "@/lib/utils";
 import { formatManilaDate } from "@/lib/format";
 import { Badge } from "@/components/ui/Badge";
 import { DeleteButton } from "@/components/ui/DeleteButton";
@@ -90,6 +92,8 @@ export function ProjectsTable({
             <th className="px-4 py-3">Teams</th>
             <th className="px-4 py-3">Owner</th>
             <th className="px-4 py-3">Status</th>
+            <th className="px-4 py-3">Priority</th>
+            <th className="px-4 py-3">Health</th>
             <th className="px-4 py-3 min-w-[9rem]">Progress</th>
             <th className="px-4 py-3">Target</th>
             <th className="px-4 py-3">Projection</th>
@@ -100,7 +104,7 @@ export function ProjectsTable({
         <tbody className="divide-y divide-neutral-100">
           {projects.length === 0 && (
             <tr>
-              <td colSpan={9} className="px-4 py-8 text-center text-neutral-400">No projects tracked yet.</td>
+              <td colSpan={11} className="px-4 py-8 text-center text-neutral-400">No projects tracked yet.</td>
             </tr>
           )}
           {projects.map((r) => {
@@ -162,6 +166,26 @@ export function ProjectsTable({
                 </td>
                 <td className="px-4 py-3">{r.owner}</td>
                 <td className="px-4 py-3"><Badge tone={STATUS_TONE[r.status] ?? "neutral"}>{r.status}</Badge></td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {(() => {
+                    const q = projectQuadrantOf(r);
+                    return q ? (
+                      <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", QUADRANT_META[q].text)}>
+                        <span aria-hidden="true" className={cn("w-1.5 h-1.5 rounded-full", QUADRANT_META[q].dot)} />
+                        {QUADRANT_META[q].verb}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-neutral-400">Unsorted</span>
+                    );
+                  })()}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {r.health ? (
+                    <Badge tone={HEALTH_META[r.health].tone}>{HEALTH_META[r.health].label}</Badge>
+                  ) : (
+                    <span className="text-xs text-neutral-400">—</span>
+                  )}
+                </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-col gap-1">
                     <div className="h-1.5 w-full rounded-full bg-neutral-100 overflow-hidden">
@@ -211,13 +235,13 @@ export function ProjectsTable({
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
-                    <DeleteButton endpoint="/api/gas/projects" id={r.project_id} />
+                    <DeleteButton endpoint="/api/project-tracking/projects" id={r.project_id} />
                   </div>
                 </td>
               </tr>
               {isExpanded && (
                 <tr>
-                  <td colSpan={9} className="p-0">
+                  <td colSpan={11} className="p-0">
                     <ProjectTasksPanel projectId={r.project_id} tasks={tasks} tickets={tickets} jiraBaseUrl={jiraBaseUrl} />
                   </td>
                 </tr>

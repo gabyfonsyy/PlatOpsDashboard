@@ -37,7 +37,8 @@ import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { defaultPeriodForRange } from "@/lib/date-ranges";
 import { toManilaDateString } from "@/lib/manila-date";
 import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
-import type { RosterMember, LeaveRecord, ProjectRecord } from "@/lib/types";
+import type { RosterMember, LeaveRecord } from "@/lib/types";
+import { getProjects } from "@/lib/project-tracking-store";
 import {
   CAPACITY_CONFIG,
   tierForGapPct,
@@ -140,7 +141,7 @@ async function fetchLeaveDaysByEmployee(teamKey: string, startDate: string, endD
 }
 
 async function fetchActiveProjectCount(teamKey: string): Promise<number> {
-  const records = await fetchGas<ProjectRecord[]>("projects", {}, { next: { revalidate: 300 } }).catch(() => [] as ProjectRecord[]);
+  const records = await getProjects().catch(() => []);
   return records.filter((p) => {
     if (p.status === "Done") return false;
     const involved = new Set(

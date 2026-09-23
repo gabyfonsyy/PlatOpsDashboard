@@ -2,7 +2,7 @@
 
 import { Fragment } from "react";
 import type { TeamConfig } from "@/lib/teams";
-import type { ProjectRecord, TaskRecord } from "@/lib/types";
+import type { Project as ProjectRecord, ProjectTask as TaskRecord } from "@/lib/project-tracking";
 import { teamLabel, cn } from "@/lib/utils";
 import { formatManilaDate } from "@/lib/format";
 import { resolveDisplayPercent } from "@/lib/projection";

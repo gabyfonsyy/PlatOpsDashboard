@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { TeamConfig } from "@/lib/teams";
-import type { ProjectRecord, TaskRecord } from "@/lib/types";
+import type { Project as ProjectRecord, ProjectTask as TaskRecord } from "@/lib/project-tracking";
 import { cn } from "@/lib/utils";
 import { ProjectsTable } from "@/components/forms/ProjectsTable";
 import { ProjectsGanttChart } from "@/components/forms/ProjectsGanttChart";

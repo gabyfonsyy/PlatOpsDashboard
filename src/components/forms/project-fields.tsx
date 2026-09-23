@@ -3,10 +3,13 @@
 import { z } from "zod";
 import { useFieldArray, type UseFormReturn } from "react-hook-form";
 import type { TeamConfig } from "@/lib/teams";
-import type { ProjectRecord } from "@/lib/types";
+import type { Project as ProjectRecord } from "@/lib/project-tracking";
+import { HEALTH_META } from "@/lib/project-tracking";
 import { hasProjectionInputs } from "@/lib/projection";
 import { teamLabel } from "@/lib/utils";
 import { formatManilaDate } from "@/lib/format";
+import { QuadrantSelect } from "@/components/work/Quadrant";
+import type { Triage } from "@/lib/work";
 
 export const TRACKING_MODE_LABELS = {
   manual: "Manual",
@@ -37,19 +40,33 @@ export const projectSchema = z.object({
     )
     .optional(),
   notes: z.string().optional(),
+  urgent: z.boolean().nullable().optional(),
+  important: z.boolean().nullable().optional(),
+  health: z.enum(["on_track", "at_risk", "off_track", "not_started", "blocked", ""]).optional(),
+  batch_tracking_enabled: z.boolean().optional(),
+  /** Comma-separated names, same freeform-text convention as Owner — contributors aren't drawn
+   * from a fixed roster, so this isn't a checkbox list like Teams Involved. */
+  contributors: z.string().optional(),
+  problem_context: z.string().optional(),
+  objective: z.string().optional(),
+  expected_outcome: z.string().optional(),
+  scope: z.string().optional(),
+  out_of_scope: z.string().optional(),
+  success_metrics: z.string().optional(),
 });
 
 export type ProjectFormValues = z.infer<typeof projectSchema>;
 
 /** Shapes raw form values into the API payload — teams_involved as CSV, overrides as JSON. */
 export function buildProjectPayload(values: ProjectFormValues) {
-  const { weekly_plan, teams_involved, ...rest } = values;
+  const { weekly_plan, teams_involved, contributors, ...rest } = values;
   const overrides = (weekly_plan ?? [])
     .filter((o) => o.weekStart && o.items !== "" && o.items !== undefined && Number(o.items) > 0)
     .map((o) => ({ weekStart: o.weekStart as string, items: Number(o.items) }));
   return {
     ...rest,
     teams_involved: (teams_involved ?? []).join(","),
+    contributors: (contributors ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     weekly_plan_json: JSON.stringify(overrides),
   };
 }
@@ -108,6 +125,19 @@ export function projectToFormValues(r: ProjectRecord, computedPercent?: number, 
     batches_per_week: numOrBlank(r.batches_per_week),
     weekly_plan: weekly,
     notes: r.notes || "",
+    urgent: r.urgent ?? null,
+    important: r.important ?? null,
+    health: r.health || "",
+    // Legacy "scheduled" projects relied on the batch UI showing with no toggle to flip — infer it
+    // rather than silently hiding a project's own batch inputs the first time this form re-opens.
+    batch_tracking_enabled: r.batch_tracking_enabled || r.tracking_mode === "scheduled",
+    contributors: (r.contributors ?? []).join(", "),
+    problem_context: r.problem_context || "",
+    objective: r.objective || "",
+    expected_outcome: r.expected_outcome || "",
+    scope: r.scope || "",
+    out_of_scope: r.out_of_scope || "",
+    success_metrics: r.success_metrics || "",
   };
 }
 
@@ -123,9 +153,12 @@ export function ProjectFormFields({
   form: UseFormReturn<ProjectFormValues>;
   teams: TeamConfig[];
 }) {
-  const { register, control, watch, formState: { errors } } = form;
+  const { register, control, watch, setValue, formState: { errors } } = form;
   const { fields, append, remove } = useFieldArray({ control, name: "weekly_plan" });
   const trackingMode = watch("tracking_mode");
+  const urgent = watch("urgent");
+  const important = watch("important");
+  const batchTrackingEnabled = watch("batch_tracking_enabled");
 
   return (
     <>
@@ -146,6 +179,10 @@ export function ProjectFormFields({
         <label className="form-label">Owner</label>
         <input {...register("owner")} className="form-input" placeholder="Full name" />
         {errors.owner && <p className="form-error">{errors.owner.message}</p>}
+      </div>
+      <div>
+        <label className="form-label">Contributors <span className="text-neutral-400 font-normal">(comma-separated)</span></label>
+        <input {...register("contributors")} className="form-input" placeholder="e.g. Jasper Razo, Ken Uy" />
       </div>
 
       <div className="col-span-full">
@@ -169,6 +206,28 @@ export function ProjectFormFields({
           <option>Blocked</option>
           <option>Done</option>
         </select>
+      </div>
+      <div>
+        <label className="form-label">Health</label>
+        <select {...register("health")} className="form-input">
+          <option value="">Unset</option>
+          {(Object.keys(HEALTH_META) as Array<keyof typeof HEALTH_META>).map((h) => (
+            <option key={h} value={h}>{HEALTH_META[h].label}</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="form-label">Eisenhower quadrant</label>
+        <div>
+          <QuadrantSelect
+            value={{ urgent: urgent ?? null, important: important ?? null } as Triage}
+            onChange={(next) => {
+              setValue("urgent", next.urgent, { shouldDirty: true });
+              setValue("important", next.important, { shouldDirty: true });
+            }}
+            size="md"
+          />
+        </div>
       </div>
       <div>
         <label className="form-label">Tracking Mode</label>
@@ -207,7 +266,18 @@ export function ProjectFormFields({
         <input {...register("jira_label")} className="form-input" placeholder="e.g. audit-tdecert" />
       </div>
 
-      {trackingMode === "scheduled" && (
+      <div className="col-span-full">
+        <label className="inline-flex items-center gap-2 text-sm text-neutral-700">
+          <input type="checkbox" {...register("batch_tracking_enabled")}
+            className="rounded border-neutral-300 text-sprout-600 focus:ring-sprout-500" />
+          Log batch throughput for this project
+          <span className="text-neutral-400 font-normal">
+            (independent of Tracking Mode — only Tracking Mode decides what drives % Complete)
+          </span>
+        </label>
+      </div>
+
+      {batchTrackingEnabled && (
         <>
           <div>
             <label className="form-label">Total Items</label>
@@ -246,6 +316,36 @@ export function ProjectFormFields({
       <div className="col-span-full">
         <label className="form-label">Notes</label>
         <input {...register("notes")} className="form-input" placeholder="Optional" />
+      </div>
+
+      <div className="col-span-full border-t border-neutral-100 pt-4 mt-1">
+        <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">One-pager</p>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="col-span-full">
+            <label className="form-label">Problem</label>
+            <textarea {...register("problem_context")} rows={2} className="form-input" placeholder="What is broken today, with evidence" />
+          </div>
+          <div className="col-span-full">
+            <label className="form-label">Objective</label>
+            <textarea {...register("objective")} rows={2} className="form-input" placeholder="What this project sets out to do" />
+          </div>
+          <div className="col-span-full">
+            <label className="form-label">Expected Outcome</label>
+            <textarea {...register("expected_outcome")} rows={2} className="form-input" placeholder="What is true when this is done" />
+          </div>
+          <div>
+            <label className="form-label">Scope</label>
+            <textarea {...register("scope")} rows={2} className="form-input" placeholder="What's in" />
+          </div>
+          <div>
+            <label className="form-label">Out of Scope</label>
+            <textarea {...register("out_of_scope")} rows={2} className="form-input" placeholder="What's explicitly not in" />
+          </div>
+          <div className="col-span-full">
+            <label className="form-label">Success Metrics</label>
+            <textarea {...register("success_metrics")} rows={2} className="form-input" placeholder="Baseline → target → by when" />
+          </div>
+        </div>
       </div>
     </>
   );

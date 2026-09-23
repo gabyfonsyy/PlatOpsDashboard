@@ -4,11 +4,18 @@ import { useState } from "react";
 import { computeProjection } from "@/lib/projection";
 import { formatManilaDate } from "@/lib/format";
 import { Badge } from "@/components/ui/Badge";
+import { cn } from "@/lib/utils";
 
 type Field = "totalItems" | "batchSize" | "batchesPerWeek" | "startDate" | "targetDate";
 
 /** Standalone bidirectional batch/projection calculator (not tied to a saved project). */
-export function BatchCalculator() {
+export function BatchCalculator({
+  bare = false,
+}: {
+  /** Skip the outer `.card` + heading — for embedding inside a SidePanel that already shows a
+   * title/description in its own header. */
+  bare?: boolean;
+} = {}) {
   const [v, setV] = useState<Record<Field, string>>({
     totalItems: "",
     batchSize: "",
@@ -31,17 +38,21 @@ export function BatchCalculator() {
   const dash = (n?: number) => (n === undefined ? "—" : n.toLocaleString());
 
   return (
-    <div className="card p-5 border-t-4 border-t-sprout-400">
-      <h2 className="text-base font-semibold text-neutral-900 flex items-center gap-2">
-        <span className="inline-block h-2.5 w-2.5 rounded-full bg-sprout-500" />
-        Batch Projection Calculator
-      </h2>
-      <p className="text-sm text-neutral-500 mt-1">
-        Fixed batch size at a weekly cadence. Fill total items + batch size, then either a cadence
-        (→ completion date) or a target date (→ required cadence).
-      </p>
+    <div className={bare ? undefined : "card p-5 border-t-4 border-t-sprout-400"}>
+      {!bare && (
+        <>
+          <h2 className="text-base font-semibold text-neutral-900 flex items-center gap-2">
+            <span className="inline-block h-2.5 w-2.5 rounded-full bg-sprout-500" />
+            Batch Projection Calculator
+          </h2>
+          <p className="text-sm text-neutral-500 mt-1">
+            Fixed batch size at a weekly cadence. Fill total items + batch size, then either a cadence
+            (→ completion date) or a target date (→ required cadence).
+          </p>
+        </>
+      )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-4">
+      <div className={cn("grid grid-cols-2 sm:grid-cols-3 gap-4", !bare && "mt-4")}>
         <div>
           <label className="form-label">Total Items</label>
           <input type="number" min={0} value={v.totalItems} onChange={set("totalItems")} className="form-input" placeholder="500" />
@@ -64,7 +75,7 @@ export function BatchCalculator() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-5">
+      <div className={cn("grid grid-cols-1 sm:grid-cols-3 gap-4", bare ? "mt-4" : "mt-5")}>
         <Stat label="Total Batches" value={dash(p.totalBatches)} sub={p.itemsPerWeek ? `${p.itemsPerWeek.toLocaleString()} items/week` : undefined} />
         <Stat
           label="Projected Completion"

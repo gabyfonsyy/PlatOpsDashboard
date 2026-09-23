@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { fetchGas } from "@/lib/gas-client";
+import { assignTickets } from "@/lib/project-tracking-store";
 
-/** POST /api/gas/ticket-projects — bulk assign/unassign tickets to a project.
+/** POST /api/project-tracking/ticket-map — bulk assign/unassign tickets to a project.
  * Body: { issue_keys: string[], project_id: string } ("" project_id = unassign). */
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -12,16 +12,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const payload = await req.json();
-    const data = await fetchGas(
-      "ticket-projects",
-      { action: "assign" },
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, assigned_by: email }),
-        cache: "no-store",
-      }
-    );
+    const data = await assignTickets({ ...payload, assigned_by: email });
     return NextResponse.json({ ok: true, data });
   } catch (err) {
     return NextResponse.json(

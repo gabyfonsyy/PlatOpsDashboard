@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2, ExternalLink } from "lucide-react";
-import type { TaskRecord } from "@/lib/types";
+import type { ProjectTask as TaskRecord } from "@/lib/project-tracking";
 import type { ProgressTicketOption } from "@/components/forms/progress-fields";
 import { formatManilaDate } from "@/lib/format";
 
@@ -50,7 +50,7 @@ export function ProjectTasksPanel({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/gas/project-tasks", {
+      const res = await fetch("/api/project-tracking/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -76,7 +76,7 @@ export function ProjectTasksPanel({
   }
 
   async function toggleDone(task: TaskRecord) {
-    await fetch("/api/gas/project-tasks", {
+    await fetch("/api/project-tracking/tasks", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: task.task_id, done: !task.done }),
@@ -85,7 +85,7 @@ export function ProjectTasksPanel({
   }
 
   async function updateDates(task: TaskRecord, patch: { start_date?: string; target_date?: string }) {
-    await fetch("/api/gas/project-tasks", {
+    await fetch("/api/project-tracking/tasks", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: task.task_id, ...patch }),
@@ -94,7 +94,7 @@ export function ProjectTasksPanel({
   }
 
   async function updateTicket(task: TaskRecord, nextIssueKey: string) {
-    await fetch("/api/gas/project-tasks", {
+    await fetch("/api/project-tracking/tasks", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: task.task_id, issue_key: nextIssueKey }),
@@ -104,7 +104,7 @@ export function ProjectTasksPanel({
 
   async function removeTask(taskId: string) {
     if (!confirm("Delete this task?")) return;
-    await fetch("/api/gas/project-tasks", {
+    await fetch("/api/project-tracking/tasks", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: taskId }),

@@ -61,17 +61,15 @@ function handleRequest_(e, method) {
         if (params.action === 'bulkUpsert') return jsonResponse_({ ok: true, data: RtoApi.bulkUpsert(body) });
         return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, RtoApi) });
 
-      case 'projects':
-        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, ProjectsApi) });
-
-      case 'project-progress':
-        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, ProgressApi) });
-
-      case 'project-tasks':
-        return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, TasksApi) });
+      // 'projects', 'project-progress', 'project-tasks', and 'ticket-projects' (list side) were
+      // removed here 2026-09-22 — Records -> Project Tracking moved onto Supabase (see
+      // src/lib/project-tracking-store.ts, gas/SupabaseMigration.gs's migrateProjectsToSupabase
+      // et al.), so nothing in the Next.js app reads/writes these GAS routes anymore.
+      // ProjectsApi.gs/ProgressApi.gs/TasksApi.gs/TicketProjectApi.gs were deleted outright.
+      // 'initiatives' keeps only its sync action below — GAS is still the only thing that can
+      // talk to Jira, so the live ticket pull stays here, now writing straight to Supabase.
 
       case 'initiatives':
-        if (method === 'GET') return jsonResponse_({ ok: true, data: InitiativesApi.list(params) });
         if (params.action === 'sync') return jsonResponse_({ ok: true, data: InitiativesApi.sync() });
         return jsonResponse_({ ok: false, error: `Unknown action for initiatives: ${params.action}` });
 
@@ -84,11 +82,6 @@ function handleRequest_(e, method) {
         // cannot hand it back. Not dispatchCrud_'s 'delete', which targets an incident LOG by id.
         if (params.action === 'removeTicket') return jsonResponse_({ ok: true, data: IncidentsApi.removeTicket(body) });
         return jsonResponse_({ ok: true, data: dispatchCrud_(method, params, body, IncidentsApi) });
-
-      case 'ticket-projects':
-        if (method === 'GET') return jsonResponse_({ ok: true, data: TicketProjectApi.list() });
-        if (params.action === 'assign') return jsonResponse_({ ok: true, data: TicketProjectApi.assign(body) });
-        return jsonResponse_({ ok: false, error: `Unknown action for ticket-projects: ${params.action}` });
 
       case 'insight':
         // READ ONLY — never generates. Every page that shows an insight uses this, so a page view
