@@ -7,12 +7,14 @@ import { QUADRANT_ORDER, type Triage } from "@/lib/work";
 import { QuadrantCell, QuadrantSelect } from "@/components/work/Quadrant";
 import {
   projectMatrixTally,
+  type InitiativeTicket,
   type Project,
   type ProjectActivityEntry,
   type ProjectDependency,
   type ProjectMilestone,
   type ProjectNote,
   type ProjectPhase,
+  type ProjectPhaseTicket,
   type ProjectRisk,
   type ProjectTask,
 } from "@/lib/project-tracking";
@@ -38,6 +40,9 @@ export function ProjectMatrix({
   dependenciesByProject,
   risksByProject,
   blockedProjectIds,
+  phaseTicketsByProject,
+  allTickets,
+  jiraBaseUrl,
 }: {
   projects: Project[];
   teams: TeamConfig[];
@@ -50,6 +55,9 @@ export function ProjectMatrix({
   dependenciesByProject: Record<string, ProjectDependency[]>;
   risksByProject: Record<string, ProjectRisk[]>;
   blockedProjectIds: Set<string>;
+  phaseTicketsByProject: Record<string, ProjectPhaseTicket[]>;
+  allTickets: InitiativeTicket[];
+  jiraBaseUrl?: string;
 }) {
   const router = useRouter();
   const [pendingId, setPendingId] = useState<string | null>(null);
@@ -147,6 +155,9 @@ export function ProjectMatrix({
         milestonesByProject={milestonesByProject}
         dependenciesByProject={dependenciesByProject}
         risksByProject={risksByProject}
+        phaseTicketsByProject={phaseTicketsByProject}
+        allTickets={allTickets}
+        jiraBaseUrl={jiraBaseUrl}
       />
     </div>
   );

@@ -11,6 +11,7 @@ import {
   getMilestones,
   getDependencies,
   getRisks,
+  getPhaseTickets,
 } from "@/lib/project-tracking-store";
 import {
   isBlocked,
@@ -19,6 +20,7 @@ import {
   type ProjectMilestone,
   type ProjectNote,
   type ProjectPhase,
+  type ProjectPhaseTicket,
   type ProjectRisk,
   type ProjectTask,
 } from "@/lib/project-tracking";
@@ -54,6 +56,7 @@ export default async function ProjectsPage({
     milestones,
     dependencies,
     risks,
+    phaseTickets,
   ] = await Promise.all([
     getTeams().catch(() => []),
     getProjects({}).catch(() => []),
@@ -67,6 +70,7 @@ export default async function ProjectsPage({
     getMilestones().catch(() => []),
     getDependencies().catch(() => []),
     getRisks().catch(() => []),
+    getPhaseTickets().catch(() => []),
   ]);
 
   // The team pills scope the Records table/portfolio widgets below, but the progress log and
@@ -136,6 +140,13 @@ export default async function ProjectsPage({
     (risksByProject[r.project_id] ??= []).push(r);
   }
 
+  // Phase-level ticket links per project (Phase 6) — project-level linking is untouched, this is
+  // additional, keyed by project_id here and split by phase_id inside ProjectDrilldownPanel.
+  const phaseTicketsByProject: Record<string, ProjectPhaseTicket[]> = {};
+  for (const link of phaseTickets) {
+    (phaseTicketsByProject[link.project_id] ??= []).push(link);
+  }
+
   // Which projects currently have an active blocker note — derived from `notesByProject`, already
   // in hand, rather than a second query (see `getActiveBlockersForProjects` in the store for the
   // batched-query version, for callers that don't already have every note loaded).
@@ -179,6 +190,9 @@ export default async function ProjectsPage({
             dependenciesByProject={dependenciesByProject}
             risksByProject={risksByProject}
             blockedProjectIds={blockedProjectIds}
+            phaseTicketsByProject={phaseTicketsByProject}
+            allTickets={tickets}
+            jiraBaseUrl={process.env.JIRA_BASE_URL}
           />
         )}
       </div>
@@ -193,6 +207,10 @@ export default async function ProjectsPage({
         tasksByProject={tasksByProject}
         tickets={progressTicketOptions}
         jiraBaseUrl={process.env.JIRA_BASE_URL}
+        phasesByProject={phasesByProject}
+        notesByProject={notesByProject}
+        risksByProject={risksByProject}
+        activityByProject={activityByProject}
       />
 
       {/* Both render nothing in the page flow — each is a fixed edge tab + the SidePanel it

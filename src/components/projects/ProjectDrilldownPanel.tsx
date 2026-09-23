@@ -10,12 +10,16 @@ import type { Triage } from "@/lib/work";
 import {
   HEALTH_META,
   isBlocked,
+  staleSignals,
+  STALE_SIGNAL_META,
+  type InitiativeTicket,
   type Project,
   type ProjectActivityEntry,
   type ProjectDependency,
   type ProjectMilestone,
   type ProjectNote,
   type ProjectPhase,
+  type ProjectPhaseTicket,
   type ProjectRisk,
   type ProjectTask,
 } from "@/lib/project-tracking";
@@ -56,6 +60,9 @@ export function ProjectDrilldownPanel({
   milestonesByProject,
   dependenciesByProject,
   risksByProject,
+  phaseTicketsByProject,
+  allTickets,
+  jiraBaseUrl,
 }: {
   project: Project | null;
   open: boolean;
@@ -69,6 +76,9 @@ export function ProjectDrilldownPanel({
   milestonesByProject: Record<string, ProjectMilestone[]>;
   dependenciesByProject: Record<string, ProjectDependency[]>;
   risksByProject: Record<string, ProjectRisk[]>;
+  phaseTicketsByProject: Record<string, ProjectPhaseTicket[]>;
+  allTickets: InitiativeTicket[];
+  jiraBaseUrl?: string;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -122,6 +132,15 @@ export function ProjectDrilldownPanel({
   const risks = risksByProject[project.project_id] ?? [];
   const blocked = isBlocked(allNotes);
 
+  const phaseTickets = phaseTicketsByProject[project.project_id] ?? [];
+  const ticketsByPhase: Record<string, ProjectPhaseTicket[]> = {};
+  for (const link of phaseTickets) {
+    (ticketsByPhase[link.phase_id] ??= []).push(link);
+  }
+
+  const latestActivityAt = activity[0]?.created_at ?? null;
+  const signals = staleSignals(project, pct, latestActivityAt);
+
   return (
     <>
       <SidePanel
@@ -141,6 +160,9 @@ export function ProjectDrilldownPanel({
               </button>
               {project.archived && <Badge tone="neutral">Archived</Badge>}
               {blocked && <Badge tone="danger">Blocked</Badge>}
+              {signals.map((s) => (
+                <Badge key={s} tone="warning">{STALE_SIGNAL_META[s].label}</Badge>
+              ))}
             </div>
             <button
               onClick={() => patch({ archived: !project.archived })}
@@ -203,7 +225,15 @@ export function ProjectDrilldownPanel({
             <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Phases</p>
             <div className="flex flex-col gap-4">
               {phases.length > 0 && <ProjectPhaseGanttChart phases={phases} milestones={milestones} />}
-              <PhasesPanel projectId={project.project_id} phases={phases} notesByPhase={notesByPhase} />
+              <PhasesPanel
+                projectId={project.project_id}
+                teamKey={project.owning_team}
+                phases={phases}
+                notesByPhase={notesByPhase}
+                ticketsByPhase={ticketsByPhase}
+                allTickets={allTickets}
+                jiraBaseUrl={jiraBaseUrl}
+              />
             </div>
           </div>
 

@@ -8,6 +8,7 @@ import type { TeamConfig } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { formatManilaDate } from "@/lib/format";
 import { Badge } from "@/components/ui/Badge";
+import { ticketsForTeam } from "@/components/projects/ticket-search";
 
 /** Minimal project shape the table needs for label-based grouping + manual assignment. */
 export type ProjectLink = {
@@ -88,10 +89,7 @@ export function InitiativeTicketsTable({
   // Teams whose initiatives are pulled from Jira (kept in sync with GAS COD_INITIATIVE_TEAM_KEYS).
   const initiativeTeams = teams.filter((t) => ["DE", "DEV", "ST"].includes(t.team_key));
 
-  const filtered = useMemo(
-    () => (team ? tickets.filter((t) => t.project_key === team) : tickets),
-    [tickets, team]
-  );
+  const filtered = useMemo(() => ticketsForTeam(tickets, team), [tickets, team]);
 
   const groups = useMemo(() => {
     const byProject = new Map<string, InitiativeTicket[]>();

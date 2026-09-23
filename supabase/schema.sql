@@ -488,6 +488,20 @@ create table project_risks (
 
 create index project_risks_project_idx on project_risks (project_id);
 
+-- Phase 6 (phase-level Jira linking) -- see project-phase-tickets.sql for the create-table path
+-- on an existing database. Project-level linking is untouched: ticket_project_map, above.
+create table project_phase_tickets (
+  id uuid primary key default gen_random_uuid(),
+  phase_id uuid not null references project_phases(id) on delete cascade,
+  project_id uuid not null references projects(project_id) on delete cascade,
+  issue_key text not null,
+  assigned_by text,
+  assigned_at timestamptz not null default now(),
+  unique (phase_id, issue_key)
+);
+
+create index project_phase_tickets_project_idx on project_phase_tickets (project_id);
+
 -- ============================================================================
 -- My Work (personal work tracking) lives in its own file: supabase/my-work.sql
 --
@@ -514,7 +528,7 @@ begin
         'projects', 'initiative_tickets',
         'ticket_project_map', 'project_progress', 'project_tasks', 'project_phases',
         'project_notes', 'project_activity_log',
-        'project_milestones', 'project_dependencies', 'project_risks'
+        'project_milestones', 'project_dependencies', 'project_risks', 'project_phase_tickets'
       )
   loop
     execute format('alter table %I enable row level security;', t);

@@ -354,6 +354,134 @@ export function isBlocked(notes: Array<Pick<ProjectNote, "note_type" | "resolved
   return notes.some((n) => n.note_type === "blocker" && !n.resolved);
 }
 
+// ---------------------------------------------------------------------------- phase ticket links (Phase 6)
+
+/** A ticket linked to one PHASE specifically — additional to, never a replacement for, the
+ * project-level link on `ticket_project_map`/`InitiativeTicketsTable.tsx`, which Phase 6 leaves
+ * completely untouched. */
+export type ProjectPhaseTicket = {
+  id: string;
+  phase_id: string;
+  project_id: string;
+  issue_key: string;
+  assigned_by: string;
+  assigned_at: string;
+};
+
+// ---------------------------------------------------------------------------- stale signals (Phase 6)
+
+/** From the plan's "Health-hint thresholds" decision (Phase 1): visual hints only, NEVER used to
+ * auto-set `health` — a human still has to look and decide. */
+export const STALE_DAYS = 10;
+
+export type StaleSignal = "approaching_target" | "stale";
+
+export const STALE_SIGNAL_META: Record<StaleSignal, { label: string }> = {
+  approaching_target: { label: "Approaching target, behind pace" },
+  stale: { label: "No activity in 10+ days" },
+};
+
+export function isOverdueProject(project: Pick<Project, "target_date" | "status">, today = new Date()): boolean {
+  if (!project.target_date || project.status === "Done") return false;
+  const target = new Date(`${project.target_date}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return false;
+  return target.getTime() < today.getTime();
+}
+
+/**
+ * `approaching_target`: target date within 14 days AND < 70% complete — on track to miss it.
+ * `stale`: nothing logged to the activity log (or, if there's none yet, nothing since the project
+ * was created) in `STALE_DAYS` calendar days — the project isn't actively being worked.
+ * Archived/Done projects never carry either signal; there's nothing left to warn about.
+ */
+export function staleSignals(
+  project: Pick<Project, "target_date" | "status" | "archived" | "created_at">,
+  percentComplete: number,
+  latestActivityAt: string | null,
+  today = new Date()
+): StaleSignal[] {
+  if (project.archived || project.status === "Done") return [];
+  const signals: StaleSignal[] = [];
+  if (isDueSoon(project, today) && percentComplete < 70) signals.push("approaching_target");
+  const lastTouched =
+    latestActivityAt && latestActivityAt > project.created_at ? latestActivityAt : project.created_at;
+  const daysSinceTouched = (today.getTime() - new Date(lastTouched).getTime()) / 86_400_000;
+  if (daysSinceTouched >= STALE_DAYS) signals.push("stale");
+  return signals;
+}
+
+// ---------------------------------------------------------------------------- records filters (Phase 6)
+
+export type ProjectFilterCriteria = {
+  status: ProjectStatus | "";
+  health: ProjectHealth;
+  owner: string;
+  quadrant: Quadrant | "unsorted" | "";
+  phaseStatus: ProjectPhaseStatus | "no_phases" | "";
+  dueDate: "" | "overdue" | "due_soon" | "no_target";
+  hasBlocker: boolean;
+  hasRisk: boolean;
+  hasLinkedTickets: boolean;
+  batchEnabled: boolean;
+};
+
+export const EMPTY_PROJECT_FILTERS: ProjectFilterCriteria = {
+  status: "",
+  health: "",
+  owner: "",
+  quadrant: "",
+  phaseStatus: "",
+  dueDate: "",
+  hasBlocker: false,
+  hasRisk: false,
+  hasLinkedTickets: false,
+  batchEnabled: false,
+};
+
+export function isDefaultProjectFilters(criteria: ProjectFilterCriteria): boolean {
+  return Object.entries(criteria).every(
+    ([key, value]) => value === EMPTY_PROJECT_FILTERS[key as keyof ProjectFilterCriteria]
+  );
+}
+
+/** Client-side over an already team-scoped in-memory list — see `FiltersBar.tsx`. `context` carries
+ * the per-project facts that aren't on `Project` itself (phases, blocker/risk/ticket-link status). */
+export function projectMatchesFilters(
+  project: Project,
+  criteria: ProjectFilterCriteria,
+  context: {
+    phases: Pick<ProjectPhase, "status">[];
+    blocked: boolean;
+    hasOpenRisk: boolean;
+    linkedTicketCount: number;
+  }
+): boolean {
+  if (criteria.status && project.status !== criteria.status) return false;
+  if (criteria.health && project.health !== criteria.health) return false;
+  if (criteria.owner && !project.owner.toLowerCase().includes(criteria.owner.trim().toLowerCase())) return false;
+  if (criteria.quadrant) {
+    const q = projectQuadrantOf(project);
+    if (criteria.quadrant === "unsorted" ? q !== null : q !== criteria.quadrant) return false;
+  }
+  if (criteria.phaseStatus) {
+    if (criteria.phaseStatus === "no_phases") {
+      if (context.phases.length > 0) return false;
+    } else if (!context.phases.some((p) => p.status === criteria.phaseStatus)) {
+      return false;
+    }
+  }
+  if (criteria.dueDate) {
+    if (criteria.dueDate === "no_target" && project.target_date) return false;
+    if (criteria.dueDate === "overdue" && !isOverdueProject(project)) return false;
+    if (criteria.dueDate === "due_soon" && !isDueSoon(project)) return false;
+  }
+  if (criteria.hasBlocker && !context.blocked) return false;
+  if (criteria.hasRisk && !context.hasOpenRisk) return false;
+  if (criteria.hasLinkedTickets && context.linkedTicketCount === 0) return false;
+  if (criteria.batchEnabled && !project.batch_tracking_enabled) return false;
+  return true;
+}
+
 /** Counts for the team-filtered project list — `active` means not archived and not yet Done,
  * `blocked` reads the workflow `status`, `onTrack`/`atRisk` read the separately-set `health`
  * judgment. */

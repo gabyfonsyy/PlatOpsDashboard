@@ -1,10 +1,10 @@
 "use client";
 
 import { Fragment, useState } from "react";
-import { Pencil, ChevronRight, ChevronDown } from "lucide-react";
+import { Pencil, ChevronRight, ChevronDown, AlertTriangle } from "lucide-react";
 import type { TeamConfig } from "@/lib/teams";
-import type { Project as ProjectRecord, ProjectTask as TaskRecord } from "@/lib/project-tracking";
-import { HEALTH_META, projectQuadrantOf } from "@/lib/project-tracking";
+import type { Project as ProjectRecord, ProjectActivityEntry, ProjectTask as TaskRecord } from "@/lib/project-tracking";
+import { HEALTH_META, projectQuadrantOf, staleSignals, STALE_SIGNAL_META } from "@/lib/project-tracking";
 import { QUADRANT_META } from "@/lib/work";
 import { computeProjection, hasProjectionInputs, resolveDisplayPercent, type WeeklyOverride } from "@/lib/projection";
 import { teamLabel, cn } from "@/lib/utils";
@@ -49,6 +49,7 @@ export function ProjectsTable({
   tasksByProject = {},
   tickets = [],
   jiraBaseUrl,
+  activityByProject = {},
   bare = false,
 }: {
   projects: ProjectRecord[];
@@ -61,6 +62,8 @@ export function ProjectsTable({
   /** Jira initiative tickets, for the task checklist's ticket field. */
   tickets?: ProgressTicketOption[];
   jiraBaseUrl?: string;
+  /** Newest-first activity log per project (Phase 6) — feeds the stale/approaching-target flag. */
+  activityByProject?: Record<string, ProjectActivityEntry[]>;
   /** Skip the outer `.card` wrapper — for embedding inside a parent that already provides one. */
   bare?: boolean;
 }) {
@@ -138,6 +141,7 @@ export function ProjectsTable({
             // Only task-mode projects (or legacy rows that already have tasks) get the expand toggle —
             // keeps the table clean for Manual/Scheduled Activities projects that don't use a checklist.
             const canExpandTasks = r.tracking_mode === "tasks" || hasTasks;
+            const signals = staleSignals(r, pct, activityByProject[r.project_id]?.[0]?.created_at ?? null);
             return (
               <Fragment key={r.project_id}>
               <tr className={r.archived ? "opacity-50" : undefined}>
@@ -159,6 +163,11 @@ export function ProjectsTable({
                       r.project_name
                     )}
                     {r.archived && <Badge tone="neutral">Archived</Badge>}
+                    {signals.length > 0 && (
+                      <span title={signals.map((s) => STALE_SIGNAL_META[s].label).join("; ")} className="text-amber-500 shrink-0">
+                        <AlertTriangle className="w-3.5 h-3.5" />
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="px-4 py-3">

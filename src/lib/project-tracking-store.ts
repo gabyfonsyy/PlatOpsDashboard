@@ -10,6 +10,7 @@ import {
   type ProjectMilestone,
   type ProjectNote,
   type ProjectPhase,
+  type ProjectPhaseTicket,
   type ProjectProgress,
   type ProjectRisk,
   type ProjectTask,
@@ -920,4 +921,54 @@ export async function getActiveBlockersForProjects(projectIds: string[]): Promis
     .in("project_id", projectIds);
   if (error) throw new Error(`Could not load active blockers: ${error.message}`);
   return new Set((data ?? []).map((r) => r.project_id));
+}
+
+// ---------------------------------------------------------------------------
+// Phase-level ticket links (Phase 6) — additional to, never a replacement for, the project-level
+// links on ticket_project_map (InitiativeTicketsTable.tsx), which stays untouched.
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function rowToPhaseTicket(row: any): ProjectPhaseTicket {
+  return {
+    id: row.id,
+    phase_id: row.phase_id,
+    project_id: row.project_id,
+    issue_key: row.issue_key,
+    assigned_by: row.assigned_by ?? "",
+    assigned_at: row.assigned_at,
+  };
+}
+
+export async function getPhaseTickets(
+  params: { phase_id?: string; project_id?: string } = {}
+): Promise<ProjectPhaseTicket[]> {
+  const supabase = getSupabaseClient();
+  let query = supabase.from("project_phase_tickets").select("*").order("assigned_at", { ascending: true });
+  if (params.phase_id) query = query.eq("phase_id", params.phase_id);
+  if (params.project_id) query = query.eq("project_id", params.project_id);
+  const { data, error } = await query;
+  if (error) throw new Error(`Could not load phase ticket links: ${error.message}`);
+  return (data ?? []).map(rowToPhaseTicket);
+}
+
+export async function linkPhaseTicket(
+  email: string,
+  payload: { phase_id: string; project_id: string; issue_key: string }
+): Promise<ProjectPhaseTicket> {
+  const supabase = getSupabaseClient();
+  const record = { ...payload, assigned_by: email, assigned_at: nowIso() };
+  const { data, error } = await supabase
+    .from("project_phase_tickets")
+    .insert(record)
+    .select("*")
+    .single();
+  if (error) throw new Error(`Could not link ticket to phase: ${error.message}`);
+  return rowToPhaseTicket(data);
+}
+
+export async function unlinkPhaseTicket(id: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from("project_phase_tickets").delete().eq("id", id);
+  if (error) throw new Error(`Could not unlink ticket: ${error.message}`);
 }

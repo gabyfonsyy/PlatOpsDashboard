@@ -3,25 +3,42 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, ChevronDown, ChevronRight, ChevronUp, Trash2 } from "lucide-react";
-import { PHASE_STATUSES, PHASE_STATUS_META, isPhaseDelayed, type ProjectNote, type ProjectPhase } from "@/lib/project-tracking";
+import {
+  PHASE_STATUSES,
+  PHASE_STATUS_META,
+  isPhaseDelayed,
+  type InitiativeTicket,
+  type ProjectNote,
+  type ProjectPhase,
+  type ProjectPhaseTicket,
+} from "@/lib/project-tracking";
 import { formatManilaDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { NotesSection } from "@/components/projects/NotesSection";
+import { PhaseTicketPicker } from "@/components/projects/PhaseTicketPicker";
 
 /**
  * A project's phases, ordered by `position` — collapsed rows for a quick scan (status, progress,
- * a delayed flag), expanded for the rest (description, owner, dates, notes). Reordering moves one
- * phase past its neighbor and PATCHes the FULL id order for the project (see `reorderPhases` —
- * a partial list would leave the phases that didn't move with stale positions).
+ * a delayed flag), expanded for the rest (description, owner, dates, notes, linked tickets).
+ * Reordering moves one phase past its neighbor and PATCHes the FULL id order for the project (see
+ * `reorderPhases` — a partial list would leave the phases that didn't move with stale positions).
  */
 export function PhasesPanel({
   projectId,
+  teamKey,
   phases,
   notesByPhase,
+  ticketsByPhase,
+  allTickets,
+  jiraBaseUrl,
 }: {
   projectId: string;
+  teamKey: string;
   phases: ProjectPhase[];
   notesByPhase: Record<string, ProjectNote[]>;
+  ticketsByPhase: Record<string, ProjectPhaseTicket[]>;
+  allTickets: InitiativeTicket[];
+  jiraBaseUrl?: string;
 }) {
   const router = useRouter();
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -242,6 +259,17 @@ export function PhasesPanel({
                   className="form-input text-sm"
                   placeholder="Notes"
                 />
+                <div className="border-t border-neutral-200 pt-2 mt-1">
+                  <p className="text-[11px] uppercase tracking-wide text-neutral-400 mb-2">Linked Tickets</p>
+                  <PhaseTicketPicker
+                    phaseId={phase.id}
+                    projectId={projectId}
+                    teamKey={teamKey}
+                    allTickets={allTickets}
+                    linkedTickets={ticketsByPhase[phase.id] ?? []}
+                    jiraBaseUrl={jiraBaseUrl}
+                  />
+                </div>
                 <div className="border-t border-neutral-200 pt-2 mt-1">
                   <p className="text-[11px] uppercase tracking-wide text-neutral-400 mb-2">Discussion</p>
                   <NotesSection projectId={projectId} phaseId={phase.id} notes={notesByPhase[phase.id] ?? []} />
