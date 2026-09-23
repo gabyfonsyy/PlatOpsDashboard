@@ -1,6 +1,7 @@
 import { PHASE_STATUS_META, isPhaseDelayed, type ProjectMilestone, type ProjectPhase } from "@/lib/project-tracking";
 import { formatManilaDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { Copy } from "@/components/ui/Copy";
 
 /**
  * One project's own phases on a timeline — a new sibling to `ProjectsGanttChart.tsx` rather than an
@@ -62,7 +63,10 @@ export function ProjectPhaseGanttChart({
   if (dated.length === 0) {
     return (
       <p className="text-sm text-neutral-400">
-        No phases have both a start and target date yet — add dates to see them on a timeline.
+        <Copy
+          serious="No phases have both a start and target date yet — add dates to see them on a timeline."
+          playful="No phases have a full flight plan yet — add both dates to see them on the timeline."
+        />
       </p>
     );
   }

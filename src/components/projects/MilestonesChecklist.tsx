@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import type { ProjectMilestone } from "@/lib/project-tracking";
 import { formatManilaDate } from "@/lib/format";
+import { Copy } from "@/components/ui/Copy";
 
 /** A project's milestones — a simple checklist, ordered by `position` (append-only, no manual
  * reorder like phases). Each gets its own target date so `ProjectPhaseGanttChart` can overlay it
@@ -69,7 +70,11 @@ export function MilestonesChecklist({ projectId, milestones }: { projectId: stri
 
   return (
     <div className="flex flex-col gap-1.5">
-      {milestones.length === 0 && <p className="text-sm text-neutral-400">No milestones yet.</p>}
+      {milestones.length === 0 && (
+        <p className="text-sm text-neutral-400">
+          <Copy serious="No milestones yet." playful="No milestones on the map yet." />
+        </p>
+      )}
       {milestones.map((m) => (
         <div key={m.id} className="flex items-center gap-3 bg-surface rounded-md border border-neutral-200 px-3 py-2">
           <input

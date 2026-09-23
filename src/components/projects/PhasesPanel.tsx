@@ -16,6 +16,7 @@ import { formatManilaDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { NotesSection } from "@/components/projects/NotesSection";
 import { PhaseTicketPicker } from "@/components/projects/PhaseTicketPicker";
+import { Copy } from "@/components/ui/Copy";
 
 /**
  * A project's phases, ordered by `position` — collapsed rows for a quick scan (status, progress,
@@ -117,7 +118,11 @@ export function PhasesPanel({
 
   return (
     <div className="flex flex-col gap-2">
-      {phases.length === 0 && <p className="text-sm text-neutral-400">No phases yet — add one below.</p>}
+      {phases.length === 0 && (
+        <p className="text-sm text-neutral-400">
+          <Copy serious="No phases yet — add one below." playful="No phases charted yet — add one below." />
+        </p>
+      )}
 
       {phases.map((phase, i) => {
         const isExpanded = expanded.has(phase.id);

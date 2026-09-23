@@ -21,6 +21,7 @@ import {
 import { ProjectDrilldownPanel } from "@/components/projects/ProjectDrilldownPanel";
 import type { TeamConfig } from "@/lib/teams";
 import { cn } from "@/lib/utils";
+import { Copy } from "@/components/ui/Copy";
 
 /**
  * Eisenhower matrix for the team-filtered project list, built from the same shared pieces My
@@ -101,7 +102,9 @@ export function ProjectMatrix({
         {QUADRANT_ORDER.map((q) => (
           <QuadrantCell key={q} quadrant={q} count={cells[q].length}>
             {cells[q].length === 0 ? (
-              <p className="text-xs text-neutral-400 italic">Nothing here.</p>
+              <p className="text-xs text-neutral-400 italic">
+                <Copy serious="Nothing here." playful="All clear here." />
+              </p>
             ) : (
               <ol className="flex flex-col gap-1.5">
                 {cells[q].map((p, i) => (

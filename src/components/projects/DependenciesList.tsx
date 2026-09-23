@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import type { ProjectDependency } from "@/lib/project-tracking";
 import { Badge } from "@/components/ui/Badge";
+import { Copy } from "@/components/ui/Copy";
 
 /** External things this project is waiting on — distinct from a blocker note, which is "this
  * project itself can't move." Project-level for now (the schema's `phase_id` is there for a
@@ -58,7 +59,11 @@ export function DependenciesList({ projectId, dependencies }: { projectId: strin
 
   return (
     <div className="flex flex-col gap-1.5">
-      {dependencies.length === 0 && <p className="text-sm text-neutral-400">No dependencies yet.</p>}
+      {dependencies.length === 0 && (
+        <p className="text-sm text-neutral-400">
+          <Copy serious="No dependencies yet." playful="Nothing blocking from outside — yet." />
+        </p>
+      )}
       {dependencies.map((d) => (
         <div key={d.id} className="flex items-center gap-2 bg-surface rounded-md border border-neutral-200 px-3 py-2">
           <button onClick={() => toggleStatus(d)} className="shrink-0" aria-label="Toggle dependency status">

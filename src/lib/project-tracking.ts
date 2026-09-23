@@ -376,9 +376,11 @@ export const STALE_DAYS = 10;
 
 export type StaleSignal = "approaching_target" | "stale";
 
-export const STALE_SIGNAL_META: Record<StaleSignal, { label: string }> = {
-  approaching_target: { label: "Approaching target, behind pace" },
-  stale: { label: "No activity in 10+ days" },
+/** `label` is a plain string for contexts that can't render markup (a native `title` tooltip);
+ * `playful` pairs with it via `<Copy>` wherever the badge itself is rendered. */
+export const STALE_SIGNAL_META: Record<StaleSignal, { label: string; playful: string }> = {
+  approaching_target: { label: "Approaching target, behind pace", playful: "Closing in on the deadline, behind pace" },
+  stale: { label: "No activity in 10+ days", playful: "Gone quiet for 10+ days" },
 };
 
 export function isOverdueProject(project: Pick<Project, "target_date" | "status">, today = new Date()): boolean {

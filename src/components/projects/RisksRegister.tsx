@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
 import { RISK_LEVEL_META, RISK_LEVELS, RISK_STATUSES, type ProjectRisk, type RiskLevel } from "@/lib/project-tracking";
+import { Copy } from "@/components/ui/Copy";
 
 const RISK_STATUS_LABEL: Record<string, string> = { open: "Open", mitigated: "Mitigated", closed: "Closed" };
 
@@ -56,7 +57,11 @@ export function RisksRegister({ projectId, risks }: { projectId: string; risks: 
 
   return (
     <div className="flex flex-col gap-2">
-      {risks.length === 0 && <p className="text-sm text-neutral-400">No risks logged yet.</p>}
+      {risks.length === 0 && (
+        <p className="text-sm text-neutral-400">
+          <Copy serious="No risks logged yet." playful="Skies clear — no risks logged yet." />
+        </p>
+      )}
       {risks.map((r) => (
         <div key={r.id} className="bg-surface rounded-md border border-neutral-200 p-3 flex flex-col gap-2">
           <div className="flex items-start gap-2">

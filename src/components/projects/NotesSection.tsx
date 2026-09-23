@@ -6,6 +6,7 @@ import { useSession } from "next-auth/react";
 import { Trash2 } from "lucide-react";
 import { NOTE_TYPES, NOTE_TYPE_META, type ProjectNote, type ProjectNoteType } from "@/lib/project-tracking";
 import { Badge } from "@/components/ui/Badge";
+import { Copy } from "@/components/ui/Copy";
 import { formatManilaDateTime } from "@/lib/format";
 
 /**
@@ -70,7 +71,11 @@ export function NotesSection({
 
   return (
     <div className="flex flex-col gap-2">
-      {notes.length === 0 && <p className="text-sm text-neutral-400">No notes yet.</p>}
+      {notes.length === 0 && (
+        <p className="text-sm text-neutral-400">
+          <Copy serious="No notes yet." playful="Nothing logged yet." />
+        </p>
+      )}
       {notes.map((n) => (
         <div key={n.id} className="flex items-start gap-2 bg-surface rounded-md border border-neutral-200 px-3 py-2">
           <Badge tone={NOTE_TYPE_META[n.note_type].tone}>{NOTE_TYPE_META[n.note_type].label}</Badge>

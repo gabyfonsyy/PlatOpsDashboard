@@ -26,6 +26,7 @@ import {
 import { resolveDisplayPercent } from "@/lib/projection";
 import { formatManilaDate } from "@/lib/format";
 import { Badge } from "@/components/ui/Badge";
+import { Copy } from "@/components/ui/Copy";
 import type { TeamConfig } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { EditProjectDialog } from "@/components/forms/EditProjectDialog";
@@ -161,7 +162,9 @@ export function ProjectDrilldownPanel({
               {project.archived && <Badge tone="neutral">Archived</Badge>}
               {blocked && <Badge tone="danger">Blocked</Badge>}
               {signals.map((s) => (
-                <Badge key={s} tone="warning">{STALE_SIGNAL_META[s].label}</Badge>
+                <Badge key={s} tone="warning">
+                  <Copy serious={STALE_SIGNAL_META[s].label} playful={STALE_SIGNAL_META[s].playful} />
+                </Badge>
               ))}
             </div>
             <button

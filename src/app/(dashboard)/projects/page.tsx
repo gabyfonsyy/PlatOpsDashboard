@@ -35,6 +35,7 @@ import { PageTitle } from "@/components/ui/PageTitle";
 import { TeamPills } from "@/components/projects/TeamPills";
 import { PortfolioSummaryStrip } from "@/components/projects/PortfolioSummaryStrip";
 import { ProjectMatrix } from "@/components/projects/ProjectMatrix";
+import { AllTeamsPortfolio } from "@/components/projects/AllTeamsPortfolio";
 
 export default async function ProjectsPage({
   searchParams,
@@ -194,6 +195,9 @@ export default async function ProjectsPage({
             allTickets={tickets}
             jiraBaseUrl={process.env.JIRA_BASE_URL}
           />
+        )}
+        {!team && (
+          <AllTeamsPortfolio projects={records} teams={teams} blockedProjectIds={blockedProjectIds} />
         )}
       </div>
 

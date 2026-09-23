@@ -1,4 +1,5 @@
 import type { Project } from "@/lib/project-tracking";
+import { Copy } from "@/components/ui/Copy";
 
 const FIELDS: Array<{ key: keyof Project; label: string }> = [
   { key: "problem_context", label: "Problem" },
@@ -15,7 +16,11 @@ const FIELDS: Array<{ key: keyof Project; label: string }> = [
 export function ProjectOnePager({ project }: { project: Project }) {
   const filled = FIELDS.filter((f) => String(project[f.key] ?? "").trim());
   if (filled.length === 0) {
-    return <p className="text-sm text-neutral-400 italic">No one-pager filled in yet.</p>;
+    return (
+      <p className="text-sm text-neutral-400 italic">
+        <Copy serious="No one-pager filled in yet." playful="One-pager's still a blank page." />
+      </p>
+    );
   }
   return (
     <div className="flex flex-col gap-3">

@@ -1,11 +1,16 @@
 import { activityEventLabel, type ProjectActivityEntry } from "@/lib/project-tracking";
 import { formatManilaDateTime } from "@/lib/format";
+import { Copy } from "@/components/ui/Copy";
 
 /** Newest-first, read-only — every entry was written by `logActivity` (project-tracking-store.ts)
  * from a tracked mutation site, never by anything client-side directly. */
 export function ActivityLog({ entries }: { entries: ProjectActivityEntry[] }) {
   if (entries.length === 0) {
-    return <p className="text-sm text-neutral-400">No activity logged yet.</p>;
+    return (
+      <p className="text-sm text-neutral-400">
+        <Copy serious="No activity logged yet." playful="Quiet so far — nothing logged yet." />
+      </p>
+    );
   }
   return (
     <ol className="flex flex-col gap-2">

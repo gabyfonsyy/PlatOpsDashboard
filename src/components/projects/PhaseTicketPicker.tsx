@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import type { InitiativeTicket, ProjectPhaseTicket } from "@/lib/project-tracking";
 import { searchInitiativeTickets, ticketsForTeam } from "@/components/projects/ticket-search";
+import { Copy } from "@/components/ui/Copy";
 
 /** Links Jira tickets to ONE phase — additional to, never instead of, the project-level linking
  * `InitiativeTicketsTable.tsx` already does. Scoped to the project's own team so the search
@@ -73,7 +74,11 @@ export function PhaseTicketPicker({
 
   return (
     <div className="flex flex-col gap-1.5">
-      {linkedTickets.length === 0 && <p className="text-xs text-neutral-400">No tickets linked to this phase yet.</p>}
+      {linkedTickets.length === 0 && (
+        <p className="text-xs text-neutral-400">
+          <Copy serious="No tickets linked to this phase yet." playful="This phase isn't linked to any tickets yet." />
+        </p>
+      )}
       {linkedTickets.map((link) => {
         const ticket = ticketByKey.get(link.issue_key);
         const href = jiraLink(link.issue_key);
