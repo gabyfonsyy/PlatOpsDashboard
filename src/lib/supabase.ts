@@ -15,6 +15,21 @@ function buildClient() {
   if (!SUPABASE_SERVICE_ROLE_KEY) throw new SupabaseConfigError("SUPABASE_SERVICE_ROLE_KEY is not configured");
   return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
+    global: {
+      // Next.js patches the global `fetch` inside Server Components/route handlers to add its own
+      // persistent Data Cache, keyed by request URL+options and independent of the page's own
+      // dynamic/static classification — a route reading `searchParams` still lets its individual
+      // fetch() calls get cached. supabase-js issues its REST calls through that same ambient
+      // fetch, so without this override, the FIRST time any exact query shape ran (e.g. `select
+      // * from project_notes` with no filters) got cached, and every later read of that same query
+      // kept serving that frozen snapshot — invisible to `router.refresh()`, which re-renders the
+      // page but does not by itself revalidate this cache. Confirmed directly: a note inserted via
+      // POST was verified present in Supabase (REST spot-check) but never appeared on any
+      // subsequent page load until this override was added. `cache: "no-store"` opts every request
+      // this client makes out of that cache entirely, since row data here is exactly the kind of
+      // thing that must never be served stale.
+      fetch: (input, init) => fetch(input as never, { ...init, cache: "no-store" }),
+    },
   });
 }
 
