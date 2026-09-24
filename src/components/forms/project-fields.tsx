@@ -26,6 +26,7 @@ export const projectSchema = z.object({
   tracking_mode: z.enum(["manual", "scheduled", "tasks"]).default("manual"),
   start_date: z.string().optional(),
   target_date: z.string().optional(),
+  committed_date: z.string().optional(),
   percent_complete: z.coerce.number().min(0).max(100).optional(),
   jira_label: z.string().optional(),
   total_items: z.coerce.number().min(0).optional().or(z.literal("")),
@@ -44,6 +45,7 @@ export const projectSchema = z.object({
   important: z.boolean().nullable().optional(),
   health: z.enum(["on_track", "at_risk", "off_track", "not_started", "blocked", ""]).optional(),
   batch_tracking_enabled: z.boolean().optional(),
+  batch_actuals_from_tickets: z.boolean().optional(),
   /** Comma-separated names, same freeform-text convention as Owner — contributors aren't drawn
    * from a fixed roster, so this isn't a checkbox list like Teams Involved. */
   contributors: z.string().optional(),
@@ -118,6 +120,7 @@ export function projectToFormValues(r: ProjectRecord, computedPercent?: number, 
     tracking_mode: inferLegacyTrackingMode(r, hasTasks),
     start_date: r.start_date ? formatManilaDate(r.start_date) : "",
     target_date: r.target_date ? formatManilaDate(r.target_date) : "",
+    committed_date: r.committed_date ? formatManilaDate(r.committed_date) : "",
     percent_complete: computedPercent ?? (Number(r.percent_complete) || 0),
     jira_label: r.jira_label || "",
     total_items: numOrBlank(r.total_items),
@@ -131,6 +134,7 @@ export function projectToFormValues(r: ProjectRecord, computedPercent?: number, 
     // Legacy "scheduled" projects relied on the batch UI showing with no toggle to flip — infer it
     // rather than silently hiding a project's own batch inputs the first time this form re-opens.
     batch_tracking_enabled: r.batch_tracking_enabled || r.tracking_mode === "scheduled",
+    batch_actuals_from_tickets: r.batch_actuals_from_tickets ?? false,
     contributors: (r.contributors ?? []).join(", "),
     problem_context: r.problem_context || "",
     objective: r.objective || "",
@@ -181,7 +185,7 @@ export function ProjectFormFields({
         {errors.owner && <p className="form-error">{errors.owner.message}</p>}
       </div>
       <div>
-        <label className="form-label">Contributors <span className="text-neutral-400 font-normal">(comma-separated)</span></label>
+        <label className="form-label">Stakeholders <span className="text-neutral-400 font-normal">(comma-separated)</span></label>
         <input {...register("contributors")} className="form-input" placeholder="e.g. Jasper Razo, Ken Uy" />
       </div>
 
@@ -245,6 +249,10 @@ export function ProjectFormFields({
         <label className="form-label">Target Date</label>
         <input type="date" {...register("target_date")} className="form-input" />
       </div>
+      <div>
+        <label className="form-label">Committed Date <span className="text-neutral-400 font-normal">(the date you&apos;d defend)</span></label>
+        <input type="date" {...register("committed_date")} className="form-input" />
+      </div>
 
       {trackingMode === "manual" && (
         <div>
@@ -279,6 +287,16 @@ export function ProjectFormFields({
 
       {batchTrackingEnabled && (
         <>
+          <div className="col-span-full">
+            <label className="inline-flex items-center gap-2 text-sm text-neutral-700">
+              <input type="checkbox" {...register("batch_actuals_from_tickets")}
+                className="rounded border-neutral-300 text-sprout-600 focus:ring-sprout-500" />
+              Count actual batches from linked tickets
+              <span className="text-neutral-400 font-normal">
+                (linked tickets × Batch Size, instead of manually logged progress rows)
+              </span>
+            </label>
+          </div>
           <div>
             <label className="form-label">Total Items</label>
             <input type="number" min={0} {...register("total_items")} className="form-input" placeholder="e.g. 500" />

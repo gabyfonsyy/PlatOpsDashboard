@@ -15,6 +15,7 @@ import {
 } from "@/lib/project-tracking-store";
 import {
   isBlocked,
+  type InitiativeTicket,
   type ProjectActivityEntry,
   type ProjectDependency,
   type ProjectMilestone,
@@ -24,7 +25,6 @@ import {
   type ProjectRisk,
   type ProjectTask,
 } from "@/lib/project-tracking";
-import { ProjectForm } from "@/components/forms/ProjectForm";
 import { ProjectsView } from "@/components/forms/ProjectsView";
 import { ProgressRecordsTable } from "@/components/forms/ProgressRecordsTable";
 import type { ProgressTicketOption } from "@/components/forms/progress-fields";
@@ -34,8 +34,10 @@ import { InitiativeTicketsTable } from "@/components/dashboard/InitiativeTickets
 import { PageTitle } from "@/components/ui/PageTitle";
 import { TeamPills } from "@/components/projects/TeamPills";
 import { PortfolioSummaryStrip } from "@/components/projects/PortfolioSummaryStrip";
-import { ProjectMatrix } from "@/components/projects/ProjectMatrix";
+import { EisenhowerOverview } from "@/components/projects/EisenhowerOverview";
 import { AllTeamsPortfolio } from "@/components/projects/AllTeamsPortfolio";
+import { AddProjectLauncher } from "@/components/projects/AddProjectLauncher";
+import { OngoingProjectsTimeline } from "@/components/projects/OngoingProjectsTimeline";
 
 export default async function ProjectsPage({
   searchParams,
@@ -86,6 +88,7 @@ export default async function ProjectsPage({
   const labelledProjects = allProjects.filter((r) => String(r.jira_label || "").trim());
   const linkedCount: Record<string, number> = {};
   const ticketProject = new Map<string, string>();
+  const linkedTicketsByProject: Record<string, InitiativeTicket[]> = {};
   for (const t of tickets) {
     const labels = String(t.labels || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
     const manual = manualByKey.get(t.issue_key);
@@ -93,13 +96,35 @@ export default async function ProjectsPage({
     if (pid) {
       linkedCount[pid] = (linkedCount[pid] ?? 0) + 1;
       ticketProject.set(t.issue_key, pid);
+      (linkedTicketsByProject[pid] ??= []).push(t);
     }
+  }
+
+  // Union in phase-level links (Phase 6) — additional to, never replacing, the label/manual
+  // resolution above. Deduped by issue_key per project so a ticket linked both ways (e.g. its
+  // label already matches AND it was separately linked to one of that project's phases) only
+  // shows once.
+  const ticketByIssueKey = new Map(tickets.map((t) => [t.issue_key, t]));
+  for (const link of phaseTickets) {
+    const ticket = ticketByIssueKey.get(link.issue_key);
+    if (!ticket) continue;
+    const existing = (linkedTicketsByProject[link.project_id] ??= []);
+    if (!existing.some((t) => t.issue_key === ticket.issue_key)) existing.push(ticket);
   }
 
   // Actual items processed per project, summed from the PROJECT_PROGRESS log.
   const processedByProject: Record<string, number> = {};
   for (const p of progress) {
     processedByProject[p.project_id] = (processedByProject[p.project_id] ?? 0) + (Number(p.items_processed) || 0);
+  }
+
+  // Opt-in override: for a project with batch_actuals_from_tickets on, linked tickets x batch
+  // size replaces the manually logged progress total as the processed count — everything that
+  // reads processedByProject (resolveDisplayPercent, ProjectBatchSummary) picks this up for free.
+  for (const p of allProjects) {
+    if (p.batch_actuals_from_tickets) {
+      processedByProject[p.project_id] = (linkedCount[p.project_id] ?? 0) * (Number(p.batch_size) || 0);
+    }
   }
 
   // Task checklist per project, from the PROJECT_TASKS log.
@@ -177,9 +202,10 @@ export default async function ProjectsPage({
 
       <div className="flex flex-col gap-4">
         <TeamPills teams={teams} team={team ?? ""} />
+        <AddProjectLauncher teams={teams} defaultTeam={team} projects={allProjects} />
         <PortfolioSummaryStrip projects={records} blockedProjectIds={blockedProjectIds} />
         {team && (
-          <ProjectMatrix
+          <EisenhowerOverview
             projects={records}
             teams={teams}
             processedByProject={processedByProject}
@@ -193,15 +219,50 @@ export default async function ProjectsPage({
             blockedProjectIds={blockedProjectIds}
             phaseTicketsByProject={phaseTicketsByProject}
             allTickets={tickets}
+            linkedTicketsByProject={linkedTicketsByProject}
+            progressTicketOptions={progressTicketOptions}
             jiraBaseUrl={process.env.JIRA_BASE_URL}
           />
         )}
         {!team && (
-          <AllTeamsPortfolio projects={records} teams={teams} blockedProjectIds={blockedProjectIds} />
+          <AllTeamsPortfolio
+            projects={records}
+            teams={teams}
+            blockedProjectIds={blockedProjectIds}
+            processedByProject={processedByProject}
+            tasksByProject={tasksByProject}
+            phasesByProject={phasesByProject}
+            notesByProject={notesByProject}
+            activityByProject={activityByProject}
+            milestonesByProject={milestonesByProject}
+            dependenciesByProject={dependenciesByProject}
+            risksByProject={risksByProject}
+            phaseTicketsByProject={phaseTicketsByProject}
+            allTickets={tickets}
+            linkedTicketsByProject={linkedTicketsByProject}
+            progressTicketOptions={progressTicketOptions}
+            jiraBaseUrl={process.env.JIRA_BASE_URL}
+          />
         )}
-      </div>
 
-      <ProjectForm teams={teams} />
+        <OngoingProjectsTimeline
+          projects={records}
+          teams={teams}
+          processedByProject={processedByProject}
+          tasksByProject={tasksByProject}
+          phasesByProject={phasesByProject}
+          notesByProject={notesByProject}
+          activityByProject={activityByProject}
+          milestonesByProject={milestonesByProject}
+          dependenciesByProject={dependenciesByProject}
+          risksByProject={risksByProject}
+          phaseTicketsByProject={phaseTicketsByProject}
+          allTickets={tickets}
+          linkedTicketsByProject={linkedTicketsByProject}
+          progressTicketOptions={progressTicketOptions}
+          jiraBaseUrl={process.env.JIRA_BASE_URL}
+        />
+      </div>
 
       <ProjectsView
         projects={records}
@@ -215,6 +276,11 @@ export default async function ProjectsPage({
         notesByProject={notesByProject}
         risksByProject={risksByProject}
         activityByProject={activityByProject}
+        milestonesByProject={milestonesByProject}
+        dependenciesByProject={dependenciesByProject}
+        phaseTicketsByProject={phaseTicketsByProject}
+        allTickets={tickets}
+        linkedTicketsByProject={linkedTicketsByProject}
       />
 
       {/* Both render nothing in the page flow — each is a fixed edge tab + the SidePanel it

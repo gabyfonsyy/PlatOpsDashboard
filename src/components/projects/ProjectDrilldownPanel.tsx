@@ -9,6 +9,7 @@ import { QuadrantSelect } from "@/components/work/Quadrant";
 import type { Triage } from "@/lib/work";
 import {
   HEALTH_META,
+  currentPhaseFor,
   isBlocked,
   staleSignals,
   STALE_SIGNAL_META,
@@ -30,23 +31,27 @@ import { Copy } from "@/components/ui/Copy";
 import type { TeamConfig } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { EditProjectDialog } from "@/components/forms/EditProjectDialog";
+import { ProjectTasksPanel } from "@/components/forms/ProjectTasksPanel";
+import type { ProgressTicketOption } from "@/components/forms/progress-fields";
 import { ProjectOnePager } from "@/components/projects/ProjectOnePager";
 import { PhasesPanel } from "@/components/projects/PhasesPanel";
 import { ProjectPhaseGanttChart } from "@/components/projects/ProjectPhaseGanttChart";
+import { ProjectBatchSummary } from "@/components/projects/ProjectBatchSummary";
 import { NotesSection } from "@/components/projects/NotesSection";
 import { ActivityLog } from "@/components/projects/ActivityLog";
 import { MilestonesChecklist } from "@/components/projects/MilestonesChecklist";
 import { DependenciesList } from "@/components/projects/DependenciesList";
 import { RisksRegister } from "@/components/projects/RisksRegister";
+import { LinkedTicketsAccordion } from "@/components/projects/LinkedTicketsAccordion";
 
 const STATUS_OPTIONS: Project["status"][] = ["Not Started", "In Progress", "Blocked", "Done"];
 
 /**
- * The project drill-down — header facts + quick inline changes + the read-only one-pager, on a
- * `SidePanel`. Deliberately thin on mutations: status/health/priority are one PATCH per field
- * (same granular-PATCH contract `ProjectMatrix`'s own quadrant control already relies on), and
- * anything bigger (name, dates, batch config, the one-pager text itself) reuses the EXISTING
- * `EditProjectDialog` rather than duplicating that form here.
+ * The project drill-down — the deepest level of the three-level navigation (landing page →
+ * quadrant panel → here). Deliberately thin on mutations: status/health/priority are one PATCH
+ * per field (same granular-PATCH contract the Eisenhower views' `QuadrantSelect` already relies
+ * on), and anything bigger (name, dates, batch config, the one-pager text itself) reuses the
+ * EXISTING `EditProjectDialog` rather than duplicating that form here.
  */
 export function ProjectDrilldownPanel({
   project,
@@ -63,6 +68,8 @@ export function ProjectDrilldownPanel({
   risksByProject,
   phaseTicketsByProject,
   allTickets,
+  linkedTicketsByProject,
+  progressTicketOptions,
   jiraBaseUrl,
 }: {
   project: Project | null;
@@ -79,6 +86,12 @@ export function ProjectDrilldownPanel({
   risksByProject: Record<string, ProjectRisk[]>;
   phaseTicketsByProject: Record<string, ProjectPhaseTicket[]>;
   allTickets: InitiativeTicket[];
+  /** Every ticket resolved to this project — label match, manual assignment, and phase-level
+   * links, deduped by issue_key — for the Linked Tickets accordion. */
+  linkedTicketsByProject: Record<string, InitiativeTicket[]>;
+  /** For `ProjectTasksPanel`'s ticket dropdown — already resolved to project_id by page.tsx's
+   * label/manual-assignment logic, so this component doesn't need to re-derive it. */
+  progressTicketOptions: ProgressTicketOption[];
   jiraBaseUrl?: string;
 }) {
   const router = useRouter();
@@ -141,6 +154,7 @@ export function ProjectDrilldownPanel({
 
   const latestActivityAt = activity[0]?.created_at ?? null;
   const signals = staleSignals(project, pct, latestActivityAt);
+  const currentPhase = currentPhaseFor(phases);
 
   return (
     <>
@@ -212,6 +226,8 @@ export function ProjectDrilldownPanel({
             </Field>
             <Field label="Start Date" value={project.start_date ? formatManilaDate(project.start_date) : "—"} />
             <Field label="Target Date" value={project.target_date ? formatManilaDate(project.target_date) : "—"} />
+            <Field label="Committed Date" value={project.committed_date ? formatManilaDate(project.committed_date) : "—"} />
+            <Field label="Current Phase" value={currentPhase?.name ?? "—"} />
           </div>
 
           <div>
@@ -223,6 +239,18 @@ export function ProjectDrilldownPanel({
               <span className="text-sm font-medium text-neutral-900">{pct}%</span>
             </div>
           </div>
+
+          {project.tracking_mode === "tasks" && (
+            <div className="border-t border-line/70 pt-4">
+              <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Task Checklist</p>
+              <ProjectTasksPanel
+                projectId={project.project_id}
+                tasks={tasks}
+                tickets={progressTicketOptions}
+                jiraBaseUrl={jiraBaseUrl}
+              />
+            </div>
+          )}
 
           <div className="border-t border-line/70 pt-4">
             <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Phases</p>
@@ -239,6 +267,13 @@ export function ProjectDrilldownPanel({
               />
             </div>
           </div>
+
+          {project.batch_tracking_enabled && (
+            <div className="border-t border-line/70 pt-4">
+              <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Batches</p>
+              <ProjectBatchSummary project={project} processed={processedByProject[project.project_id]} />
+            </div>
+          )}
 
           <div className="border-t border-line/70 pt-4">
             <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Milestones</p>
@@ -263,6 +298,16 @@ export function ProjectDrilldownPanel({
           <div className="border-t border-line/70 pt-4">
             <p className="text-xs uppercase tracking-wide text-neutral-400 mb-3">Notes</p>
             <NotesSection projectId={project.project_id} notes={projectNotes} />
+          </div>
+
+          <div className="border-t border-line/70 pt-4">
+            <LinkedTicketsAccordion
+              projectId={project.project_id}
+              teamKey={project.owning_team}
+              tickets={linkedTicketsByProject[project.project_id] ?? []}
+              allTickets={allTickets}
+              jiraBaseUrl={jiraBaseUrl}
+            />
           </div>
 
           <div className="border-t border-line/70 pt-4">

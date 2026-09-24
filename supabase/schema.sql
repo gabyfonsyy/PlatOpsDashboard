@@ -329,6 +329,14 @@ create table projects (
   -- Phase 2 (project drill-down panel's Archive action) -- see
   -- add-project-archived-column.sql for the ALTER path on an existing database.
   archived boolean not null default false,
+  -- Charter-import + ticket-driven-batch-actuals additions -- see
+  -- add-project-committed-date-and-batch-actuals-columns.sql for the ALTER path on an existing
+  -- database.
+  committed_date date,
+  batch_actuals_from_tickets boolean not null default false,
+  -- Re-upload-the-same-charter-updates-not-duplicates support -- see
+  -- add-project-charter-ref-column.sql for the ALTER path on an existing database.
+  charter_client_ref text,
   problem_context text,
   objective text,
   expected_outcome text,

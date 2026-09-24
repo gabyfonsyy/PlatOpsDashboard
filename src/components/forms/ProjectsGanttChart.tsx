@@ -50,6 +50,8 @@ export function ProjectsGanttChart({
   processedByProject = {},
   tasksByProject = {},
   bare = false,
+  onProjectClick,
+  showTaskBars = true,
 }: {
   projects: ProjectRecord[];
   teams: TeamConfig[];
@@ -59,6 +61,12 @@ export function ProjectsGanttChart({
   tasksByProject?: Record<string, TaskRecord[]>;
   /** Skip the outer `.card` wrapper — for embedding inside a parent that already provides one. */
   bare?: boolean;
+  /** Makes each project's bar clickable — used by the landing-page timeline to open the drill-down
+   * directly. Omit to keep bars inert (existing callers are unaffected). */
+  onProjectClick?: (project: ProjectRecord) => void;
+  /** Set false for a leaner, bar-only landing-page view — existing callers keep their task
+   * sub-bars by default. */
+  showTaskBars?: boolean;
 }) {
   const teamNameByKey = new Map(teams.map((t) => [t.team_key, t.team_name]));
   const labelFor = (key: string) => {
@@ -163,6 +171,7 @@ export function ProjectsGanttChart({
                   ? { total: allTasks.length, done: allTasks.filter((t) => t.done).length }
                   : undefined;
                 const completePercent = resolveDisplayPercent(r, processed, taskStats);
+                const clickable = Boolean(onProjectClick);
                 return (
                   <Fragment key={r.project_id}>
                     <div className="grid gap-4 items-center" style={{ gridTemplateColumns: `${LABEL_COL} 1fr` }}>
@@ -174,7 +183,14 @@ export function ProjectsGanttChart({
                           <div className="absolute top-0 h-full border-l border-neutral-100" style={{ left: `${todayLeft}%` }} />
                         )}
                         <div
-                          className={cn("absolute top-1 h-4 rounded-md overflow-hidden", tone.track)}
+                          onClick={onProjectClick ? () => onProjectClick(r) : undefined}
+                          role={clickable ? "button" : undefined}
+                          tabIndex={clickable ? 0 : undefined}
+                          className={cn(
+                            "absolute top-1 h-4 rounded-md overflow-hidden",
+                            tone.track,
+                            clickable && "cursor-pointer hover:ring-2 hover:ring-sprout-400"
+                          )}
                           style={{ left: `${left}%`, width: `${width}%` }}
                           title={`${r.project_name} — ${formatManilaDate(r.start_date)} to ${formatManilaDate(r.target_date)} — ${r.status}, ${completePercent}% complete`}
                         >
@@ -183,7 +199,7 @@ export function ProjectsGanttChart({
                       </div>
                     </div>
 
-                    {datedTasks.map(({ task, start: tStart, end: tEnd }) => {
+                    {showTaskBars && datedTasks.map(({ task, start: tStart, end: tEnd }) => {
                       const tLeft = pct(tStart);
                       const tWidth = Math.max(pct(tEnd) - tLeft, MIN_BAR_PERCENT);
                       return (

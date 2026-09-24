@@ -65,13 +65,14 @@ export function RisksRegister({ projectId, risks }: { projectId: string; risks: 
       {risks.map((r) => (
         <div key={r.id} className="bg-surface rounded-md border border-neutral-200 p-3 flex flex-col gap-2">
           <div className="flex items-start gap-2">
-            <input
+            <textarea
               defaultValue={r.risk}
+              rows={2}
               onBlur={(e) => {
                 const next = e.target.value.trim();
                 if (next && next !== r.risk) patch(r.id, { risk: next });
               }}
-              className="form-input flex-1 text-sm"
+              className="form-input flex-1 text-sm resize-y"
               aria-label="Risk"
             />
             <button
@@ -116,20 +117,19 @@ export function RisksRegister({ projectId, risks }: { projectId: string; risks: 
               ))}
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              defaultValue={r.owner}
-              onBlur={(e) => e.target.value !== r.owner && patch(r.id, { owner: e.target.value })}
-              placeholder="Owner"
-              className="form-input text-sm"
-            />
-            <input
-              defaultValue={r.mitigation}
-              onBlur={(e) => e.target.value !== r.mitigation && patch(r.id, { mitigation: e.target.value })}
-              placeholder="Mitigation"
-              className="form-input text-sm"
-            />
-          </div>
+          <input
+            defaultValue={r.owner}
+            onBlur={(e) => e.target.value !== r.owner && patch(r.id, { owner: e.target.value })}
+            placeholder="Owner"
+            className="form-input text-sm"
+          />
+          <textarea
+            defaultValue={r.mitigation}
+            rows={2}
+            onBlur={(e) => e.target.value !== r.mitigation && patch(r.id, { mitigation: e.target.value })}
+            placeholder="Mitigation"
+            className="form-input text-sm resize-y"
+          />
         </div>
       ))}
 

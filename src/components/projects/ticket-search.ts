@@ -15,3 +15,14 @@ export function searchInitiativeTickets(tickets: InitiativeTicket[], query: stri
     (t) => t.issue_key.toLowerCase().includes(q) || t.summary.toLowerCase().includes(q)
   );
 }
+
+/** Every ticket carrying an exact label (comma-split, case-insensitive) — same matching rule
+ * page.tsx already uses to resolve a project's own `jira_label`, reused here so a phase can be
+ * bulk-linked by label instead of one ticket at a time. */
+export function ticketsByLabel(tickets: InitiativeTicket[], label: string): InitiativeTicket[] {
+  const target = label.trim().toLowerCase();
+  if (!target) return [];
+  return tickets.filter((t) =>
+    String(t.labels || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean).includes(target)
+  );
+}

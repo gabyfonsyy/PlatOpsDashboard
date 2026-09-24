@@ -1,4 +1,11 @@
-import { groupByQuadrant, quadrantOf, triageFor, type Quadrant, type Triage } from "@/lib/work";
+import {
+  groupByQuadrant,
+  quadrantOf,
+  triageFor,
+  type BriefFieldReview,
+  type Quadrant,
+  type Triage,
+} from "@/lib/work";
 
 export type { Quadrant, Triage } from "@/lib/work";
 
@@ -44,6 +51,8 @@ export type Project = {
   tracking_mode: ProjectTrackingMode;
   start_date: string;
   target_date: string;
+  /** "The date you'd defend in a review" — distinct from the working `target_date`. "" when unset. */
+  committed_date: string;
   percent_complete: number;
   /** Shared Jira label linking this project to its cod-initiative tickets. */
   jira_label: string;
@@ -61,6 +70,9 @@ export type Project = {
   /** Reveals the batch-input UI (Total Items/Batch Size/Batches per Week/progress log)
    * independently of tracking_mode, which alone still drives % complete — see project-fields.tsx. */
   batch_tracking_enabled: boolean;
+  /** Opt-in: when true, `linked tickets x batch_size` drives processed count instead of manually
+   * logged progress rows — see resolveDisplayPercent's caller in page.tsx. */
+  batch_actuals_from_tickets: boolean;
   contributors: string[];
   problem_context: string;
   objective: string;
@@ -71,9 +83,52 @@ export type Project = {
   /** Lifecycle/visibility flag (Phase 2), separate from `status` on purpose — archiving isn't a
    * workflow state, it's "stop showing this as active." */
   archived: boolean;
+  /** The charter's own `client_ref`, stamped on first import so a later upload of the SAME (or
+   * revised) charter can be matched back to this project and update it instead of creating a
+   * duplicate. "" for a project never created from a charter. */
+  charter_client_ref: string;
   created_by: string;
   created_at: string;
   updated_at: string;
+};
+
+/** The six one-pager text fields, in display order — one source of truth for their key/label
+ * pairing, shared by the read-only `ProjectOnePager`, the Add Project flow, and the AI review
+ * route, so the three can't quietly drift apart on what "the one-pager" means. */
+export type OnePagerFieldKey =
+  | "problem_context"
+  | "objective"
+  | "expected_outcome"
+  | "scope"
+  | "out_of_scope"
+  | "success_metrics";
+
+export const ONE_PAGER_FIELDS: Array<{ key: OnePagerFieldKey; label: string }> = [
+  { key: "problem_context", label: "Problem" },
+  { key: "objective", label: "Objective" },
+  { key: "expected_outcome", label: "Expected Outcome" },
+  { key: "scope", label: "Scope" },
+  { key: "out_of_scope", label: "Out of Scope" },
+  { key: "success_metrics", label: "Success Metrics" },
+];
+
+/** AI review of a project's one-pager — reuses `BriefFieldReview` (`{revised, why, asks}`) from
+ * My Work's own brief-review feature directly, one per one-pager field. Simpler than that
+ * feature's own `BriefReview`: every field here is a single paragraph, so none of them need the
+ * baseline/target/by-when metric split or the items/suggested list split those questions get
+ * there. */
+export type ProjectOnePagerReview = {
+  problem_context: BriefFieldReview | null;
+  objective: BriefFieldReview | null;
+  expected_outcome: BriefFieldReview | null;
+  scope: BriefFieldReview | null;
+  out_of_scope: BriefFieldReview | null;
+  success_metrics: BriefFieldReview | null;
+  discarded: string[];
+  model: string | null;
+  generatedAt?: string;
+  fromCache?: boolean;
+  unavailable?: string;
 };
 
 /** One logged processing batch (mirrors the live `project_progress` table): how many items/DBs a
@@ -178,6 +233,7 @@ export type PortfolioSummary = {
   atRisk: number;
   blocked: number;
   dueSoon: number;
+  completed: number;
 };
 
 // ---------------------------------------------------------------------------- phases (Phase 3)
@@ -224,6 +280,15 @@ export function isPhaseDelayed(
   const target = new Date(`${phase.target_date}T00:00:00`);
   if (Number.isNaN(target.getTime())) return false;
   return target.getTime() < today.getTime();
+}
+
+/** Which phase a project is "in" right now, for a compact overview — the first phase (by
+ * position) that isn't `done`, or the last phase if every phase is done, or `null` if there are
+ * no phases yet. Simpler than My Work's task-derived version of this idea: a `ProjectPhase`
+ * already reports its own status directly, there's no linked-task list to infer it from. */
+export function currentPhaseFor(phases: ProjectPhase[]): ProjectPhase | null {
+  if (phases.length === 0) return null;
+  return phases.find((p) => p.status !== "done") ?? phases[phases.length - 1];
 }
 
 // ---------------------------------------------------------------------------- notes + activity (Phase 4)
@@ -498,5 +563,6 @@ export function portfolioSummary(projects: Project[], blockedProjectIds?: Set<st
     atRisk: projects.filter((p) => p.health === "at_risk").length,
     blocked: projects.filter((p) => p.status === "Blocked" || blockedProjectIds?.has(p.project_id)).length,
     dueSoon: projects.filter((p) => isDueSoon(p)).length,
+    completed: projects.filter((p) => p.status === "Done").length,
   };
 }

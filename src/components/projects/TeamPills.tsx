@@ -33,10 +33,7 @@ export function TeamPills({ teams, team }: { teams: TeamConfig[]; team: string }
     <div
       role="group"
       aria-label="Team"
-      className={cn(
-        "inline-flex items-center gap-1 rounded-lg p-0.5 bg-neutral-100/70 w-fit transition-opacity",
-        isPending && "opacity-60"
-      )}
+      className={cn("inline-flex items-center gap-1.5 w-fit transition-opacity", isPending && "opacity-60")}
     >
       {options.map((t) => (
         <button
@@ -45,12 +42,7 @@ export function TeamPills({ teams, team }: { teams: TeamConfig[]; team: string }
           onClick={() => onChange(t.team_key)}
           disabled={isPending}
           aria-pressed={team === t.team_key}
-          className={cn(
-            "rounded-md px-3 py-1 text-xs font-medium transition-colors disabled:cursor-wait",
-            team === t.team_key
-              ? "bg-surface-raised text-neutral-900 shadow-sm"
-              : "text-neutral-500 hover:text-neutral-800"
-          )}
+          className={cn("team-pill", team === t.team_key && "team-pill-active", "disabled:cursor-wait")}
         >
           {t.team_key ? teamLabel(t.team_name) : t.team_name}
         </button>
