@@ -7,7 +7,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import type { TeamConfig } from "@/lib/teams";
-import type { ProjectRecord } from "@/lib/types";
+import type { Project as ProjectRecord } from "@/lib/project-tracking";
 import {
   projectSchema,
   buildProjectPayload,
@@ -43,7 +43,7 @@ export function EditProjectDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/gas/projects", {
+      const res = await fetch("/api/project-tracking/projects", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: project.project_id, ...buildProjectPayload(values) }),

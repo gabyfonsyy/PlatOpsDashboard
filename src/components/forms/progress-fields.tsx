@@ -3,7 +3,7 @@
 import { z } from "zod";
 import { useMemo } from "react";
 import type { UseFormReturn } from "react-hook-form";
-import type { ProgressRecord } from "@/lib/types";
+import type { ProjectProgress as ProgressRecord } from "@/lib/project-tracking";
 import { formatManilaDate } from "@/lib/format";
 
 /** A project option for the dropdown. */

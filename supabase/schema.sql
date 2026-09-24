@@ -318,6 +318,31 @@ create table projects (
   batches_per_week integer,
   weekly_plan_json jsonb not null default '[]'::jsonb,
   notes text,
+  -- Phase 1 (team pills, portfolio summary, Eisenhower matrix) additions -- see
+  -- add-project-eisenhower-onepager-columns.sql for the ALTER path on an existing database.
+  urgent boolean,
+  important boolean,
+  health text not null default ''
+    check (health in ('on_track', 'at_risk', 'off_track', 'not_started', 'blocked', '')),
+  batch_tracking_enabled boolean not null default false,
+  contributors text[] not null default '{}',
+  -- Phase 2 (project drill-down panel's Archive action) -- see
+  -- add-project-archived-column.sql for the ALTER path on an existing database.
+  archived boolean not null default false,
+  -- Charter-import + ticket-driven-batch-actuals additions -- see
+  -- add-project-committed-date-and-batch-actuals-columns.sql for the ALTER path on an existing
+  -- database.
+  committed_date date,
+  batch_actuals_from_tickets boolean not null default false,
+  -- Re-upload-the-same-charter-updates-not-duplicates support -- see
+  -- add-project-charter-ref-column.sql for the ALTER path on an existing database.
+  charter_client_ref text,
+  problem_context text,
+  objective text,
+  expected_outcome text,
+  scope text,
+  out_of_scope text,
+  success_metrics text,
   created_by text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -375,6 +400,116 @@ create table project_tasks (
   updated_at timestamptz not null default now()
 );
 
+-- Phase 3 (phases + phase-aware Gantt) -- see project-phases.sql for the create-table path on an
+-- existing database.
+create table project_phases (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  name text not null,
+  description text default '',
+  owner text default '',
+  status text not null default 'not_started'
+    check (status in ('not_started', 'in_progress', 'blocked', 'done')),
+  progress integer not null default 0 check (progress between 0 and 100),
+  start_date date,
+  target_date date,
+  actual_completion_date date,
+  notes text default '',
+  position integer not null default 0,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index project_phases_project_position_idx on project_phases (project_id, position);
+
+-- Phase 4 (notes + activity log) -- see project-notes-and-activity.sql for the create-table path
+-- on an existing database.
+create table project_notes (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  phase_id uuid references project_phases(id) on delete cascade,
+  note_type text not null default 'update'
+    check (note_type in ('update', 'decision', 'risk', 'blocker', 'followup')),
+  content text not null,
+  author_email text not null,
+  resolved boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index project_notes_project_created_idx on project_notes (project_id, created_at desc);
+
+create table project_activity_log (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  event_type text not null,
+  summary text not null,
+  actor_email text not null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index project_activity_log_project_created_idx on project_activity_log (project_id, created_at desc);
+
+-- Phase 5 (Milestones, Dependencies, Risks, Blockers) -- see
+-- project-milestones-dependencies-risks.sql for the create-table path on an existing database.
+-- Blockers reuse project_notes (note_type = 'blocker', resolved) -- no table of their own.
+create table project_milestones (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  name text not null,
+  done boolean not null default false,
+  target_date date,
+  position integer not null default 0,
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index project_milestones_project_position_idx on project_milestones (project_id, position);
+
+create table project_dependencies (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  phase_id uuid references project_phases(id) on delete cascade,
+  label text not null,
+  status text not null default 'open' check (status in ('open', 'resolved')),
+  created_by text,
+  created_at timestamptz not null default now()
+);
+
+create index project_dependencies_project_idx on project_dependencies (project_id);
+
+create table project_risks (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references projects(project_id) on delete cascade,
+  risk text not null,
+  impact text check (impact in ('low', 'medium', 'high')),
+  likelihood text check (likelihood in ('low', 'medium', 'high')),
+  mitigation text default '',
+  owner text default '',
+  status text not null default 'open' check (status in ('open', 'mitigated', 'closed')),
+  created_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index project_risks_project_idx on project_risks (project_id);
+
+-- Phase 6 (phase-level Jira linking) -- see project-phase-tickets.sql for the create-table path
+-- on an existing database. Project-level linking is untouched: ticket_project_map, above.
+create table project_phase_tickets (
+  id uuid primary key default gen_random_uuid(),
+  phase_id uuid not null references project_phases(id) on delete cascade,
+  project_id uuid not null references projects(project_id) on delete cascade,
+  issue_key text not null,
+  assigned_by text,
+  assigned_at timestamptz not null default now(),
+  unique (phase_id, issue_key)
+);
+
+create index project_phase_tickets_project_idx on project_phase_tickets (project_id);
+
 -- ============================================================================
 -- My Work (personal work tracking) lives in its own file: supabase/my-work.sql
 --
@@ -399,7 +534,9 @@ begin
         'sync_checkpoint', 'agg_checkpoint', 'error_log', 'roster', 'leave', 'rto',
         'insights_cache', 'app_config', 'incident_tickets', 'incident_logs',
         'projects', 'initiative_tickets',
-        'ticket_project_map', 'project_progress', 'project_tasks'
+        'ticket_project_map', 'project_progress', 'project_tasks', 'project_phases',
+        'project_notes', 'project_activity_log',
+        'project_milestones', 'project_dependencies', 'project_risks', 'project_phase_tickets'
       )
   loop
     execute format('alter table %I enable row level security;', t);

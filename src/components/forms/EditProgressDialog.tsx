@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import type { ProgressRecord } from "@/lib/types";
+import type { ProjectProgress as ProgressRecord } from "@/lib/project-tracking";
 import {
   progressSchema,
   buildProgressPayload,
@@ -37,7 +37,7 @@ export function EditProgressDialog({
 
   async function onSubmit(values: ProgressFormValues) {
     setSubmitting(true);
-    await fetch("/api/gas/project-progress", {
+    await fetch("/api/project-tracking/progress", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: record.progress_id, ...buildProgressPayload(values) }),

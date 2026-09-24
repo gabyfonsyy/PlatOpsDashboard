@@ -2,12 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { RefreshCw, ChevronRight } from "lucide-react";
-import type { InitiativeTicket, TicketAssignment } from "@/lib/types";
+import { RefreshCw } from "lucide-react";
+import type { InitiativeTicket, TicketAssignment } from "@/lib/project-tracking";
 import type { TeamConfig } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { formatManilaDate } from "@/lib/format";
 import { Badge } from "@/components/ui/Badge";
+import { ticketsForTeam } from "@/components/projects/ticket-search";
 
 /** Minimal project shape the table needs for label-based grouping + manual assignment. */
 export type ProjectLink = {
@@ -75,59 +76,19 @@ export function InitiativeTicketsTable({
     };
   }, [manualMap, projectById, labelledProjects]);
 
-  const groupingAvailable = labelledProjects.length > 0 || manualMap.size > 0;
-  // null = "not yet touched by the user" -> follow groupingAvailable live; once they toggle the
-  // checkbox, their explicit choice sticks. A plain `useState(groupingAvailable)` only reads that
-  // value once at mount, so it went stale whenever projects/assignments changed later (e.g. after
-  // the Jira sync button's router.refresh()) — same fix as `expanded` below, which already uses
-  // this null-means-derive pattern correctly.
-  const [groupedOverride, setGroupedOverride] = useState<boolean | null>(null);
-  const grouped = groupedOverride ?? groupingAvailable;
-  const setGrouped = setGroupedOverride;
-
   // Teams whose initiatives are pulled from Jira (kept in sync with GAS COD_INITIATIVE_TEAM_KEYS).
   const initiativeTeams = teams.filter((t) => ["DE", "DEV", "ST"].includes(t.team_key));
 
-  const filtered = useMemo(
-    () => (team ? tickets.filter((t) => t.project_key === team) : tickets),
-    [tickets, team]
+  const filtered = useMemo(() => ticketsForTeam(tickets, team), [tickets, team]);
+
+  // Only tickets not yet resolved to a project — by label or manual assignment. Once a ticket is
+  // linked, it belongs to that project's own view (the drill-down's Linked Tickets accordion, or
+  // this table filtered/grouped elsewhere) — this table's whole job now is surfacing the backlog
+  // still waiting to be categorized, not re-showing what's already sorted.
+  const unlinked = useMemo(
+    () => filtered.filter((t) => !resolveProjectId(t)),
+    [filtered, resolveProjectId]
   );
-
-  const groups = useMemo(() => {
-    const byProject = new Map<string, InitiativeTicket[]>();
-    const other: InitiativeTicket[] = [];
-    for (const t of filtered) {
-      const pid = resolveProjectId(t);
-      if (pid) {
-        if (!byProject.has(pid)) byProject.set(pid, []);
-        byProject.get(pid)!.push(t);
-      } else {
-        other.push(t);
-      }
-    }
-    // Show a group for every project that has a label OR has resolved tickets.
-    const shown = projects.filter((p) => p.jira_label.trim() || (byProject.get(p.project_id)?.length ?? 0) > 0);
-    return { shown, byProject, other };
-  }, [filtered, projects, resolveProjectId]);
-
-  // Accordion open-state. Defaults to open for any group that has tickets (so data is visible on
-  // load); once the user toggles anything we track their explicit set instead. "__other__" = the
-  // unassigned bucket.
-  const [expanded, setExpanded] = useState<Set<string> | null>(null);
-  const defaultExpanded = useMemo(() => {
-    const s = new Set<string>();
-    groups.shown.forEach((p) => { if ((groups.byProject.get(p.project_id)?.length ?? 0) > 0) s.add(p.project_id); });
-    if (groups.other.length) s.add("__other__");
-    return s;
-  }, [groups]);
-  const openSet = expanded ?? defaultExpanded;
-  function toggleGroup(id: string) {
-    setExpanded((prev) => {
-      const next = new Set(prev ?? defaultExpanded);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }
 
   function toggle(key: string) {
     setSelected((prev) => {
@@ -148,7 +109,7 @@ export function InitiativeTicketsTable({
     setSyncing(true);
     setSyncMsg(null);
     try {
-      const res = await fetch("/api/gas/initiatives", { method: "POST" });
+      const res = await fetch("/api/project-tracking/initiative-tickets", { method: "POST" });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || body?.ok === false) throw new Error(body?.error || `HTTP ${res.status}`);
       const n = body.data?.synced;
@@ -166,7 +127,7 @@ export function InitiativeTicketsTable({
     setAssigning(true);
     setSyncMsg(null);
     try {
-      const res = await fetch("/api/gas/ticket-projects", {
+      const res = await fetch("/api/project-tracking/ticket-map", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ issue_keys: Array.from(selected), project_id: assignTarget }),
@@ -195,17 +156,12 @@ export function InitiativeTicketsTable({
           <h2 className="text-base font-semibold text-neutral-900">Jira Initiative Tickets</h2>
           <p className="text-sm text-neutral-500">
             Pulled from Jira — DBA/DevOps <code className="text-xs">cod-initiative</code> + Support Experts{" "}
-            <code className="text-xs">se-initiative</code>, created 2026+.
+            <code className="text-xs">se-initiative</code>, created 2026+. Showing only tickets not yet
+            linked to a project — assign them below, or set a project&apos;s Jira Label to pick up
+            matching tickets automatically.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          {groupingAvailable && (
-            <label className="inline-flex items-center gap-1.5 text-sm text-neutral-700">
-              <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)}
-                className="rounded border-neutral-300 text-sprout-600 focus:ring-sprout-500" />
-              Group by project
-            </label>
-          )}
           <select value={team} onChange={(e) => setTeam(e.target.value)} className="form-input !w-auto py-1.5">
             <option value="">All teams</option>
             {initiativeTeams.map((t) => (
@@ -241,92 +197,16 @@ export function InitiativeTicketsTable({
 
       {syncMsg && <p className="text-sm text-neutral-600">{syncMsg}</p>}
 
-      {!grouped && (
-        <div className="card overflow-x-auto">
-          <TicketTable
-            tickets={filtered}
-            jiraBaseUrl={jiraBaseUrl}
-            emptyLabel='No initiative tickets synced yet. Click "Sync from Jira".'
-            selected={selected}
-            onToggle={toggle}
-            onToggleAll={toggleAll}
-            manualMap={manualMap}
-          />
-        </div>
-      )}
-
-      {grouped && (
-        <div className="flex flex-col gap-3">
-          {groups.shown.map((project) => {
-            const group = groups.byProject.get(project.project_id) ?? [];
-            const open = openSet.has(project.project_id);
-            return (
-              <div key={project.project_id} className="card overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(project.project_id)}
-                  aria-expanded={open}
-                  className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left hover:bg-neutral-50 transition-colors"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <ChevronRight className={`w-4 h-4 text-neutral-400 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
-                    <h3 className="text-sm font-semibold text-neutral-800 truncate">{project.project_name}</h3>
-                    {project.jira_label.trim() && <code className="text-xs text-neutral-500 shrink-0">{project.jira_label}</code>}
-                  </div>
-                  <span className="text-xs text-neutral-400 shrink-0 whitespace-nowrap">
-                    {group.length} ticket{group.length === 1 ? "" : "s"}
-                  </span>
-                </button>
-                {open && (
-                  <div className="overflow-x-auto border-t border-neutral-200">
-                    <TicketTable
-                      tickets={group}
-                      jiraBaseUrl={jiraBaseUrl}
-                      emptyLabel="No tickets linked yet (by label or manual assignment)."
-                      selected={selected}
-                      onToggle={toggle}
-                      onToggleAll={toggleAll}
-                      manualMap={manualMap}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {groups.other.length > 0 && (
-            <div className="card overflow-hidden">
-              <button
-                type="button"
-                onClick={() => toggleGroup("__other__")}
-                aria-expanded={openSet.has("__other__")}
-                className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left hover:bg-neutral-50 transition-colors"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <ChevronRight className={`w-4 h-4 text-neutral-400 shrink-0 transition-transform ${openSet.has("__other__") ? "rotate-90" : ""}`} />
-                  <h3 className="text-sm font-semibold text-neutral-800">Other / unassigned</h3>
-                </div>
-                <span className="text-xs text-neutral-400 shrink-0 whitespace-nowrap">
-                  {groups.other.length} ticket{groups.other.length === 1 ? "" : "s"}
-                </span>
-              </button>
-              {openSet.has("__other__") && (
-                <div className="overflow-x-auto border-t border-neutral-200">
-                  <TicketTable
-                    tickets={groups.other}
-                    jiraBaseUrl={jiraBaseUrl}
-                    emptyLabel="No unassigned tickets — every ticket is linked to a project."
-                    selected={selected}
-                    onToggle={toggle}
-                    onToggleAll={toggleAll}
-                    manualMap={manualMap}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      <div className="card overflow-x-auto">
+        <TicketTable
+          tickets={unlinked}
+          jiraBaseUrl={jiraBaseUrl}
+          emptyLabel="No unlinked tickets — everything synced is already categorized."
+          selected={selected}
+          onToggle={toggle}
+          onToggleAll={toggleAll}
+        />
+      </div>
     </div>
   );
 }
@@ -338,7 +218,6 @@ function TicketTable({
   selected,
   onToggle,
   onToggleAll,
-  manualMap,
 }: {
   tickets: InitiativeTicket[];
   jiraBaseUrl?: string;
@@ -346,7 +225,6 @@ function TicketTable({
   selected: Set<string>;
   onToggle: (key: string) => void;
   onToggleAll: (keys: string[], checked: boolean) => void;
-  manualMap: Map<string, string>;
 }) {
   const keys = tickets.map((t) => t.issue_key);
   const allSelected = keys.length > 0 && keys.every((k) => selected.has(k));
@@ -371,13 +249,12 @@ function TicketTable({
           <th className="px-4 py-3">Status</th>
           <th className="px-4 py-3">Assignee</th>
           <th className="px-4 py-3">Due</th>
-          <th className="px-4 py-3">Link</th>
         </tr>
       </thead>
       <tbody className="divide-y divide-neutral-100">
         {tickets.length === 0 && (
           <tr>
-            <td colSpan={8} className="px-4 py-6 text-center text-neutral-400">{emptyLabel}</td>
+            <td colSpan={7} className="px-4 py-6 text-center text-neutral-400">{emptyLabel}</td>
           </tr>
         )}
         {tickets.map((t) => (
@@ -405,13 +282,6 @@ function TicketTable({
             <td className="px-4 py-3 whitespace-nowrap"><Badge tone={statusTone(t.status)}>{t.status}</Badge></td>
             <td className="px-4 py-3 whitespace-nowrap">{t.assignee_display_name || "—"}</td>
             <td className="px-4 py-3 whitespace-nowrap">{t.duedate ? formatManilaDate(t.duedate) : "—"}</td>
-            <td className="px-4 py-3 whitespace-nowrap">
-              {manualMap.has(t.issue_key) ? (
-                <Badge tone="neutral">manual</Badge>
-              ) : (
-                <span className="text-xs text-neutral-400">by label</span>
-              )}
-            </td>
           </tr>
         ))}
       </tbody>

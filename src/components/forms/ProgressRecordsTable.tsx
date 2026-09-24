@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Pencil, ArrowUpDown } from "lucide-react";
-import type { ProgressRecord } from "@/lib/types";
+import type { ProjectProgress as ProgressRecord } from "@/lib/project-tracking";
 import type { TeamConfig } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { formatManilaDate } from "@/lib/format";
@@ -123,7 +123,7 @@ export function ProgressRecordsTable({
                   >
                     <Pencil className="w-4 h-4" />
                   </button>
-                  <DeleteButton endpoint="/api/gas/project-progress" id={r.progress_id} />
+                  <DeleteButton endpoint="/api/project-tracking/progress" id={r.progress_id} />
                 </div>
               </td>
             </tr>
