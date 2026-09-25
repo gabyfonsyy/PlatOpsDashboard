@@ -7,6 +7,7 @@ import { teamLabel } from "@/lib/utils";
 import { getCycleTimeDeepDive, getLeadTimeDeepDive, type LeadCycleTimeMetric, type CycleTimeWorkCategory } from "@/lib/lead-cycle-time";
 import { resolveFilters } from "@/lib/date-ranges";
 import { EXTRA_EXCLUDED_LABELS_COOKIE, resolveExtraExcludedLabels } from "@/lib/excluded-labels";
+import { getKpiBaselines } from "@/lib/kpi-baselines";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { LeadTimeDeepDive } from "@/components/dashboard/LeadTimeDeepDive";
 import { CycleTimeDeepDive } from "@/components/dashboard/CycleTimeDeepDive";
@@ -35,6 +36,8 @@ export default async function LeadCycleTimePage({
   const rawWorkCategory = Array.isArray(searchParams.workCategory) ? searchParams.workCategory[0] : searchParams.workCategory;
   const workCategory: CycleTimeWorkCategory | undefined =
     rawWorkCategory === "backend" || rawWorkCategory === "investigations" ? rawWorkCategory : undefined;
+
+  const baselines = await getKpiBaselines(team.team_key);
 
   const backLink = (
     <Link
@@ -71,7 +74,7 @@ export default async function LeadCycleTimePage({
           />
         )}
 
-        <LeadTimeDeepDive report={report} jiraBaseUrl={process.env.JIRA_BASE_URL} extraExcludedLabels={extraExcludedLabels} />
+        <LeadTimeDeepDive report={report} jiraBaseUrl={process.env.JIRA_BASE_URL} extraExcludedLabels={extraExcludedLabels} baseline={baselines.lead_time} />
       </div>
     );
   }
@@ -106,7 +109,12 @@ export default async function LeadCycleTimePage({
         />
       )}
 
-      <CycleTimeDeepDive report={report} jiraBaseUrl={process.env.JIRA_BASE_URL} extraExcludedLabels={extraExcludedLabels} />
+      <CycleTimeDeepDive
+        report={report}
+        jiraBaseUrl={process.env.JIRA_BASE_URL}
+        extraExcludedLabels={extraExcludedLabels}
+        baselines={{ total: baselines.cycle_time_total, doer: baselines.cycle_time_doer, validator: baselines.cycle_time_validator }}
+      />
     </div>
   );
 }

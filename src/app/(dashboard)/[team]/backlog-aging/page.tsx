@@ -6,6 +6,7 @@ import { teamLabel } from "@/lib/utils";
 import { getBacklogAgingDeepDive } from "@/lib/backlog-aging";
 import type { CycleTimeWorkCategory } from "@/lib/lead-cycle-time";
 import { resolveFilters } from "@/lib/date-ranges";
+import { getKpiBaselines } from "@/lib/kpi-baselines";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { CycleTimeWorkCategoryToggle } from "@/components/dashboard/CycleTimeWorkCategoryToggle";
 import { BacklogAgingDeepDive } from "@/components/dashboard/BacklogAgingDeepDive";
@@ -26,7 +27,10 @@ export default async function BacklogAgingPage({
   const workCategory: CycleTimeWorkCategory | undefined =
     rawWorkCategory === "backend" || rawWorkCategory === "investigations" ? rawWorkCategory : undefined;
 
-  const report = await getBacklogAgingDeepDive(team.team_key, range, period, issueType, workCategory);
+  const [report, baselines] = await Promise.all([
+    getBacklogAgingDeepDive(team.team_key, range, period, issueType, workCategory),
+    getKpiBaselines(team.team_key),
+  ]);
 
   const issueTypes = team.issue_types_csv
     ? team.issue_types_csv.split(",").map((s) => s.trim()).filter(Boolean)
@@ -61,7 +65,7 @@ export default async function BacklogAgingPage({
         />
       )}
 
-      <BacklogAgingDeepDive report={report} jiraBaseUrl={process.env.JIRA_BASE_URL} />
+      <BacklogAgingDeepDive report={report} jiraBaseUrl={process.env.JIRA_BASE_URL} baseline={baselines.ageing_rate} />
     </div>
   );
 }

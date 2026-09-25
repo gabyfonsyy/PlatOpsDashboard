@@ -3,6 +3,7 @@
 import { ArrowRight } from "lucide-react";
 import type { CycleTimePulse } from "@/lib/lead-cycle-time";
 import type { LeadTimeInsight } from "@/lib/lead-cycle-time";
+import type { KpiBaselineRow } from "@/lib/kpi-baselines";
 import { formatDaysValue, formatDurationBreakdown } from "@/lib/format";
 import { useTheme } from "@/components/theme/ThemeProvider";
 
@@ -42,12 +43,18 @@ export function CycleTimeDoerValidatorBar({
   doerLabel,
   validatorLabel,
   totalLabel,
+  doerBaseline,
+  validatorBaseline,
 }: {
   pulse: CycleTimePulse;
   insight: LeadTimeInsight | null;
   doerLabel: string;
   validatorLabel: string;
   totalLabel: string;
+  /** The Q1+Q2 2026 reference values (src/lib/kpi-baselines.ts) — undefined for a team without the
+   * doer/validator split, same gate as this whole component's caller. */
+  doerBaseline?: KpiBaselineRow;
+  validatorBaseline?: KpiBaselineRow;
 }) {
   const { theme } = useTheme();
   const gaby = theme === "adhd";
@@ -82,6 +89,9 @@ export function CycleTimeDoerValidatorBar({
           <p className="text-xs font-medium text-neutral-500 uppercase tracking-wide">{doerLabel}</p>
           <p className="text-2xl font-semibold text-neutral-900 mt-1">{fmtDays(doerAvg)}</p>
           <p className="text-xs text-neutral-400 mt-1">{formatDurationBreakdown(doerAvg)} avg{doerPct !== null ? ` · ${doerPct}%` : ""}</p>
+          {doerBaseline?.value != null && (
+            <p className="text-xs text-neutral-400 mt-1">Baseline ({doerBaseline.period_label}): {fmtDays(doerBaseline.value)}</p>
+          )}
         </div>
         <div className="flex items-center justify-center gap-3 text-neutral-300">
           <span className="text-lg font-light">+</span>
@@ -89,6 +99,9 @@ export function CycleTimeDoerValidatorBar({
             <p className="text-xs font-medium text-neutral-500 uppercase tracking-wide">{validatorLabel}</p>
             <p className="text-2xl font-semibold text-neutral-900 mt-1">{fmtDays(validatorAvg)}</p>
             <p className="text-xs text-neutral-400 mt-1">{formatDurationBreakdown(validatorAvg)} avg{validatorPct !== null ? ` · ${validatorPct}%` : ""}</p>
+            {validatorBaseline?.value != null && (
+              <p className="text-xs text-neutral-400 mt-1">Baseline ({validatorBaseline.period_label}): {fmtDays(validatorBaseline.value)}</p>
+            )}
           </div>
           <span className="text-lg font-light">=</span>
         </div>

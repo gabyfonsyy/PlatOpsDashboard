@@ -158,6 +158,21 @@ create table agg_checkpoint (
   dirty_dates_json jsonb not null default '[]'::jsonb
 );
 
+-- Locked-in Q1+Q2 2026 reference value per (team, metric) — see
+-- supabase/add-kpi-baselines-table.sql for the full rationale.
+create table kpi_baselines (
+  team_key text not null references teams_config(team_key),
+  metric text not null check (metric in (
+    'lead_time', 'cycle_time_total', 'cycle_time_doer', 'cycle_time_validator',
+    'fcr_rate', 'ageing_rate'
+  )),
+  value numeric,
+  sample_count integer not null default 0,
+  period_label text not null default '2026-Q1+Q2',
+  computed_at timestamptz not null default now(),
+  primary key (team_key, metric)
+);
+
 create table error_log (
   id bigint generated always as identity primary key,
   "timestamp" timestamptz not null default now(),
@@ -536,7 +551,8 @@ begin
         'projects', 'initiative_tickets',
         'ticket_project_map', 'project_progress', 'project_tasks', 'project_phases',
         'project_notes', 'project_activity_log',
-        'project_milestones', 'project_dependencies', 'project_risks', 'project_phase_tickets'
+        'project_milestones', 'project_dependencies', 'project_risks', 'project_phase_tickets',
+        'kpi_baselines'
       )
   loop
     execute format('alter table %I enable row level security;', t);

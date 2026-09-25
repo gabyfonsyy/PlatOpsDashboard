@@ -12,6 +12,7 @@ export function MetricCard({
   className,
   badge,
   trend,
+  baseline,
 }: {
   label: string;
   value: string;
@@ -28,6 +29,10 @@ export function MetricCard({
    * colors the arrow/text success-green regardless of direction (a metric where "up" is bad, e.g.
    * overdue count, should pass direction="down" with positive=true). */
   trend?: { direction: "up" | "down" | "flat"; label: string; positive: boolean | null };
+  /** A quiet, uncolored reference line under trend — e.g. "Baseline (2026-Q1+Q2): 2.10d". Separate
+   * from `trend` because deep-dive pages already use that slot for period-over-period comparison;
+   * this is a second, fixed reference point that doesn't compete with it for the same line. */
+  baseline?: { label: string };
 }) {
   const body = (
     <>
@@ -67,6 +72,7 @@ export function MetricCard({
           {trend.label}
         </p>
       )}
+      {baseline && <p className="text-xs text-neutral-400 mt-1">{baseline.label}</p>}
     </>
   );
 
