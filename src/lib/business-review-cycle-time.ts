@@ -63,6 +63,41 @@ async function fetchCycleEndRows(teamKey: string, startDate: string, endDate: st
 
 export type CycleTimeResult = { avgMinutes: number | null; recordCount: number };
 
+export type CycleTimeByIssueTypeRow = { issueType: string; count: number; avgMinutes: number };
+
+/**
+ * The same end-to-end Cycle Time average as getEndToEndCycleTimeAverage above, grouped by issue
+ * type instead of collapsed to one number — feeds buildDurationDriver (lib/business-review-drivers.ts)
+ * for SE's Cycle Time driver breakdown. Deliberately its own query, same reasoning as the rest of
+ * this file: keeps SE Cycle Time's definition (here, in both its headline and its driver) isolated
+ * from lib/lead-cycle-time.ts's basisFor, which lib/business-review.ts uses for every OTHER
+ * Lead/Cycle Time driver (every team's Lead Time, and DBA/DevOps's Cycle Time).
+ */
+export async function getEndToEndCycleTimeByIssueType(
+  teamKey: string,
+  startDate: string,
+  endDate: string
+): Promise<CycleTimeByIssueTypeRow[]> {
+  const rows = (await fetchCycleEndRows(teamKey, startDate, endDate)).filter((r) => {
+    if (isExcludedIssueType(teamKey, r.issue_type)) return false;
+    const iso = toManilaDateString(r.cycle_time_end);
+    return iso !== null && iso >= startDate && iso <= endDate;
+  });
+
+  const byType = new Map<string, number[]>();
+  for (const r of rows) {
+    if (!r.cycle_time_start) continue;
+    const type = r.issue_type || "(none)";
+    if (!byType.has(type)) byType.set(type, []);
+    byType.get(type)!.push(minutesBetween(r.cycle_time_start, r.cycle_time_end));
+  }
+  return Array.from(byType.entries()).map(([issueType, values]) => ({
+    issueType,
+    count: values.length,
+    avgMinutes: round2(values.reduce((s, v) => s + v, 0) / values.length),
+  }));
+}
+
 export async function getEndToEndCycleTimeAverage(
   teamKey: string,
   startDate: string,
