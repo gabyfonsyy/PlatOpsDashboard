@@ -32,13 +32,15 @@ export function MetricsSeriesChart({ series }: { series: TicketMetrics["series"]
       <p className="text-sm font-medium text-neutral-700 mb-4">Ticket Volume Trend</p>
       <ResponsiveContainer width="100%" height={260}>
         <LineChart data={series}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e6e1f0" />
-          <XAxis dataKey="date" tickFormatter={formatSeriesDate} tick={{ fontSize: 11 }} stroke="#a89bc0" />
-          <YAxis tick={{ fontSize: 11 }} stroke="#a89bc0" allowDecimals={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--n-200))" />
+          <XAxis dataKey="date" tickFormatter={formatSeriesDate} tick={{ fontSize: 11 }} stroke="rgb(var(--n-400))" />
+          <YAxis tick={{ fontSize: 11 }} stroke="rgb(var(--n-400))" allowDecimals={false} />
           <Tooltip labelFormatter={formatSeriesDate} />
           <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Line type="monotone" dataKey="created" stroke="#9863a8" strokeWidth={2} dot={false} name="Created" />
-          <Line type="monotone" dataKey="resolved" stroke="#d391b0" strokeWidth={2} dot={false} name="Resolved" />
+          <Line type="monotone" dataKey="created" stroke="rgb(var(--a-500))" strokeWidth={2} dot={false} name="Created" />
+          {/* --n-600, not --n-400: the axis/grid above already use --n-400, and a Resolved line in
+              the same color as the axis is hard to tell apart from it at a glance. */}
+          <Line type="monotone" dataKey="resolved" stroke="rgb(var(--n-600))" strokeWidth={2} dot={false} name="Resolved" />
         </LineChart>
       </ResponsiveContainer>
     </div>

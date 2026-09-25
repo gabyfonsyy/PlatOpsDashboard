@@ -262,10 +262,6 @@ export function severityLabel(severity: string): string {
   return INCIDENT_SEVERITIES[severity as IncidentSeverityCode]?.label ?? severity;
 }
 
-export function severityScoreImpact(severity: string): number {
-  return INCIDENT_SEVERITIES[severity as IncidentSeverityCode]?.scoreImpact ?? 0;
-}
-
 /**
  * A 100-based score for display. Two decimals only when they carry information, so a clean 100
  * reads as "100" and a team average reads as "99.71" rather than "99.7100".

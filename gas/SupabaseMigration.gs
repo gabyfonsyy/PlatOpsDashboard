@@ -116,10 +116,15 @@ function migrateSmallTablesToSupabase() {
   migrateSyncCheckpointToSupabase();
   migrateAggCheckpointToSupabase();
   migrateErrorLogToSupabase();
-  migrateProjectsToSupabase(); // before ticket_project_map/project_progress/project_tasks (FK)
-  migrateTicketProjectMapToSupabase();
-  migrateProjectProgressToSupabase();
-  migrateProjectTasksToSupabase();
+  // migrateProjectsToSupabase/migrateTicketProjectMapToSupabase/migrateProjectProgressToSupabase/
+  // migrateProjectTasksToSupabase deliberately NOT called here since the 2026-09-22 Project
+  // Tracking cutover: those Sheets tabs (PROJECTS/TICKET_PROJECT_MAP/PROJECT_PROGRESS/
+  // PROJECT_TASKS) are frozen at whatever they held on cutover day — project-tracking-store.ts
+  // now writes straight to Supabase and nothing keeps those tabs in sync. Calling them here would
+  // let a routine resetSupabaseMigration()+runSupabaseMigration() (as several Backfill.gs
+  // completion emails instruct, for unrelated ticket-column reasons) silently overwrite current
+  // Supabase project data with that stale snapshot. Kept below for one-time historical reference
+  // only — do not wire them back into this function.
 }
 
 function migrateTeamsConfigToSupabase() {
@@ -289,6 +294,9 @@ function resetSupabaseErrorLogMigration() {
   Logger.log('resetSupabaseErrorLogMigration: cleared. Truncate the Supabase error_log table yourself before re-running, or you will get duplicates.');
 }
 
+// NOT called from migrateSmallTablesToSupabase() since the 2026-09-22 Project Tracking cutover —
+// see the comment there. Do not run this manually against a live Supabase without first checking
+// whether it would overwrite current data with the frozen 2026-09-22 Sheets snapshot.
 function migrateProjectsToSupabase() {
   const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECTS');
   const rows = sheetToObjects_(sheet)
@@ -317,6 +325,7 @@ function migrateProjectsToSupabase() {
   supabaseUpsert_('projects', rows, 'project_id');
 }
 
+// NOT called from migrateSmallTablesToSupabase() — see migrateProjectsToSupabase's comment above.
 function migrateTicketProjectMapToSupabase() {
   const sheet = getInitiativesSpreadsheet_().getSheetByName('TICKET_PROJECT_MAP');
   const rows = sheetToObjects_(sheet)
@@ -330,6 +339,7 @@ function migrateTicketProjectMapToSupabase() {
   supabaseUpsert_('ticket_project_map', rows, 'issue_key');
 }
 
+// NOT called from migrateSmallTablesToSupabase() — see migrateProjectsToSupabase's comment above.
 function migrateProjectProgressToSupabase() {
   const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECT_PROGRESS');
   const rows = sheetToObjects_(sheet)
@@ -348,6 +358,7 @@ function migrateProjectProgressToSupabase() {
   supabaseUpsert_('project_progress', rows, 'progress_id');
 }
 
+// NOT called from migrateSmallTablesToSupabase() — see migrateProjectsToSupabase's comment above.
 function migrateProjectTasksToSupabase() {
   const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECT_TASKS');
   const rows = sheetToObjects_(sheet)

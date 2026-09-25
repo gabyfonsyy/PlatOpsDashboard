@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
-import { handle } from "@/lib/work-route";
+import { handle, ValidationError } from "@/lib/work-route";
 import { createProject, deleteProject, updateProject } from "@/lib/work-store";
 import { PROJECT_STATUSES, toPhaseList, toStringList } from "@/lib/work";
 
@@ -46,9 +46,9 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const name = String(body.name ?? "").trim();
-    if (!name) throw new Error("A project needs a name.");
+    if (!name) throw new ValidationError("A project needs a name.");
     if (invalidTriState("urgent", body.urgent) || invalidTriState("important", body.important)) {
-      throw new Error("urgent and important must be true, false or null.");
+      throw new ValidationError("urgent and important must be true, false or null.");
     }
     const project = await createProject(email, {
       name,
@@ -66,15 +66,15 @@ export async function PATCH(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const id = String(body.project_id ?? "").trim();
-    if (!id) throw new Error("project_id is required.");
+    if (!id) throw new ValidationError("project_id is required.");
     if (body.status !== undefined && !PROJECT_STATUSES.includes(String(body.status) as never)) {
-      throw new Error(`Invalid status: ${String(body.status)}`);
+      throw new ValidationError(`Invalid status: ${String(body.status)}`);
     }
     if (invalidTriState("urgent", body.urgent) || invalidTriState("important", body.important)) {
-      throw new Error("urgent and important must be true, false or null.");
+      throw new ValidationError("urgent and important must be true, false or null.");
     }
     if (body.name !== undefined && !String(body.name).trim()) {
-      throw new Error("A project needs a name.");
+      throw new ValidationError("A project needs a name.");
     }
     const patch: Record<string, unknown> = { ...briefFrom(body) };
     // parked_at is deliberately absent: the stamp is the server's (see resolveParkFields), and so
@@ -82,7 +82,7 @@ export async function PATCH(req: NextRequest) {
     for (const k of ["name", "status", "notes", "urgent", "important", "park_reason", "park_decision"]) {
       if (body[k] !== undefined) patch[k] = k === "name" ? String(body[k]).trim() : body[k];
     }
-    if (Object.keys(patch).length === 0) throw new Error("Nothing to change.");
+    if (Object.keys(patch).length === 0) throw new ValidationError("Nothing to change.");
     const project = await updateProject(email, id, patch);
     revalidatePath("/my-work");
     return project;
@@ -97,7 +97,7 @@ export async function DELETE(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const id = String(body.project_id ?? "").trim();
-    if (!id) throw new Error("project_id is required.");
+    if (!id) throw new ValidationError("project_id is required.");
     await deleteProject(email, id);
     revalidatePath("/my-work");
     return { project_id: id, deleted: true };

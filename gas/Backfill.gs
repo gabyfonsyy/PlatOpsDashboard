@@ -861,7 +861,7 @@ function applyDueDateUpdates_(teamKey, year, keyToDue) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i][0];
     if (k && Object.prototype.hasOwnProperty.call(keyToDue, k)) {
-      dues[i][0] = keyToDue[k];
+      dues[i][0] = sanitizeSheetValue_(keyToDue[k]);
       changed = true;
     }
   }
@@ -966,7 +966,7 @@ function applyLabelsUpdates_(teamKey, year, keyToLabels) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i][0];
     if (k && Object.prototype.hasOwnProperty.call(keyToLabels, k)) {
-      labelsVals[i][0] = keyToLabels[k];
+      labelsVals[i][0] = sanitizeSheetValue_(keyToLabels[k]);
       changed = true;
     }
   }
@@ -1100,7 +1100,7 @@ function applyPriorityUpdates_(teamKey, year, keyToPriority) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i][0];
     if (k && Object.prototype.hasOwnProperty.call(keyToPriority, k)) {
-      priorities[i][0] = keyToPriority[k];
+      priorities[i][0] = sanitizeSheetValue_(keyToPriority[k]);
       changed = true;
     }
   }
@@ -1230,7 +1230,7 @@ function applyArchiveReasonUpdates_(teamKey, year, keyToArchiveReason) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i][0];
     if (k && Object.prototype.hasOwnProperty.call(keyToArchiveReason, k)) {
-      archiveReasons[i][0] = keyToArchiveReason[k];
+      archiveReasons[i][0] = sanitizeSheetValue_(keyToArchiveReason[k]);
       changed = true;
     }
   }

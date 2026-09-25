@@ -1,7 +1,6 @@
 import {
   groupByQuadrant,
   quadrantOf,
-  triageFor,
   type BriefFieldReview,
   type Quadrant,
   type Triage,
@@ -198,10 +197,6 @@ export type InitiativeTicket = {
  * re-deriving quadrant logic. */
 export function projectQuadrantOf(project: Pick<Project, "urgent" | "important">): Quadrant | null {
   return quadrantOf(project);
-}
-
-export function projectTriageFor(quadrant: Quadrant | null): Triage {
-  return triageFor(quadrant);
 }
 
 export function projectMatrixTally(projects: Project[]): {

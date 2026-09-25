@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
-import { handle } from "@/lib/work-route";
+import { handle, ValidationError } from "@/lib/work-route";
 import { createRecurrence, deleteRecurrence, updateRecurrence } from "@/lib/work-store";
 import { RECUR_FREQS, TASK_LANES, TASK_PRIORITIES } from "@/lib/work";
 
@@ -69,10 +69,10 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const title = String(body.title ?? "").trim();
-    if (!title) throw new Error("A repeating task needs a title.");
-    if (!body.freq) throw new Error("Pick how often it repeats.");
+    if (!title) throw new ValidationError("A repeating task needs a title.");
+    if (!body.freq) throw new ValidationError("Pick how often it repeats.");
     const bad = validate(body);
-    if (bad) throw new Error(bad);
+    if (bad) throw new ValidationError(bad);
     const rule = await createRecurrence(email, {
       title,
       freq: String(body.freq),
@@ -96,12 +96,12 @@ export async function PATCH(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const id = String(body.recurrence_id ?? "").trim();
-    if (!id) throw new Error("recurrence_id is required.");
+    if (!id) throw new ValidationError("recurrence_id is required.");
     const bad = validate(body);
-    if (bad) throw new Error(bad);
+    if (bad) throw new ValidationError(bad);
     const patch: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(body)) if (PATCHABLE.has(k)) patch[k] = v;
-    if (Object.keys(patch).length === 0) throw new Error("Nothing to change.");
+    if (Object.keys(patch).length === 0) throw new ValidationError("Nothing to change.");
     const rule = await updateRecurrence(email, id, patch);
     revalidatePath("/my-work");
     return rule;
@@ -112,7 +112,7 @@ export async function DELETE(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const id = String(body.recurrence_id ?? "").trim();
-    if (!id) throw new Error("recurrence_id is required.");
+    if (!id) throw new ValidationError("recurrence_id is required.");
     await deleteRecurrence(email, id);
     revalidatePath("/my-work");
     return { recurrence_id: id, deleted: true };

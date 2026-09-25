@@ -204,66 +204,9 @@ function monthLabel_(date) {
   return Utilities.formatDate(date, TIMEZONE, 'yyyy-MM');
 }
 
-function quarterLabel_(date) {
-  const q = Math.floor(date.getMonth() / 3) + 1;
-  return `${date.getFullYear()}-Q${q}`;
-}
-
 /** Shared rounding helpers — used by both Aggregation.gs and MetricsApi.gs. */
 function round2_(n) { return Math.round(n * 100) / 100; }
 function round4_(n) { return Math.round(n * 10000) / 10000; }
-
-/**
- * Business-day / Manila-time helpers for SLA date math (LatePickupApi.gs). The
- * `new Date(y, m-1, d, ...)` local constructors here rely on the Apps Script project's
- * timeZone being Asia/Manila (appsscript.json) — the same implicit assumption
- * parseResolvedDateField_/resolvePeriodToDateRange_ already make elsewhere.
- */
-function manilaHour_(date) {
-  return Number(Utilities.formatDate(date, TIMEZONE, 'H'));
-}
-
-/** Manila calendar date, midnight, with no time-of-day component. */
-function manilaDateOnly_(date) {
-  const [y, m, d] = Utilities.formatDate(date, TIMEZONE, 'yyyy-MM-dd').split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
-
-/** Sat/Sun in Manila — no PH holiday calendar (confirmed out of scope). */
-function isWeekend_(date) {
-  const day = manilaDateOnly_(date).getDay(); // 0=Sun..6=Sat
-  return day === 0 || day === 6;
-}
-
-/** Next Mon-Fri date strictly after `date` (`date` itself is assumed already a manilaDateOnly_ value). */
-function nextBusinessDay_(date) {
-  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
-  while (isWeekend_(next)) next.setDate(next.getDate() + 1);
-  return next;
-}
-
-/** 23:59:59.999 instant for a Manila calendar date. */
-function endOfManilaDay_(date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
-}
-
-/**
- * Reads RAW_<teamKey>_<year> for every calendar year [startDate,endDate] spans (both
- * 'yyyy-MM-dd' strings), merged into one array. Skips a tab that doesn't exist yet
- * (e.g. a future year not yet created by getOrCreateRawTab_) rather than throwing.
- */
-function getRawRowsForYears_(teamKey, startDate, endDate) {
-  const startYear = Number(startDate.slice(0, 4));
-  const endYear = Number(endDate.slice(0, 4));
-  const ss = getJiraDataSpreadsheet_();
-  let rows = [];
-  for (let year = startYear; year <= endYear; year++) {
-    const sheet = ss.getSheetByName(`RAW_${teamKey}_${year}`);
-    if (!sheet) continue;
-    rows = rows.concat(sheetToObjectsCached_(sheet));
-  }
-  return rows;
-}
 
 /** Every RAW_<teamKey>_<year> tab that actually exists, regardless of a requested period's range. */
 function getAllRawYearsForTeam_(teamKey) {

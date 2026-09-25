@@ -2,7 +2,12 @@ import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
 import { handle } from "@/lib/work-route";
 import { createReference, deleteReference, moveReference, updateReference } from "@/lib/references-store";
-import { getReferenceCategories, getReferenceTypes } from "@/lib/references-taxonomy-store";
+import {
+  getReferenceCategories,
+  getReferenceTypes,
+  type ReferenceCategory,
+  type ReferenceTypeRow,
+} from "@/lib/references-taxonomy-store";
 
 /** A url worth calling "not a link" — the field is free text on the server, but the form asks. */
 function invalidUrl(value: string): boolean {
@@ -11,17 +16,18 @@ function invalidUrl(value: string): boolean {
 
 /** Confirms a category_id/type_id the client sent actually belongs to this user, rather than
  * trusting an arbitrary uuid (which — since these tables have no RLS policies, service_role only
- * — would otherwise let one user's reference silently point at another user's category row). */
-async function ownedCategoryId(email: string, categoryId: unknown): Promise<string> {
+ * — would otherwise let one user's reference silently point at another user's category row).
+ * Takes the already-fetched list rather than fetching its own, so callers that need both the
+ * ownership check AND the full list (to hand to createReference/updateReference, skipping a
+ * second redundant fetch inside attachTaxonomy) only pay for one round trip each. */
+function ownedCategoryId(categories: ReferenceCategory[], categoryId: unknown): string {
   const id = String(categoryId ?? "").trim();
-  const categories = await getReferenceCategories(email);
   if (!categories.some((c) => c.category_id === id)) throw new Error("That category doesn't exist.");
   return id;
 }
 
-async function ownedTypeId(email: string, typeId: unknown): Promise<string> {
+function ownedTypeId(types: ReferenceTypeRow[], typeId: unknown): string {
   const id = String(typeId ?? "").trim();
-  const types = await getReferenceTypes(email);
   if (!types.some((t) => t.type_id === id)) throw new Error("That type doesn't exist.");
   return id;
 }
@@ -34,16 +40,27 @@ export async function POST(req: NextRequest) {
     if (!title) throw new Error("A reference needs a title.");
     if (!url || invalidUrl(url)) throw new Error("A reference needs a valid http(s) URL.");
 
-    const categoryId = body.category_id !== undefined ? await ownedCategoryId(email, body.category_id) : undefined;
-    const typeId = body.type_id !== undefined ? await ownedTypeId(email, body.type_id) : undefined;
+    let taxonomy: { categories: ReferenceCategory[]; types: ReferenceTypeRow[] } | undefined;
+    let categoryId: string | undefined;
+    let typeId: string | undefined;
+    if (body.category_id !== undefined || body.type_id !== undefined) {
+      const [categories, types] = await Promise.all([getReferenceCategories(email), getReferenceTypes(email)]);
+      taxonomy = { categories, types };
+      if (body.category_id !== undefined) categoryId = ownedCategoryId(categories, body.category_id);
+      if (body.type_id !== undefined) typeId = ownedTypeId(types, body.type_id);
+    }
 
-    const reference = await createReference(email, {
-      title,
-      url,
-      description: body.description !== undefined ? String(body.description) : null,
-      category_id: categoryId,
-      type_id: typeId,
-    });
+    const reference = await createReference(
+      email,
+      {
+        title,
+        url,
+        description: body.description !== undefined ? String(body.description) : null,
+        category_id: categoryId,
+        type_id: typeId,
+      },
+      taxonomy
+    );
     revalidatePath("/references");
     return reference;
   });
@@ -72,10 +89,16 @@ export async function PATCH(req: NextRequest) {
     if (body.title !== undefined) patch.title = String(body.title);
     if (body.url !== undefined) patch.url = String(body.url);
     if (body.description !== undefined) patch.description = body.description === null ? null : String(body.description);
-    if (body.category_id !== undefined) patch.category_id = await ownedCategoryId(email, body.category_id);
-    if (body.type_id !== undefined) patch.type_id = await ownedTypeId(email, body.type_id);
+
+    let taxonomy: { categories: ReferenceCategory[]; types: ReferenceTypeRow[] } | undefined;
+    if (body.category_id !== undefined || body.type_id !== undefined) {
+      const [categories, types] = await Promise.all([getReferenceCategories(email), getReferenceTypes(email)]);
+      taxonomy = { categories, types };
+      if (body.category_id !== undefined) patch.category_id = ownedCategoryId(categories, body.category_id);
+      if (body.type_id !== undefined) patch.type_id = ownedTypeId(types, body.type_id);
+    }
     if (Object.keys(patch).length === 0) throw new Error("Nothing to change.");
-    const reference = await updateReference(email, id, patch);
+    const reference = await updateReference(email, id, patch, taxonomy);
     revalidatePath("/references");
     return reference;
   });

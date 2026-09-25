@@ -58,6 +58,18 @@ export function isTheme(value: unknown): value is Theme {
 }
 
 /**
+ * Shared resolver for the "one copy object per theme" pattern used across the dashboard's view
+ * modules (cycle time, account creation, backlog aging, capacity, lead time, ticket outcomes, ...):
+ * each keeps a `{ professional, gaby }` copy object and picks a side based on the theme.
+ *
+ * `theme` is typed as `string | undefined` (not `Theme`) to match every one of those call sites,
+ * which read the value off a cookie/localStorage read that hasn't been narrowed with `isTheme`.
+ */
+export function resolveRegister<T>(theme: string | undefined, copy: { professional: T; gaby: T }): T {
+  return theme === "adhd" ? copy.gaby : copy.professional;
+}
+
+/**
  * User-facing names. The `adhd` KEY is deliberately unchanged: it's the persisted localStorage
  * value and the `data-theme` attribute every ADHD-scoped CSS rule keys off, so renaming it would
  * silently reset the theme for anyone who already had it selected.

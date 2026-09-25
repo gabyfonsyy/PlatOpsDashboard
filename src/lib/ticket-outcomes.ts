@@ -280,7 +280,8 @@ export async function getTicketOutcomeReport(
       ticketsTotalCount: filtered.length,
       tickets,
     };
-  } catch {
+  } catch (err) {
+    console.error("[getTicketOutcomeReport] failed:", err);
     return emptyReport(team, outcome, range, period, issueType, reasonFilter);
   }
 }
@@ -325,7 +326,8 @@ export async function getTicketOutcomeCards(
         byReason: toCountRows(counts, rows.length),
       };
     });
-  } catch {
+  } catch (err) {
+    console.error("[getTicketOutcomeCards] failed:", err);
     return [];
   }
 }

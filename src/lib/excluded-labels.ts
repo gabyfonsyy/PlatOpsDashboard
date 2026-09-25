@@ -57,14 +57,3 @@ export function persistExtraExcludedLabelsCookie(labels: readonly string[]): voi
     // Cookies blocked: the server falls back to no extra exclusions. Not worth failing over.
   }
 }
-
-/** Reads the cookie directly from document.cookie — for the editor's initial client-side state,
- * mirroring what the server already rendered so the first paint and the editor never disagree. */
-export function readExtraExcludedLabelsCookieClient(): string[] {
-  try {
-    const match = document.cookie.match(new RegExp(`(?:^|; )${EXTRA_EXCLUDED_LABELS_COOKIE}=([^;]*)`));
-    return resolveExtraExcludedLabels(match?.[1]);
-  } catch {
-    return [];
-  }
-}

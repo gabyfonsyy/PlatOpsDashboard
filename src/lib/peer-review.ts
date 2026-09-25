@@ -176,7 +176,8 @@ export async function getPeerReviewWaitReport(range: string, period: string): Pr
     const { cycles, inReview } = await getCompletedPeerReviewCycles(range, period);
     const byReviewer = aggregateByReviewer(cycles);
     return { team: "ST", range, period, byReviewer, cycles, inReview };
-  } catch {
+  } catch (err) {
+    console.error("[getPeerReviewWaitReport] failed:", err);
     return { ...EMPTY_REPORT, range, period };
   }
 }

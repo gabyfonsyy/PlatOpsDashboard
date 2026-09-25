@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useState } from "react";
 import { Search, X, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { formatManilaDate } from "@/lib/format";
@@ -10,6 +10,7 @@ import type { TicketCycleInfo } from "@/lib/account-creation-report";
 import { AccountCreationMilestoneDots } from "@/components/dashboard/AccountCreationMilestoneDots";
 import { AccountCreationTicketTimeline } from "@/components/dashboard/AccountCreationTicketTimeline";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { useColumnSearch } from "@/lib/use-column-search";
 import { TablePagination } from "@/components/dashboard/TablePagination";
 
 /**
@@ -44,36 +45,23 @@ export function AccountCreationReceiptsTable({
   jiraBaseUrl?: string;
   id?: string;
 }) {
-  const [filters, setFilters] = useState<Record<string, string>>({});
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const searchable = useMemo(
-    () =>
-      tickets.map((t) => {
-        const cycle = cycles[t.issueKey];
-        const reviewerNames = cycle ? cycle.stages.filter((s) => s.stage === "peer_review").map((s) => s.ownerAtStart || "").join(" ") : "";
-        return {
-          ticket: t,
-          cells: {
-            issueKey: `${t.issueKey} ${t.trackType ?? "unclassified"}${t.hasDataLoading ? " data loading" : ""}`,
-            seName: t.seName,
-            reviewer: reviewerNames,
-            created: formatManilaDate(t.created),
-            delayArea: cycle ? DELAY_AREA_META[cycle.delay.area].label : "",
-            overall: OVERALL_STATUS_META[t.overallStatus].label,
-          } as Record<string, string>,
-        };
-      }),
+  const { filters, setFilters, active, visible } = useColumnSearch(
+    tickets,
+    (t) => {
+      const cycle = cycles[t.issueKey];
+      const reviewerNames = cycle ? cycle.stages.filter((s) => s.stage === "peer_review").map((s) => s.ownerAtStart || "").join(" ") : "";
+      return {
+        issueKey: `${t.issueKey} ${t.trackType ?? "unclassified"}${t.hasDataLoading ? " data loading" : ""}`,
+        seName: t.seName,
+        reviewer: reviewerNames,
+        created: formatManilaDate(t.created),
+        delayArea: cycle ? DELAY_AREA_META[cycle.delay.area].label : "",
+        overall: OVERALL_STATUS_META[t.overallStatus].label,
+      };
+    },
     [tickets, cycles]
-  );
-
-  const active = Object.entries(filters).filter(([, v]) => v.trim() !== "");
-  const visible = useMemo(
-    () =>
-      searchable
-        .filter(({ cells }) => active.every(([key, value]) => (cells[key] ?? "").toLowerCase().includes(value.trim().toLowerCase())))
-        .map(({ ticket }) => ticket),
-    [searchable, active]
   );
 
   const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(visible);

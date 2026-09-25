@@ -1,6 +1,7 @@
 import type { BadgeTone } from "@/lib/sla-status";
 import { DATA_UNAVAILABLE, type OverallSlaStatus, type DataUnavailable } from "@/lib/account-creation-sla";
 import type { DelayArea } from "@/lib/account-creation-cycle";
+import { resolveRegister } from "@/lib/theme";
 
 /**
  * Account Creation's Gaby's View label overlay — same partial-overlay pattern as
@@ -132,5 +133,5 @@ export type AccountCreationCopy = {
 };
 
 export function accountCreationCopy(theme: string | undefined): AccountCreationCopy {
-  return theme === "adhd" ? ACCOUNT_CREATION_COPY.gaby : ACCOUNT_CREATION_COPY.professional;
+  return resolveRegister<AccountCreationCopy>(theme, ACCOUNT_CREATION_COPY);
 }

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { createPhase, deletePhase, reorderPhases, updatePhase } from "@/lib/project-tracking-store";
+import { ValidationError } from "@/lib/work-route";
 
 /**
  * A custom route rather than `createSupabaseCrudRouteHandlers` — PATCH here does double duty:
@@ -16,7 +17,7 @@ async function requireSessionEmail() {
 function fail(err: unknown) {
   return NextResponse.json(
     { ok: false, error: err instanceof Error ? err.message : String(err) },
-    { status: 502 }
+    { status: err instanceof ValidationError ? 400 : 502 }
   );
 }
 
@@ -41,8 +42,9 @@ export async function PATCH(req: NextRequest) {
       await reorderPhases(body.order);
       return NextResponse.json({ ok: true, data: { reordered: body.order.length } });
     }
-    const { id, ...payload } = body;
-    if (!id) throw new Error("id is required.");
+    const { id, created_by: _createdBy, ...payload } = body;
+    if (!id) throw new ValidationError("id is required.");
+    // created_by is stamped once at creation and is not client-patchable — see supabase-crud-route.ts.
     const data = await updatePhase(id, payload, email);
     return NextResponse.json({ ok: true, data });
   } catch (err) {
@@ -55,7 +57,7 @@ export async function DELETE(req: NextRequest) {
   if (!email) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   try {
     const { id } = await req.json();
-    if (!id) throw new Error("id is required.");
+    if (!id) throw new ValidationError("id is required.");
     await deletePhase(id);
     return NextResponse.json({ ok: true, data: { id, deleted: true } });
   } catch (err) {

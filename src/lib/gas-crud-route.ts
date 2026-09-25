@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { postGas } from "@/lib/gas-client";
+import { ValidationError } from "@/lib/work-route";
 
 /**
  * Generates POST/PATCH/DELETE handlers proxying to a GAS CRUD route, injecting the session's
@@ -22,7 +23,7 @@ export function createCrudRouteHandlers(route: string) {
   function fail(err: unknown) {
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : String(err) },
-      { status: 502 }
+      { status: err instanceof ValidationError ? 400 : 502 }
     );
   }
 
@@ -43,8 +44,10 @@ export function createCrudRouteHandlers(route: string) {
       const email = await requireSessionEmail();
       if (!email) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
       try {
-        const { id, ...payload } = await req.json();
-        if (!id) throw new Error("id is required.");
+        const { id, created_by: _createdBy, ...payload } = await req.json();
+        if (!id) throw new ValidationError("id is required.");
+        // created_by is stamped once at creation time (POST above) and is not client-patchable —
+        // forwarding a client-supplied value here would let an edit forge who authored the record.
         const data = await postGas(route, "update", payload, id);
         return NextResponse.json({ ok: true, data });
       } catch (err) {
@@ -57,7 +60,7 @@ export function createCrudRouteHandlers(route: string) {
       if (!email) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
       try {
         const { id } = await req.json();
-        if (!id) throw new Error("id is required.");
+        if (!id) throw new ValidationError("id is required.");
         const data = await postGas(route, "delete", {}, id);
         return NextResponse.json({ ok: true, data });
       } catch (err) {

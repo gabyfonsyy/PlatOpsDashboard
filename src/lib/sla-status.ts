@@ -63,11 +63,3 @@ export const STATUS_TONE: Record<SlaStatus, BadgeTone> = {
   atRisk: "danger",
   critical: "danger",
 };
-
-/** `--ok-500` etc. — for anything driving `.signal`'s `--signal-rgb` custom property directly. */
-export const STATUS_SIGNAL_VAR: Record<SlaStatus, string> = {
-  healthy: "var(--ok-500)",
-  watch: "var(--warn-500)",
-  atRisk: "var(--danger-500)",
-  critical: "var(--danger-500)",
-};

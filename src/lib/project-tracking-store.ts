@@ -657,13 +657,14 @@ export async function addNote(email: string, payload: Partial<ProjectNote>): Pro
   return note;
 }
 
-/** Only used today to toggle `resolved` — nothing else about a note is editable after it's
- * written. Not author-restricted like delete: whoever fixed a blocker should be able to resolve
- * it, not just whoever originally raised it. */
+/** Only ever toggles `resolved` — nothing else about a note is editable after it's written,
+ * ENFORCED here (not just by convention at the route level): accepting the whole payload would
+ * let a caller overwrite `author_email` to itself and then pass deleteNote's author-only check.
+ * Not author-restricted like delete: whoever fixed a blocker should be able to resolve it, not
+ * just whoever originally raised it. */
 export async function updateNote(id: string, payload: Partial<ProjectNote>, actorEmail?: string): Promise<ProjectNote> {
   const supabase = getSupabaseClient();
-  const { id: _ignored, ...rest } = payload as Partial<ProjectNote> & { id?: string };
-  void _ignored;
+  const rest: Partial<ProjectNote> = "resolved" in payload ? { resolved: payload.resolved } : {};
   const { data, error } = await supabase.from("project_notes").update(rest).eq("id", id).select("*").single();
   if (error) throw new Error(`Could not update note ${id}: ${error.message}`);
   const note = rowToNote(data);

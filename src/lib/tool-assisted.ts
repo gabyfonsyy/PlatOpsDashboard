@@ -838,7 +838,8 @@ export async function getToolAssistedBaselineComparison(
     }
 
     return out;
-  } catch {
+  } catch (err) {
+    console.error("[getToolAssistedBaselineComparison] failed:", err);
     return [];
   }
 }
@@ -962,7 +963,8 @@ export async function getToolAssistedCycleTimeReport(
       bySe: buildSeBreakdowns(toolAssistedTickets),
       unattributedToolAssisted: toolAssistedTickets.filter((t) => !t.assignee).length,
     };
-  } catch {
+  } catch (err) {
+    console.error("[getToolAssistedCycleTimeReport] failed:", err);
     return { ...EMPTY_REPORT, range, period };
   }
 }

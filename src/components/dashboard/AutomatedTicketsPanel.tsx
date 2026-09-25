@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, Search, X } from "lucide-react";
 import type { AutomatedTicket } from "@/lib/automated-tickets";
@@ -12,6 +12,7 @@ import {
 import { ANALYSIS_EXCLUDED_LABELS } from "@/lib/ticket-breakdowns";
 import { DurationCell } from "@/components/dashboard/DurationCell";
 import { LabelChipEditor } from "@/components/dashboard/LabelChipEditor";
+import { useColumnSearch } from "@/lib/use-column-search";
 import {
   useLabelPrefs,
   visibleLabels,
@@ -77,7 +78,6 @@ export function AutomatedTicketsPanel({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [filters, setFilters] = useState<Record<string, string>>({});
 
   // The hidden list is owned by LabelPrefsProvider — see that file for why it is not local state.
   // Only the column filters below belong to this component.
@@ -169,38 +169,30 @@ export function AutomatedTicketsPanel({
     return { occurrences, uniqueTickets: tickets.length };
   }, [tickets, hiddenSet]);
 
+  // The Labels cell is computed once here (visibleLabels depends on the hidden-labels set, not just
+  // the ticket) and reused both for the column filter below and for the ticket table's own Labels
+  // column, rather than derived twice.
+  const labelsByIssueKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of tickets) map.set(t.issueKey, visibleLabels(t.labels, hiddenSet).join(", "));
+    return map;
+  }, [tickets, hiddenSet]);
+
   // Derived strings in column order, so filtering never re-formats a date on a keystroke. Each
   // column filters on the STRING THE CELL RENDERS — the same rule as BreakdownTicketsTable.
-  const searchable = useMemo(
-    () =>
-      tickets.map((t) => {
-        const labels = visibleLabels(t.labels, hiddenSet).join(", ");
-        return {
-          ticket: t,
-          labels,
-          cells: {
-            issueKey: `${t.issueKey} ${t.issueType}`,
-            product: t.product,
-            labels,
-            assignedSe: `${t.assignedSe || "(none)"} ${t.jiraAssignee}`,
-            escalation: t.escalation || "(none)",
-            lead: t.leadMinutes === null ? "" : formatDaysValue(t.leadMinutes),
-            cycle: t.cycleMinutes === null ? "" : formatDaysValue(t.cycleMinutes),
-            resolved: formatManilaDate(t.resolvedAt),
-          } as Record<string, string>,
-        };
-      }),
-    [tickets, hiddenSet]
-  );
-
-  const active = Object.entries(filters).filter(([, v]) => v.trim() !== "");
-
-  const visible = useMemo(
-    () =>
-      searchable.filter(({ cells }) =>
-        active.every(([key, value]) => (cells[key] ?? "").toLowerCase().includes(value.trim().toLowerCase()))
-      ),
-    [searchable, active]
+  const { filters, setFilters, active, visible } = useColumnSearch(
+    tickets,
+    (t) => ({
+      issueKey: `${t.issueKey} ${t.issueType}`,
+      product: t.product,
+      labels: labelsByIssueKey.get(t.issueKey) ?? "",
+      assignedSe: `${t.assignedSe || "(none)"} ${t.jiraAssignee}`,
+      escalation: t.escalation || "(none)",
+      lead: t.leadMinutes === null ? "" : formatDaysValue(t.leadMinutes),
+      cycle: t.cycleMinutes === null ? "" : formatDaysValue(t.cycleMinutes),
+      resolved: formatManilaDate(t.resolvedAt),
+    }),
+    [tickets, labelsByIssueKey]
   );
 
   const columns: { key: string; label: string }[] = [
@@ -449,7 +441,7 @@ export function AutomatedTicketsPanel({
                 </td>
               </tr>
             ) : (
-              visible.map(({ ticket: t, labels }) => (
+              visible.map((t) => (
                 <tr key={t.issueKey}>
                   <td className="px-4 py-3 font-medium text-neutral-900 whitespace-nowrap align-top">
                     {jiraBaseUrl ? (
@@ -471,7 +463,7 @@ export function AutomatedTicketsPanel({
                   <td className="px-4 py-3 whitespace-nowrap align-top">{t.product}</td>
                   {/* Hover shows the full CSV including hidden labels, so nothing is unreachable. */}
                   <td className="px-4 py-3 text-xs text-neutral-500 align-top" title={t.labels || undefined}>
-                    {labels || "—"}
+                    {labelsByIssueKey.get(t.issueKey) || "—"}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap align-top">
                     {t.assignedSe ? t.assignedSe : <span className="text-amber-700">(none)</span>}

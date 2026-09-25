@@ -13,18 +13,25 @@ export function PeerReviewWaitTable({
   return (
     <div className="flex flex-col gap-6">
       {inReview.length > 0 && (
-        <div className="card p-4 border-neutral-200 bg-neutral-50">
-          <h3 className="text-sm font-semibold text-neutral-700 mb-2">
-            Currently In Review ({inReview.length})
-          </h3>
-          <ul className="text-sm text-neutral-600 flex flex-col gap-1">
-            {inReview.map((c) => (
-              <li key={c.issueKey}>
-                <span className="font-medium">{c.issueKey}</span> — {c.reviewer || "unassigned"} — entered review{" "}
-                {formatManilaDate(c.enteredAt)}
-              </li>
-            ))}
-          </ul>
+        // `background-color` frame, not a `border-neutral-200` utility on the `.card` itself:
+        // `[data-theme="adhd"] .card` sets `border-color` as an unlayered rule in globals.css,
+        // which beats any Tailwind border utility regardless of specificity — the neutral border
+        // tint silently disappeared in Gaby View. Same technique as HealthDot.tsx's
+        // `healthAccentBg`, generalised to all four edges via a thin padded wrapper.
+        <div className="rounded-2xl p-px bg-neutral-200">
+          <div className="card p-4 bg-neutral-50">
+            <h3 className="text-sm font-semibold text-neutral-700 mb-2">
+              Currently In Review ({inReview.length})
+            </h3>
+            <ul className="text-sm text-neutral-600 flex flex-col gap-1">
+              {inReview.map((c) => (
+                <li key={c.issueKey}>
+                  <span className="font-medium">{c.issueKey}</span> — {c.reviewer || "unassigned"} — entered review{" "}
+                  {formatManilaDate(c.enteredAt)}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       )}
 

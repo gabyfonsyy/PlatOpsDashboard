@@ -304,7 +304,8 @@ export async function getTicketMetrics(
     // against the very pages these cards link to. See getLeadCycleTimeAverages for the measured
     // gap. Everything else on the card still comes from the precomputed daily rows.
     return { ...rollupDailyRows(rows, team, range, period, issueType), ...liveAverages };
-  } catch {
+  } catch (err) {
+    console.error("[getTicketMetrics] failed:", err);
     return { ...EMPTY_METRICS, team, range, period, issueType: issueType ?? null };
   }
 }
@@ -427,7 +428,8 @@ export async function getAssigneeMetrics(team: string, range: string, period: st
     }));
 
     return { team, period, assignees };
-  } catch {
+  } catch (err) {
+    console.error("[getAssigneeMetrics] failed:", err);
     return { team, period, assignees: [] };
   }
 }
@@ -438,5 +440,5 @@ export async function getAssigneeMetrics(team: string, range: string, period: st
  * from Supabase now would just serve an increasingly stale one-time snapshot.
  */
 export async function getInsight(scope: string): Promise<CachedInsight> {
-  return fetchGas<CachedInsight>("insight", { scope }, { next: { revalidate: 300 } }).catch(() => null);
+  return fetchGas<CachedInsight>("insight", { scope }, { revalidate: 300 }).catch(() => null);
 }

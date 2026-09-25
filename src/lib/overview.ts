@@ -215,7 +215,7 @@ export async function getOverview(email: string): Promise<OverviewData> {
   const leavePromise = fetchGas<{ records: LeaveRecord[] }>(
     "leave",
     { startDate: today, endDate: today },
-    { next: { revalidate: 300 } }
+    { revalidate: 300 }
   )
     .then((r) => r.records ?? [])
     .catch(() => null);
@@ -223,7 +223,7 @@ export async function getOverview(email: string): Promise<OverviewData> {
   const rtoPromise = fetchGas<{ records: RtoRecord[] }>(
     "rto",
     { startDate: today, endDate: today },
-    { next: { revalidate: 300 } }
+    { revalidate: 300 }
   )
     .then((r) => r.records ?? [])
     .catch(() => null);

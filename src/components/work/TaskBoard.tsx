@@ -421,7 +421,12 @@ function MatrixBoard({
       </div>
 
       {unsorted.length > 0 && (
-        <section className="card border-l-2 border-l-neutral-200 p-4 flex flex-col gap-3">
+        <section className="relative overflow-hidden card p-4 flex flex-col gap-3">
+          {/* `background-color`, not a `border-l-*` utility: `[data-theme="adhd"] .card` sets
+              `border-color` as an unlayered rule in globals.css, which beats any Tailwind border-*
+              class regardless of specificity — see HealthDot.tsx's `healthAccentBg` for the full
+              explanation. A bg overlay survives every theme instead. */}
+          <span className="absolute inset-y-0 left-0 w-[2px] bg-neutral-200" aria-hidden="true" />
           <header className="flex items-baseline justify-between gap-2">
             <h3 className="text-sm font-semibold text-neutral-700">Not sorted yet</h3>
             <span className="text-xs text-neutral-400">{unsorted.length}</span>
@@ -1394,9 +1399,13 @@ function ProjectCard({
   }
 
   return (
-    <div
-      className={cn("card p-4 transition-all duration-200", active && "ring-2 ring-sprout-400/50")}
-    >
+    <div className="relative overflow-hidden card p-4 transition-all duration-200">
+      {/* Selected-state indicator, not `ring-*`: `[data-theme="adhd"] .card` sets `box-shadow` as
+          an unlayered rule in globals.css, which beats any Tailwind ring or box-shadow utility
+          regardless of specificity — a `ring-2` selection ring silently disappeared in Gaby View.
+          A `background-color` overlay survives every theme instead — same technique as the accent
+          bars above (see HealthDot.tsx's `healthAccentBg`). */}
+      {active && <span className="absolute inset-y-0 left-0 w-1 bg-sprout-400" aria-hidden="true" />}
       <div className="flex items-start justify-between gap-3">
         <button onClick={onSelect} className="text-left min-w-0 flex-1 group">
           <p className="text-sm font-semibold text-neutral-900 truncate group-hover:text-sprout-700 transition-colors">

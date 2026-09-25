@@ -22,7 +22,7 @@ export type TeamConfig = {
 
 /** Server-side cached fetch of the TEAMS_CONFIG tab — drives nav/tabs and per-team routing. */
 export async function getTeams(): Promise<TeamConfig[]> {
-  const teams = await fetchGas<TeamConfig[]>("teams", {}, { next: { revalidate: 300 } });
+  const teams = await fetchGas<TeamConfig[]>("teams", {}, { revalidate: 300 });
   return teams.filter((t) => t.active).sort((a, b) => a.sort_order - b.sort_order);
 }
 

@@ -36,7 +36,12 @@ export function CapacityScenarioPanel({ baseline, title }: { baseline: ScenarioB
   const isHeadcount = type === "headcount";
 
   return (
-    <div className="card p-5 border-t-4 border-t-sprout-400">
+    <div className="relative overflow-hidden card p-5">
+      {/* `background-color`, not `border-t-*`: `[data-theme="adhd"] .card` sets `border-color` as
+          an unlayered rule in globals.css, which beats any Tailwind border-* class regardless of
+          specificity — see HealthDot.tsx's `healthAccentBg` for the full explanation. A bg overlay
+          survives every theme instead. */}
+      <span className="absolute inset-x-0 top-0 h-1 bg-sprout-400" aria-hidden="true" />
       <h2 className="text-base font-semibold text-neutral-900">{title}</h2>
       <p className="text-sm text-neutral-500 mt-1">
         Pick a scenario, then type in your own assumption — this page never invents an effort estimate for you.

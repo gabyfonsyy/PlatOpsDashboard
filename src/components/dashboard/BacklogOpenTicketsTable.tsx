@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Search, X } from "lucide-react";
 import type { BacklogOpenTicket } from "@/lib/backlog-aging";
 import { AGING_RISK_LABEL } from "@/lib/backlog-aging";
@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/Badge";
 import { formatManilaDate, formatAgeDays } from "@/lib/format";
 import { meaningfulLabels } from "@/lib/ticket-breakdowns";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { useColumnSearch } from "@/lib/use-column-search";
 import { TablePagination } from "@/components/dashboard/TablePagination";
 
 const RISK_BADGE_TONE = { healthy: "neutral", watch: "warning", atRisk: "danger", critical: "danger" } as const;
@@ -57,7 +58,6 @@ export function BacklogOpenTicketsTable({
   emptyLabel?: string;
   extraExcludedLabels?: string[];
 }) {
-  const [filters, setFilters] = useState<Record<string, string>>({});
   const bucket = distribution?.find((b) => b.label === bucketFilter);
 
   const scoped = useMemo(() => {
@@ -71,26 +71,17 @@ export function BacklogOpenTicketsTable({
     });
   }, [rows, ownerFilter, categoryFilter, issueTypeFilter, statusFilter, bucket]);
 
-  const searchableRows = useMemo(
-    () =>
-      scoped.map((t) => ({
-        ticket: t,
-        cells: {
-          issueKey: `${t.issueKey} ${t.issueType}`,
-          assignee: t.assignee,
-          product: `${t.product} ${meaningfulLabels(t.labels, extraExcludedLabels).join(" ")}`,
-        } as Record<string, string>,
-      })),
+  // When `searchable` is false, the filter-input row below is never rendered, so `filters` can
+  // never leave its empty initial state and `visible` (== `scoped`, no active filter) matches the
+  // old no-op ternary exactly — the `searchable` prop only needs to gate the UI, not this hook.
+  const { filters, setFilters, active, visible } = useColumnSearch(
+    scoped,
+    (t) => ({
+      issueKey: `${t.issueKey} ${t.issueType}`,
+      assignee: t.assignee,
+      product: `${t.product} ${meaningfulLabels(t.labels, extraExcludedLabels).join(" ")}`,
+    }),
     [scoped, extraExcludedLabels]
-  );
-
-  const active = searchable ? Object.entries(filters).filter(([, v]) => v.trim() !== "") : [];
-  const visible = useMemo(
-    () =>
-      searchable
-        ? searchableRows.filter(({ cells }) => active.every(([key, value]) => (cells[key] ?? "").toLowerCase().includes(value.trim().toLowerCase()))).map(({ ticket }) => ticket)
-        : scoped,
-    [searchable, searchableRows, active, scoped]
   );
 
   const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(visible);

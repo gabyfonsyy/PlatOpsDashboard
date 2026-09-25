@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Search, X } from "lucide-react";
 import type { LeadTimeTicketRow, LeadTimeDistributionBucket } from "@/lib/lead-cycle-time";
 import { formatManilaDate, formatMinutesDecimalValue, formatDurationBreakdown } from "@/lib/format";
 import { meaningfulLabels } from "@/lib/ticket-breakdowns";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { useColumnSearch } from "@/lib/use-column-search";
 import { TablePagination } from "@/components/dashboard/TablePagination";
 
 /**
@@ -43,8 +44,6 @@ export function LeadTimeTicketsTable({
   extraExcludedLabels?: string[];
   title?: string;
 }) {
-  const [filters, setFilters] = useState<Record<string, string>>({});
-
   const bucket = distribution.find((b) => b.label === bucketFilter);
 
   const scoped = useMemo(() => {
@@ -60,28 +59,16 @@ export function LeadTimeTicketsTable({
     });
   }, [tickets, workTypeFilter, productFilter, assigneeFilter, bucket]);
 
-  const searchable = useMemo(
-    () =>
-      scoped.map((t) => ({
-        ticket: t,
-        cells: {
-          issueKey: `${t.issueKey} ${t.issueType}`,
-          assignee: t.assignee,
-          // Product and Labels share one column now (see the horizontal-scroll fix below), so one
-          // filter box searches both rather than needing a second input for a merged column.
-          product: `${t.product} ${meaningfulLabels(t.labels, extraExcludedLabels).join(" ")}`,
-        } as Record<string, string>,
-      })),
+  // Product and Labels share one column now (see the horizontal-scroll fix below), so one filter
+  // box searches both rather than needing a second input for a merged column.
+  const { filters, setFilters, active, visible } = useColumnSearch(
+    scoped,
+    (t) => ({
+      issueKey: `${t.issueKey} ${t.issueType}`,
+      assignee: t.assignee,
+      product: `${t.product} ${meaningfulLabels(t.labels, extraExcludedLabels).join(" ")}`,
+    }),
     [scoped, extraExcludedLabels]
-  );
-
-  const active = Object.entries(filters).filter(([, v]) => v.trim() !== "");
-  const visible = useMemo(
-    () =>
-      searchable
-        .filter(({ cells }) => active.every(([key, value]) => (cells[key] ?? "").toLowerCase().includes(value.trim().toLowerCase())))
-        .map(({ ticket }) => ticket),
-    [searchable, active]
   );
 
   const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(visible);

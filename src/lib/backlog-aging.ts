@@ -7,6 +7,7 @@ import { cycleTimeWorkCategoryFor, type CycleTimeWorkCategory } from "@/lib/lead
 import { P1_PRIORITY_VALUE } from "@/lib/p1-sla";
 import { riskTierForConsumed, type RiskTier } from "@/lib/sla-status";
 import { BREAKDOWN_TICKET_LIMIT } from "@/lib/ticket-breakdowns";
+import { median } from "@/lib/stats";
 
 export type BacklogAgingTicket = {
   teamKey: string;
@@ -153,7 +154,8 @@ export async function getBacklogAgingReport(
       backlogAgingRate: resolvedInPeriod ? round4(tickets.length / resolvedInPeriod) : null,
       tickets,
     };
-  } catch {
+  } catch (err) {
+    console.error("[getBacklogAgingReport] failed:", err);
     return { ...EMPTY_REPORT, team, range, period, issueType: issueType ?? null };
   }
 }
@@ -184,8 +186,11 @@ function percentileOf(sortedAsc: number[], p: number): number | null {
   return round1(sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo));
 }
 
+// medianOfDays preserves its historical round-to-1-decimal contract (percentileOf's rounding)
+// even though the actual median math now comes from the shared lib/stats helper.
 function medianOfDays(sortedAsc: number[]): number | null {
-  return percentileOf(sortedAsc, 50);
+  const m = median(sortedAsc);
+  return m === null ? null : round1(m);
 }
 
 function addDaysIso(iso: string, delta: number): string {
@@ -1183,7 +1188,8 @@ export async function getBacklogAgingDeepDive(
 
       overdueTickets: current.overdueTickets,
     };
-  } catch {
+  } catch (err) {
+    console.error("[getBacklogAgingDeepDive] failed:", err);
     return emptyDeepDive(team, range, period, issueType, workCategory);
   }
 }

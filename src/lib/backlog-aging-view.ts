@@ -1,3 +1,5 @@
+import { resolveRegister } from "@/lib/theme";
+
 /**
  * Backlog & Ageing deep-dive's Gaby's View label overlay — same partial-overlay pattern as
  * lib/lead-time-view.ts's LEAD_TIME_COPY / lib/cycle-time-view.ts's CYCLE_TIME_COPY, scoped to
@@ -104,5 +106,5 @@ export const BACKLOG_AGING_COPY = {
 export type BacklogAgingCopy = { readonly [K in keyof (typeof BACKLOG_AGING_COPY)["professional"]]: string };
 
 export function backlogAgingCopy(theme: string | undefined): BacklogAgingCopy {
-  return theme === "adhd" ? BACKLOG_AGING_COPY.gaby : BACKLOG_AGING_COPY.professional;
+  return resolveRegister<BacklogAgingCopy>(theme, BACKLOG_AGING_COPY);
 }

@@ -2030,7 +2030,7 @@ function applyDueDateUpdates_(teamKey, year, keyToDue) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i][0];
     if (k && Object.prototype.hasOwnProperty.call(keyToDue, k)) {
-      dues[i][0] = keyToDue[k];
+      dues[i][0] = sanitizeSheetValue_(keyToDue[k]);
       changed = true;
     }
   }
@@ -2135,7 +2135,7 @@ function applyLabelsUpdates_(teamKey, year, keyToLabels) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i][0];
     if (k && Object.prototype.hasOwnProperty.call(keyToLabels, k)) {
-      labelsVals[i][0] = keyToLabels[k];
+      labelsVals[i][0] = sanitizeSheetValue_(keyToLabels[k]);
       changed = true;
     }
   }
@@ -2269,7 +2269,7 @@ function applyPriorityUpdates_(teamKey, year, keyToPriority) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i][0];
     if (k && Object.prototype.hasOwnProperty.call(keyToPriority, k)) {
-      priorities[i][0] = keyToPriority[k];
+      priorities[i][0] = sanitizeSheetValue_(keyToPriority[k]);
       changed = true;
     }
   }
@@ -2399,7 +2399,7 @@ function applyArchiveReasonUpdates_(teamKey, year, keyToArchiveReason) {
   for (let i = 0; i < keys.length; i++) {
     const k = keys[i][0];
     if (k && Object.prototype.hasOwnProperty.call(keyToArchiveReason, k)) {
-      archiveReasons[i][0] = keyToArchiveReason[k];
+      archiveReasons[i][0] = sanitizeSheetValue_(keyToArchiveReason[k]);
       changed = true;
     }
   }
@@ -6762,85 +6762,6 @@ function setupInitiativesSpreadsheet_() {
 }
 
 /**
- * One-time migration: adds `weekly_plan_json` to an existing initiatives PROJECTS tab
- * (setupInitiatives only adds it to a brand-new tab). Stores optional per-week throughput
- * overrides for the batch projection. Safe to re-run.
- */
-function migrateAddProjectWeeklyPlan() {
-  const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECTS');
-  if (!sheet) { Logger.log('PROJECTS not found in initiatives spreadsheet.'); return; }
-  if (appendColumnIfMissing_(sheet, 'weekly_plan_json')) {
-    Logger.log('PROJECTS: added weekly_plan_json.');
-  } else {
-    Logger.log('PROJECTS: weekly_plan_json already present.');
-  }
-}
-
-/**
- * One-time convenience for an already-provisioned Initiatives workbook: creates the
- * PROJECT_PROGRESS tab if it's missing (re-running setupInitiatives does the same, this is just
- * a targeted alias). Safe to re-run — ensureTab_ skips a tab that already exists.
- */
-function migrateAddProjectProgress() {
-  const ss = getInitiativesSpreadsheet_();
-  const existed = !!ss.getSheetByName('PROJECT_PROGRESS');
-  ensureTab_(ss, 'PROJECT_PROGRESS', [
-    'progress_id', 'project_id', 'date', 'issue_key', 'items_processed',
-    'notes', 'created_by', 'created_at', 'updated_at',
-  ]);
-  Logger.log(existed ? 'PROJECT_PROGRESS already present.' : 'PROJECT_PROGRESS created.');
-}
-
-/**
- * One-time migration: adds `tracking_mode` to an existing initiatives PROJECTS tab (setupInitiatives
- * only adds it to a brand-new tab). Explicitly picks a project's tracking system —
- * 'manual' | 'scheduled' (batch throughput) | 'tasks' (checklist) — instead of the frontend
- * guessing from which fields happen to be filled in. Left blank for existing rows; ProjectsTable/
- * ProjectsGanttChart's resolveDisplayPercent (src/lib/projection.ts) falls back to the old
- * auto-detect behavior when blank, and saving a row through the edit form stamps an explicit
- * value going forward. Safe to re-run.
- */
-function migrateAddProjectTrackingMode() {
-  const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECTS');
-  if (!sheet) { Logger.log('PROJECTS not found in initiatives spreadsheet.'); return; }
-  if (appendColumnIfMissing_(sheet, 'tracking_mode')) {
-    Logger.log('PROJECTS: added tracking_mode.');
-  } else {
-    Logger.log('PROJECTS: tracking_mode already present.');
-  }
-}
-
-/**
- * One-time convenience for an already-provisioned Initiatives workbook: creates the
- * PROJECT_TASKS tab if it's missing (re-running setupInitiatives does the same, this is just
- * a targeted alias). Safe to re-run — ensureTab_ skips a tab that already exists.
- */
-function migrateAddProjectTasks() {
-  const ss = getInitiativesSpreadsheet_();
-  const existed = !!ss.getSheetByName('PROJECT_TASKS');
-  ensureTab_(ss, 'PROJECT_TASKS', [
-    'task_id', 'project_id', 'task_name', 'issue_key', 'done', 'start_date', 'target_date',
-    'notes', 'created_by', 'created_at', 'updated_at',
-  ]);
-  Logger.log(existed ? 'PROJECT_TASKS already present.' : 'PROJECT_TASKS created.');
-}
-
-/**
- * One-time migration: adds `issue_key` to an existing PROJECT_TASKS tab (setupInitiatives/
- * migrateAddProjectTasks only add it to a brand-new tab). Optional link from a task to the Jira
- * ticket it's tracked under, shown/edited in ProjectTasksPanel. Safe to re-run.
- */
-function migrateAddProjectTasksIssueKey() {
-  const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECT_TASKS');
-  if (!sheet) { Logger.log('PROJECT_TASKS not found in initiatives spreadsheet.'); return; }
-  if (appendColumnIfMissing_(sheet, 'issue_key')) {
-    Logger.log('PROJECT_TASKS: added issue_key.');
-  } else {
-    Logger.log('PROJECT_TASKS: issue_key already present.');
-  }
-}
-
-/**
  * One-time migration: adds `has_peer_review_tracking` to an already-provisioned
  * TEAMS_CONFIG (setupJiraDataSpreadsheet_ only adds it to a brand-new tab). Only adds the
  * header — set TRUE manually for the ST row afterward (leave blank/FALSE for DE/DEV).
@@ -7857,10 +7778,15 @@ function migrateSmallTablesToSupabase() {
   migrateSyncCheckpointToSupabase();
   migrateAggCheckpointToSupabase();
   migrateErrorLogToSupabase();
-  migrateProjectsToSupabase(); // before ticket_project_map/project_progress/project_tasks (FK)
-  migrateTicketProjectMapToSupabase();
-  migrateProjectProgressToSupabase();
-  migrateProjectTasksToSupabase();
+  // migrateProjectsToSupabase/migrateTicketProjectMapToSupabase/migrateProjectProgressToSupabase/
+  // migrateProjectTasksToSupabase deliberately NOT called here since the 2026-09-22 Project
+  // Tracking cutover: those Sheets tabs (PROJECTS/TICKET_PROJECT_MAP/PROJECT_PROGRESS/
+  // PROJECT_TASKS) are frozen at whatever they held on cutover day — project-tracking-store.ts
+  // now writes straight to Supabase and nothing keeps those tabs in sync. Calling them here would
+  // let a routine resetSupabaseMigration()+runSupabaseMigration() (as several Backfill.gs
+  // completion emails instruct, for unrelated ticket-column reasons) silently overwrite current
+  // Supabase project data with that stale snapshot. Kept below for one-time historical reference
+  // only — do not wire them back into this function.
 }
 
 function migrateTeamsConfigToSupabase() {
@@ -8030,6 +7956,9 @@ function resetSupabaseErrorLogMigration() {
   Logger.log('resetSupabaseErrorLogMigration: cleared. Truncate the Supabase error_log table yourself before re-running, or you will get duplicates.');
 }
 
+// NOT called from migrateSmallTablesToSupabase() since the 2026-09-22 Project Tracking cutover —
+// see the comment there. Do not run this manually against a live Supabase without first checking
+// whether it would overwrite current data with the frozen 2026-09-22 Sheets snapshot.
 function migrateProjectsToSupabase() {
   const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECTS');
   const rows = sheetToObjects_(sheet)
@@ -8058,6 +7987,7 @@ function migrateProjectsToSupabase() {
   supabaseUpsert_('projects', rows, 'project_id');
 }
 
+// NOT called from migrateSmallTablesToSupabase() — see migrateProjectsToSupabase's comment above.
 function migrateTicketProjectMapToSupabase() {
   const sheet = getInitiativesSpreadsheet_().getSheetByName('TICKET_PROJECT_MAP');
   const rows = sheetToObjects_(sheet)
@@ -8071,6 +8001,7 @@ function migrateTicketProjectMapToSupabase() {
   supabaseUpsert_('ticket_project_map', rows, 'issue_key');
 }
 
+// NOT called from migrateSmallTablesToSupabase() — see migrateProjectsToSupabase's comment above.
 function migrateProjectProgressToSupabase() {
   const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECT_PROGRESS');
   const rows = sheetToObjects_(sheet)
@@ -8089,6 +8020,7 @@ function migrateProjectProgressToSupabase() {
   supabaseUpsert_('project_progress', rows, 'progress_id');
 }
 
+// NOT called from migrateSmallTablesToSupabase() — see migrateProjectsToSupabase's comment above.
 function migrateProjectTasksToSupabase() {
   const sheet = getInitiativesSpreadsheet_().getSheetByName('PROJECT_TASKS');
   const rows = sheetToObjects_(sheet)
@@ -8534,66 +8466,9 @@ function monthLabel_(date) {
   return Utilities.formatDate(date, TIMEZONE, 'yyyy-MM');
 }
 
-function quarterLabel_(date) {
-  const q = Math.floor(date.getMonth() / 3) + 1;
-  return `${date.getFullYear()}-Q${q}`;
-}
-
 /** Shared rounding helpers — used by both Aggregation.gs and MetricsApi.gs. */
 function round2_(n) { return Math.round(n * 100) / 100; }
 function round4_(n) { return Math.round(n * 10000) / 10000; }
-
-/**
- * Business-day / Manila-time helpers for SLA date math (LatePickupApi.gs). The
- * `new Date(y, m-1, d, ...)` local constructors here rely on the Apps Script project's
- * timeZone being Asia/Manila (appsscript.json) — the same implicit assumption
- * parseResolvedDateField_/resolvePeriodToDateRange_ already make elsewhere.
- */
-function manilaHour_(date) {
-  return Number(Utilities.formatDate(date, TIMEZONE, 'H'));
-}
-
-/** Manila calendar date, midnight, with no time-of-day component. */
-function manilaDateOnly_(date) {
-  const [y, m, d] = Utilities.formatDate(date, TIMEZONE, 'yyyy-MM-dd').split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
-
-/** Sat/Sun in Manila — no PH holiday calendar (confirmed out of scope). */
-function isWeekend_(date) {
-  const day = manilaDateOnly_(date).getDay(); // 0=Sun..6=Sat
-  return day === 0 || day === 6;
-}
-
-/** Next Mon-Fri date strictly after `date` (`date` itself is assumed already a manilaDateOnly_ value). */
-function nextBusinessDay_(date) {
-  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
-  while (isWeekend_(next)) next.setDate(next.getDate() + 1);
-  return next;
-}
-
-/** 23:59:59.999 instant for a Manila calendar date. */
-function endOfManilaDay_(date) {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
-}
-
-/**
- * Reads RAW_<teamKey>_<year> for every calendar year [startDate,endDate] spans (both
- * 'yyyy-MM-dd' strings), merged into one array. Skips a tab that doesn't exist yet
- * (e.g. a future year not yet created by getOrCreateRawTab_) rather than throwing.
- */
-function getRawRowsForYears_(teamKey, startDate, endDate) {
-  const startYear = Number(startDate.slice(0, 4));
-  const endYear = Number(endDate.slice(0, 4));
-  const ss = getJiraDataSpreadsheet_();
-  let rows = [];
-  for (let year = startYear; year <= endYear; year++) {
-    const sheet = ss.getSheetByName(`RAW_${teamKey}_${year}`);
-    if (!sheet) continue;
-    rows = rows.concat(sheetToObjectsCached_(sheet));
-  }
-  return rows;
-}
 
 /** Every RAW_<teamKey>_<year> tab that actually exists, regardless of a requested period's range. */
 function getAllRawYearsForTeam_(teamKey) {

@@ -57,20 +57,6 @@ export const LANE_META: Record<
 };
 
 /**
- * The label to show for a lane.
- *
- * Returns the PLAIN name only. Anywhere the lane can be rendered as markup — a board heading —
- * use <Copy serious={meta.label} playful={meta.playful} /> instead, so the register follows the
- * theme with no client JS. This exists for the places that need a bare string: `<option>` text,
- * aria-labels, titles. Which is also the right call on the merits — a dropdown is where you go
- * when you need to be sure what you are picking, and "Grounded" in a select next to a task you
- * are trying to file is a riddle. Space vocabulary belongs on headings, not on controls.
- */
-export function laneLabel(lane: TaskLane): string {
-  return LANE_META[lane].label;
-}
-
-/**
  * Gaby View's names for the board's own sections — the ones that are not lanes.
  *
  * Applied where the metaphor genuinely describes the thing, and nowhere else. "Mission Complete"
@@ -147,7 +133,14 @@ export const QUADRANT_META: Record<
     urgent: boolean;
     important: boolean;
     tone: "danger" | "success" | "warning" | "neutral";
-    /** Left border on the cell, and the dot on a row's chip. */
+    /**
+     * `background-color` class for the cell's left accent bar (an absolutely positioned overlay
+     * span, not a `border-l-*` utility on the `.card` itself). `[data-theme="adhd"] .card` sets
+     * `border-color` as an unlayered rule in globals.css, which beats any Tailwind border utility
+     * regardless of specificity — a `border-l-*` accent silently disappears the moment Gaby View
+     * is active. `background-color` on a small overlay isn't touched by that rule, so this is the
+     * same technique as HealthDot.tsx's `healthAccentBg`.
+     */
     accent: string;
     dot: string;
     text: string;
@@ -166,7 +159,7 @@ export const QUADRANT_META: Record<
     urgent: true,
     important: true,
     tone: "danger",
-    accent: "border-l-red-400",
+    accent: "bg-red-400",
     dot: "bg-red-500",
     text: "text-red-700",
   },
@@ -183,7 +176,7 @@ export const QUADRANT_META: Record<
     urgent: false,
     important: true,
     tone: "success",
-    accent: "border-l-sprout-400",
+    accent: "bg-sprout-400",
     dot: "bg-sprout-500",
     text: "text-sprout-700",
   },
@@ -200,7 +193,7 @@ export const QUADRANT_META: Record<
     urgent: true,
     important: false,
     tone: "warning",
-    accent: "border-l-amber-400",
+    accent: "bg-amber-400",
     dot: "bg-amber-500",
     text: "text-amber-700",
   },
@@ -217,7 +210,7 @@ export const QUADRANT_META: Record<
     urgent: false,
     important: false,
     tone: "neutral",
-    accent: "border-l-neutral-300",
+    accent: "bg-neutral-300",
     dot: "bg-neutral-400",
     text: "text-neutral-600",
   },
@@ -247,11 +240,6 @@ export function triageFor(quadrant: Quadrant | null): Triage {
   if (!quadrant) return { urgent: null, important: null };
   const meta = QUADRANT_META[quadrant];
   return { urgent: meta.urgent, important: meta.important };
-}
-
-/** Short label for a chip: the verb, or "Unsorted". */
-export function quadrantLabel(quadrant: Quadrant | null): string {
-  return quadrant ? QUADRANT_META[quadrant].verb : "Unsorted";
 }
 
 /**

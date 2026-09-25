@@ -128,7 +128,7 @@ async function getBaselineTicketsPerAvailableDay(teamKey: string, currentStartDa
 type LeaveListResult = { records: LeaveRecord[] };
 
 async function fetchLeaveDaysByEmployee(teamKey: string, startDate: string, endDate: string): Promise<Map<string, number>> {
-  const result = await fetchGas<LeaveListResult>("leave", { team: teamKey, startDate, endDate }, { next: { revalidate: 300 } }).catch(
+  const result = await fetchGas<LeaveListResult>("leave", { team: teamKey, startDate, endDate }, { revalidate: 300 }).catch(
     () => ({ records: [] as LeaveRecord[] })
   );
   const map = new Map<string, number>();
@@ -541,7 +541,7 @@ export async function getCapacityTrend(): Promise<CapacityTrend> {
 
   const [resolvedRows, leaveResult, roster, assigneeResults] = await Promise.all([
     fetchResolvedInWindow(teamKeys, windowStart, windowEnd),
-    fetchGas<LeaveListResult>("leave", { startDate: windowStart, endDate: windowEnd }, { next: { revalidate: 300 } }).catch(
+    fetchGas<LeaveListResult>("leave", { startDate: windowStart, endDate: windowEnd }, { revalidate: 300 }).catch(
       () => ({ records: [] as LeaveRecord[] })
     ),
     getRoster().catch(() => [] as RosterMember[]),

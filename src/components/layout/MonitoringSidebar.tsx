@@ -28,7 +28,7 @@ export function MonitoringSidebar() {
               href={item.href}
               className={cn(
                 "px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors",
-                active ? "bg-sprout-50 text-sprout-700" : "text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900"
+                active ? "row-active text-sprout-700" : "text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900"
               )}
             >
               {item.label}

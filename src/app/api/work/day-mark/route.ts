@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
-import { handle } from "@/lib/work-route";
+import { handle, ValidationError } from "@/lib/work-route";
 import { setDayMark } from "@/lib/work-store";
 import { DAY_TYPES, type DayType } from "@/lib/work";
 
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
   return handle(async (email) => {
     const workDate = String(body.work_date ?? "").trim();
     const bad = invalidDate(workDate);
-    if (bad) throw new Error(bad);
+    if (bad) throw new ValidationError(bad);
 
     const raw = body.day_type;
     // null and "" both mean "clear it" — the UI sends "" from a <select>, null from a toggle off.
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
         : DAY_TYPES.includes(String(raw) as DayType)
           ? (String(raw) as DayType)
           : (() => {
-              throw new Error(`Invalid day type: ${String(raw)}`);
+              throw new ValidationError(`Invalid day type: ${String(raw)}`);
             })();
 
     const mark = await setDayMark(email, workDate, dayType, (body.note as string) ?? null);
