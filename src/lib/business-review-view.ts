@@ -1,5 +1,5 @@
 import type { Theme } from "@/lib/theme";
-import { topDriver, type DriverRow, type DriverVerdict } from "@/lib/business-review-drivers";
+import { topDriver, type DriverRow, type DriverVerdict, type MixShiftFlag } from "@/lib/business-review-drivers";
 
 /**
  * Theme-aware, DATA-DEPENDENT copy for Business Review Prep's per-metric insight sentences.
@@ -36,7 +36,8 @@ export function buildInsightSentence(
   isNew: boolean,
   driverRows: DriverRow[],
   verdict: DriverVerdict,
-  theme: Theme
+  theme: Theme,
+  mixShift?: MixShiftFlag | null
 ): string {
   const gaby = theme === "adhd";
   const pctText = formatPct(pctDiff);
@@ -63,6 +64,14 @@ export function buildInsightSentence(
       ? `🛰️ ${metricLabel} ${direction} ${pctText}. ${driver.key} looks like a contributor (${driver.change > 0 ? "+" : ""}${driver.change}), but it's not sitting alone at the top.`
       : `${metricLabel} ${direction} ${pctText}. ${driver.key} is a possible contributor (${driver.change > 0 ? "+" : ""}${driver.change}), though causality isn't conclusively established.`;
   }
+  if (mixShift) {
+    const pct = Math.round(Math.abs(mixShift.pctOfTotalChange ?? 0) * 1000) / 10;
+    const towardSlower = mixShift.deltaValue > 0;
+    return gaby
+      ? `🌊 ${metricLabel} ${direction} ${pctText}, but no single category got slower or faster on its own — looks like a shift in which kinds of tickets came through (toward ${towardSlower ? "slower-to-resolve" : "faster-to-resolve"} work), accounting for roughly ${pct}% of the change.`
+      : `${metricLabel} ${direction} ${pctText}. No individual category's own pace changed enough to explain it — roughly ${pct}% of the change traces to a shift in ticket mix toward ${towardSlower ? "slower-to-resolve" : "faster-to-resolve"} work, not any category getting faster or slower.`;
+  }
+
   return gaby
     ? `🤷 ${metricLabel} ${direction} ${pctText}, but nothing in the data points clearly at why — cause not determined from available data.`
     : `${metricLabel} ${direction} ${pctText}. Cause not determined from available data.`;

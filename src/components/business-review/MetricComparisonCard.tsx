@@ -55,6 +55,7 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
             driverRows: metric.driverBreakdown,
             verdict: metric.driverVerdict,
             theme,
+            mixShift: metric.mixShift,
           },
         }),
       });
@@ -145,6 +146,12 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
             <DriverBreakdownTable rows={metric.driverBreakdown} dimensionLabel={metric.driverDimensionLabel ?? "Dimension"} />
           ) : (
             <p className="text-sm text-neutral-400 py-2">No driver breakdown is computed for this metric yet.</p>
+          )}
+          {metric.mixShift && (
+            <p className="text-xs text-neutral-400 mt-2">
+              No single {(metric.driverDimensionLabel ?? "category").toLowerCase()} explains this on its own — roughly{" "}
+              {Math.round(Math.abs(metric.mixShift.pctOfTotalChange ?? 0) * 1000) / 10}% traces to a shift in the mix instead.
+            </p>
           )}
 
           <div className="mt-4 text-xs text-neutral-400 space-y-0.5">

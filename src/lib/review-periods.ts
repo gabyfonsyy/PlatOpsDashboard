@@ -1,12 +1,14 @@
 import { manilaDateOnlyUtc } from "@/lib/manila-date";
 
 /**
- * Period math for Business Review Prep ONLY. Deliberately separate from lib/date-ranges.ts (the
- * sitewide ISO Mon-Sun week / calendar-label system every other page's `range`/`period` filter
- * uses) — the weekly boundary here is Monday-to-Friday (a 5-day workweek, changed from an
- * original Thursday-to-Wednesday spec 2026-09-18, before this feature shipped), an incompatible
- * convention either way, and mixing the two would silently corrupt whichever page read the
- * other's label.
+ * Period math for Business Review Prep ONLY. The weekly boundary here now matches the sitewide
+ * ISO Mon-Sun week from lib/date-ranges.ts (changed 2026-09-25 from a separate Monday-to-Friday
+ * workweek, itself changed from an original Thursday-to-Wednesday spec 2026-09-18) — a "week" now
+ * means the same seven days everywhere in the app. What's still unique to this file: for weekly
+ * mode, "current" is week-to-date, including a week still in progress (rule changed 2026-09-25 —
+ * a WBR run on e.g. a Friday needs to talk about the week that just happened, not a week-old
+ * complete period). Monthly/quarterly modes keep the older "last COMPLETED period" rule; they
+ * never show an in-progress period. See getWeeklyReviewPeriod / getReviewPeriodFromStart.
  *
  * "Today" is always the Asia/Manila calendar day (lib/manila-date.ts's fixed +8h-offset
  * convention, no DST in PH) so a review period never straddles the day boundary differently for
@@ -40,29 +42,23 @@ export function manilaTodayIso(): string {
 }
 
 /**
- * Weekly reporting period: Monday through Friday of one workweek (changed 2026-09-18 from an
- * original Thursday-to-Wednesday spec). Finds the most recent Friday on/before `anchorIso` — if
- * `anchorIso` itself falls Sat-Thu (i.e. this week's Friday hasn't happened yet), the "current"
- * period is the most recently COMPLETED Mon-Fri week, never a still-in-progress one (rule: never
- * compare against an incomplete period).
+ * Weekly reporting period: the ISO Mon-Sun week containing `anchorIso`, same week boundary as
+ * lib/date-ranges.ts uses everywhere else. "Current" is week-to-date — from that week's Monday
+ * through `anchorIso` itself — even when the week isn't over yet (rule changed 2026-09-25: a WBR
+ * run mid-week, e.g. a Friday, needs to talk about the week that just happened, not fall back to
+ * a week-old complete period). "Previous" is always the full prior Mon-Sun week. See
+ * getReviewPeriodFromStart, which does the actual current/previous computation this delegates to.
  *
- * Example: anchor 2026-09-18 (a Friday) -> that Friday itself is the most recent Fri on/before it
- * -> current = Sep 14-18 (Mon-Fri), previous = Sep 7-11.
+ * Example: anchor 2026-09-25 (a Friday) -> current = Sep 21-25 (this week's Monday through today,
+ * still in progress) -> previous = Sep 14-20 (the full prior Mon-Sun week).
  */
 export function getWeeklyReviewPeriod(anchorIso: string = manilaTodayIso()): ReviewPeriodPair {
   const [y, m, d] = anchorIso.split("-").map(Number);
   const anchor = new Date(Date.UTC(y, m - 1, d));
   const dayOfWeek = anchor.getUTCDay(); // 0=Sun..6=Sat
-  const daysSinceFriday = (dayOfWeek - 5 + 7) % 7; // Fri=5
-  const currentEnd = addDaysUtc(anchorIso, -daysSinceFriday);
-  const currentStart = addDaysUtc(currentEnd, -4);
-  const previousEnd = addDaysUtc(currentStart, -3);
-  const previousStart = addDaysUtc(previousEnd, -4);
-  return {
-    mode: "weekly",
-    current: { start: currentStart, end: currentEnd },
-    previous: { start: previousStart, end: previousEnd },
-  };
+  const daysSinceMonday = (dayOfWeek + 6) % 7; // Mon=0..Sun=6
+  const mondayIso = addDaysUtc(anchorIso, -daysSinceMonday);
+  return getReviewPeriodFromStart("weekly", mondayIso, anchorIso);
 }
 
 function monthRange(year: number, month0: number): ReviewDateRange {
@@ -125,12 +121,21 @@ export function getReviewPeriod(mode: ReviewMode, anchorIso: string = manilaToda
  * an anchor function would land one period too early (a bug caught while wiring up
  * lib/business-review.ts: passing a Monday as "today" to getWeeklyReviewPeriod computes the
  * PRECEDING Fri-ending week, not the week that Monday starts).
+ *
+ * `todayIso` truncates a weekly period's end to itself when `currentStart`'s week has started but
+ * isn't over yet — same week-to-date rule as getWeeklyReviewPeriod, applied here too so navigating
+ * (Previous/Next, or a direct `?period=` link) onto today's own week still shows live data instead
+ * of days that haven't happened. A `currentStart` still entirely in the future (reachable by
+ * clicking "Next" past today — that button has no upper bound) is left as a full untruncated week
+ * instead: truncating it to `todayIso` would put the end before the start. Monthly/quarterly
+ * ignore `todayIso` entirely: those modes never show an in-progress period, by design.
  */
-export function getReviewPeriodFromStart(mode: ReviewMode, currentStart: string): ReviewPeriodPair {
+export function getReviewPeriodFromStart(mode: ReviewMode, currentStart: string, todayIso: string = manilaTodayIso()): ReviewPeriodPair {
   if (mode === "weekly") {
-    const currentEnd = addDaysUtc(currentStart, 4);
-    const previousEnd = addDaysUtc(currentStart, -3);
-    const previousStart = addDaysUtc(previousEnd, -4);
+    const fullEnd = addDaysUtc(currentStart, 6);
+    const currentEnd = currentStart <= todayIso && fullEnd > todayIso ? todayIso : fullEnd;
+    const previousEnd = addDaysUtc(currentStart, -1);
+    const previousStart = addDaysUtc(previousEnd, -6);
     return { mode, current: { start: currentStart, end: currentEnd }, previous: { start: previousStart, end: previousEnd } };
   }
   if (mode === "monthly") {

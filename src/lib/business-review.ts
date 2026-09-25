@@ -5,8 +5,18 @@ import { getAutomatedTicketsReport } from "@/lib/automated-tickets";
 import { getFcrReport } from "@/lib/ticket-breakdowns";
 import { getBacklogAgingReport, type BacklogAgingTicket } from "@/lib/backlog-aging";
 import { getTicketVolumeBreakdown } from "@/lib/ticket-volume-breakdown";
-import { getEndToEndCycleTimeAverage } from "@/lib/business-review-cycle-time";
-import { compareBreakdowns, classifyDriver, detectAnomaly, type DriverRow, type DriverVerdict, type AnomalyResult } from "@/lib/business-review-drivers";
+import { getEndToEndCycleTimeAverage, getEndToEndCycleTimeByIssueType } from "@/lib/business-review-cycle-time";
+import { getSpanAveragesByIssueType, type SpanByIssueTypeRow } from "@/lib/lead-cycle-time";
+import {
+  compareBreakdowns,
+  classifyDriver,
+  buildDurationDriver,
+  detectAnomaly,
+  type DriverRow,
+  type DriverVerdict,
+  type AnomalyResult,
+  type MixShiftFlag,
+} from "@/lib/business-review-drivers";
 import { buildInsightSentence } from "@/lib/business-review-view";
 import {
   getReviewPeriod,
@@ -56,6 +66,11 @@ export type MetricComparison = {
   driverDimensionLabel: string | null;
   driverBreakdown: DriverRow[];
   driverVerdict: DriverVerdict;
+  /** Set only for a duration driver (Lead/Cycle Time) when no single category's own pace explains
+   * the change but a shift in ticket mix (toward inherently slower/faster categories) explains a
+   * notable share of it — see buildDurationDriver in lib/business-review-drivers.ts. Null for every
+   * count/rate-based metric, and null whenever mix shift isn't the dominant unexplained factor. */
+  mixShift: MixShiftFlag | null;
   anomaly: AnomalyResult | null;
   insight: string;
   /** "ai" only when a cached AI narrative was found; the page never calls the model itself.
@@ -165,7 +180,7 @@ function buildDriver(
  * finds it here and never calls the model again for it.
  */
 async function narrativeFor(facts: NarrativeFacts, email: string | null): Promise<{ text: string; source: "ai" | "deterministic" }> {
-  const fallback = buildInsightSentence(facts.metricLabel, facts.pctDiff, facts.isNew, facts.driverRows, facts.verdict, facts.theme as Theme);
+  const fallback = buildInsightSentence(facts.metricLabel, facts.pctDiff, facts.isNew, facts.driverRows, facts.verdict, facts.theme as Theme, facts.mixShift);
   if (!email) return { text: fallback, source: "deterministic" };
 
   try {
@@ -185,11 +200,29 @@ type MetricSpec = {
   current: number | null;
   previous: number | null;
   history: number[];
-  driver: { rows: DriverRow[]; verdict: DriverVerdict; dimensionLabel: string } | null;
+  driver: { rows: DriverRow[]; verdict: DriverVerdict; dimensionLabel: string; mixShift?: MixShiftFlag | null } | null;
   source: string;
   calculation: string;
   recordCount: number;
 };
+
+/**
+ * Duration-driver rows are computed in minutes (basisFor's native unit) but every duration metric
+ * on this page displays in days (minutesToDays) — converts a Lead/Cycle Time by-issue-type
+ * breakdown into buildDurationDriver's input shape in that same display unit, so the driver table's
+ * Previous/Current/Change match the headline card exactly rather than needing their own conversion.
+ */
+function toDurationDriverRows(rows: SpanByIssueTypeRow[] | { issueType: string; count: number; avgMinutes: number }[]) {
+  return rows.map((r) => ({ key: r.issueType, count: r.count, avgValue: minutesToDays(r.avgMinutes) ?? 0 }));
+}
+
+function buildDurationSpecDriver(
+  previousRows: { issueType: string; count: number; avgMinutes: number }[],
+  currentRows: { issueType: string; count: number; avgMinutes: number }[]
+) {
+  const { rows, verdict, mixShift } = buildDurationDriver(toDurationDriverRows(previousRows), toDurationDriverRows(currentRows));
+  return { rows, verdict, mixShift, dimensionLabel: "Issue Type" };
+}
 
 async function buildComparison(spec: MetricSpec, theme: Theme, email: string | null): Promise<MetricComparison> {
   const current = spec.current ?? 0;
@@ -198,6 +231,7 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
   const anomaly = spec.history.length ? detectAnomaly(current, spec.history) : null;
   const driverRows = spec.driver?.rows ?? [];
   const driverVerdict = spec.driver?.verdict ?? "none";
+  const mixShift = spec.driver?.mixShift ?? null;
 
   const { text: insight, source: insightSource } = await narrativeFor(
     {
@@ -209,6 +243,7 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
       driverRows,
       verdict: driverVerdict,
       theme,
+      mixShift,
     },
     email
   );
@@ -226,6 +261,7 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
     driverDimensionLabel: spec.driver?.dimensionLabel ?? null,
     driverBreakdown: driverRows,
     driverVerdict,
+    mixShift,
     anomaly,
     insight,
     insightSource,
@@ -262,14 +298,19 @@ export async function getBusinessReview(
 
   const isSe = teamLabel === "SE";
 
-  // All four waves are independent of each other's results (none reads another wave's output to
+  // All five waves are independent of each other's results (none reads another wave's output to
   // build its own request), so they're fired together in ONE outer Promise.all — each inner
   // Promise.all/call still starts immediately, rather than running one after another. This was a
   // real, measured contributor to the page's slow load: several sequential round-trips instead of
   // one concurrent one. (Checklist/talking points don't need metrics to be READ — only the later
   // seed step, which needs keyChanges, does.)
-  const [[currentTM, previousTM, ...priorTMs], [currentVolByType, previousVolByType, currentAging, previousAging], seReports, personalState] =
-    await Promise.all([
+  const [
+    [currentTM, previousTM, ...priorTMs],
+    [currentVolByType, previousVolByType, currentAging, previousAging],
+    seReports,
+    personalState,
+    [leadByTypeCurrent, leadByTypePrevious, cycleByTypeCurrent, cycleByTypePrevious],
+  ] = await Promise.all([
       Promise.all([
         getTicketMetrics(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
         getTicketMetrics(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
@@ -295,6 +336,20 @@ export async function getBusinessReview(
           ])
         : Promise.resolve(null),
       email ? Promise.all([getChecklistState(email, key), getTalkingPoints(email, key)]) : Promise.resolve(null),
+      // Lead Time's by-issue-type driver breakdown applies identically to every team. Cycle Time's
+      // does not: SE's Cycle Time headline (below) deliberately uses a different, narrower span
+      // definition than lead-cycle-time.ts's basisFor (see getEndToEndCycleTimeByIssueType's doc
+      // comment), so its driver breakdown must be fetched the same way or the two would disagree.
+      Promise.all([
+        getSpanAveragesByIssueType(team.team_key, "lead", team.has_peer_review_tracking, resolvedCurrent.start, resolvedCurrent.end),
+        getSpanAveragesByIssueType(team.team_key, "lead", team.has_peer_review_tracking, resolvedPrevious.start, resolvedPrevious.end),
+        isSe
+          ? getEndToEndCycleTimeByIssueType(team.team_key, resolvedCurrent.start, resolvedCurrent.end)
+          : getSpanAveragesByIssueType(team.team_key, "cycle", team.has_peer_review_tracking, resolvedCurrent.start, resolvedCurrent.end),
+        isSe
+          ? getEndToEndCycleTimeByIssueType(team.team_key, resolvedPrevious.start, resolvedPrevious.end)
+          : getSpanAveragesByIssueType(team.team_key, "cycle", team.has_peer_review_tracking, resolvedPrevious.start, resolvedPrevious.end),
+      ]),
     ]);
 
   const specs: MetricSpec[] = [
@@ -311,7 +366,7 @@ export async function getBusinessReview(
       key: "lead_time", label: "Lead Time", unit: "days",
       current: minutesToDays(currentTM.leadTimeAvgMinutes), previous: minutesToDays(previousTM.leadTimeAvgMinutes),
       history: priorTMs.map((m) => minutesToDays(m.leadTimeAvgMinutes)).filter((n): n is number => n !== null),
-      driver: null,
+      driver: buildDurationSpecDriver(leadByTypePrevious, leadByTypeCurrent),
       source: "Supabase tickets (live span average)",
       calculation: "Average days from ticket creation to resolution, for tickets resolved in the period.",
       recordCount: currentTM.ticketsResolvedInPeriod,
@@ -320,7 +375,10 @@ export async function getBusinessReview(
       key: "cycle_time", label: "Cycle Time", unit: "days",
       current: minutesToDays(currentTM.cycleTimeAvgMinutes), previous: minutesToDays(previousTM.cycleTimeAvgMinutes),
       history: priorTMs.map((m) => minutesToDays(m.cycleTimeAvgMinutes)).filter((n): n is number => n !== null),
-      driver: null,
+      // For SE this is overwritten below with the end-to-end values, but NOT the driver — it's
+      // already built from the same cycleByType source getEndToEndCycleTimeByIssueType provides,
+      // which matches the end-to-end definition SE's override uses.
+      driver: buildDurationSpecDriver(cycleByTypePrevious, cycleByTypeCurrent),
       source: "Supabase tickets (live span average)",
       calculation: "Average days of active work time, for tickets resolved in the period.",
       recordCount: currentTM.ticketsResolvedInPeriod,

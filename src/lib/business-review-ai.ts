@@ -1,4 +1,4 @@
-import type { DriverRow, DriverVerdict } from "@/lib/business-review-drivers";
+import type { DriverRow, DriverVerdict, MixShiftFlag } from "@/lib/business-review-drivers";
 
 /**
  * Prompt-building for Business Review Prep's AI-authored explanation prose. Mirrors
@@ -14,7 +14,8 @@ export const NARRATIVE_SYSTEM_PROMPT = [
   "",
   "HARD RULES:",
   "- Use ONLY the numbers and dimension names given in the facts below. Never invent a cause, a number, a percentage, a team, or a dimension not present in the input.",
-  "- Never contradict the given verdict (confirmed / possible / none). If verdict is \"none\", say plainly that no clear driver was found — do not speculate a cause to fill the sentence.",
+  "- Never contradict the given verdict (confirmed / possible / none). If verdict is \"none\" and no mix-shift fact is given, say plainly that no clear driver was found — do not speculate a cause to fill the sentence.",
+  "- If a mix-shift fact IS given, that means no single category's own pace explains the change, but a shift in which categories the volume falls into does, for roughly the given % of the change. Say that plainly instead of naming any one category as the driver.",
   "- 1-3 sentences. Plain business language, specific over generic.",
   "- Respond with a JSON object only: {\"narrative\": \"...\"}.",
 ].join("\n");
@@ -29,6 +30,9 @@ export type NarrativeFacts = {
   verdict: DriverVerdict;
   /** "adhd" gets the Gaby-View voice via lib/ai-voice.ts's voiceForTheme; anything else is Standard. */
   theme: string;
+  /** Duration metrics (Lead/Cycle Time) only — see buildDurationDriver's doc comment. Null/undefined
+   * for every count/rate-based metric, and whenever mix shift isn't the dominant unexplained factor. */
+  mixShift?: MixShiftFlag | null;
 };
 
 /**
@@ -41,10 +45,10 @@ export type NarrativeFacts = {
  */
 export const NARRATIVE_CACHE_CONTEXT = "business_review_narrative";
 
-export function narrativeCacheKey(facts: Pick<NarrativeFacts, "metricLabel" | "current" | "previous" | "driverRows" | "verdict" | "theme">) {
+export function narrativeCacheKey(facts: Pick<NarrativeFacts, "metricLabel" | "current" | "previous" | "driverRows" | "verdict" | "theme" | "mixShift">) {
   return {
     entityId: facts.metricLabel,
-    version: JSON.stringify({ c: facts.current, p: facts.previous, d: facts.driverRows, v: facts.verdict, t: facts.theme }),
+    version: JSON.stringify({ c: facts.current, p: facts.previous, d: facts.driverRows, v: facts.verdict, t: facts.theme, m: facts.mixShift ?? null }),
   };
 }
 
@@ -64,6 +68,9 @@ export function buildNarrativePrompt(facts: NarrativeFacts): string {
     `- Driver verdict: ${facts.verdict}`,
     "- Top driver rows (dimension: previous -> current, change, contribution to total change):",
     topDrivers || "  (none)",
+    facts.mixShift
+      ? `- Mix shift: no single category's own pace explains the change; a shift in ticket mix accounts for roughly ${Math.round(Math.abs(facts.mixShift.pctOfTotalChange ?? 0) * 1000) / 10}% of it.`
+      : "",
     "",
     "Write the narrative now, following the HARD RULES exactly.",
   ].join("\n");

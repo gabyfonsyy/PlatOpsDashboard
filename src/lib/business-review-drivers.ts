@@ -110,6 +110,99 @@ export function classifyDriver(rows: DriverRow[]): DriverVerdict {
   return "possible";
 }
 
+export type DurationByKeyRow = { key: string; count: number; avgValue: number };
+
+export type MixShiftFlag = { deltaValue: number; pctOfTotalChange: number | null };
+
+/** Below this share of the total change, a mix shift isn't worth calling out on its own. */
+const MIX_SHIFT_NOTABLE_THRESHOLD = 0.3;
+
+/**
+ * Driver rows for a metric that IS an average (Lead Time, Cycle Time) rather than a count/rate
+ * over a population. compareBreakdowns' plain count-diff contribution doesn't apply here: it works
+ * for Ticket Volume et al. because a category's own COUNT literally sums to the total, so "share of
+ * the total count change" is a sound number. Per-category AVERAGES don't sum to the overall average
+ * at all — the overall figure is a volume-weighted mix of them, and it can move because a category's
+ * own typical duration changed, because the ticket MIX shifted toward inherently slower/faster
+ * categories, or both at once.
+ *
+ * Decomposes the overall average's change into, per key present in BOTH periods, a "within" effect:
+ * how much the average moved because that key's own typical value changed, weighted by its CURRENT
+ * share of volume (so the number reflects today's mix of work, not a period-old one). A key present
+ * in only one period has no baseline to attribute a pace CHANGE to, so it contributes nothing to any
+ * row here — its volume shift is real, but it belongs to the mix effect below, not to a claim about
+ * that key getting faster or slower.
+ *
+ * Whatever the within effects don't explain (residual = total change − sum of within effects) is
+ * mix shift: the ticket composition itself moving toward slower- or faster-to-resolve categories.
+ * It's returned separately and never folded into the ranked candidate rows, so "key X's own pace
+ * changed" is never confused with "the ticket mix shifted" — the exact conflation buildDriver in
+ * lib/business-review.ts already guards against for count-based metrics (see its own doc comment).
+ */
+export function buildDurationDriver(
+  previousRows: DurationByKeyRow[],
+  currentRows: DurationByKeyRow[]
+): { rows: DriverRow[]; verdict: DriverVerdict; mixShift: MixShiftFlag | null } {
+  const totalCountCurr = currentRows.reduce((s, r) => s + r.count, 0);
+  const totalCountPrev = previousRows.reduce((s, r) => s + r.count, 0);
+  if (!totalCountCurr || !totalCountPrev) return { rows: [], verdict: "none", mixShift: null };
+
+  const overallPrev = previousRows.reduce((s, r) => s + r.avgValue * r.count, 0) / totalCountPrev;
+  const overallCurr = currentRows.reduce((s, r) => s + r.avgValue * r.count, 0) / totalCountCurr;
+  const totalChange = overallCurr - overallPrev;
+
+  const prevByKey = new Map(previousRows.map((r) => [r.key, r]));
+  const currByKey = new Map(currentRows.map((r) => [r.key, r]));
+
+  const withinRows: DriverRow[] = [];
+  let withinSum = 0;
+  for (const [key, curr] of Array.from(currByKey)) {
+    const prev = prevByKey.get(key);
+    if (!prev) continue; // no baseline for this key — its volume shift belongs to mixShift, not a row
+    const within = (curr.count / totalCountCurr) * (curr.avgValue - prev.avgValue);
+    withinSum += within;
+    withinRows.push({
+      key,
+      previous: prev.avgValue,
+      current: curr.avgValue,
+      change: round4(curr.avgValue - prev.avgValue),
+      contribution: totalChange ? round4(within / totalChange) : null,
+    });
+  }
+  withinRows.sort((a, b) => Math.abs(b.contribution ?? 0) - Math.abs(a.contribution ?? 0));
+
+  // Same top-N + "Other" convention as compareBreakdowns, so the table never grows unbounded and
+  // classifyDriver (which excludes "Other" from consideration) behaves identically either way.
+  let rows = withinRows;
+  if (withinRows.length > TOP_DRIVER_LIMIT) {
+    const top = withinRows.slice(0, TOP_DRIVER_LIMIT);
+    const rest = withinRows.slice(TOP_DRIVER_LIMIT);
+    const restCountPrev = rest.reduce((s, r) => s + (prevByKey.get(r.key)?.count ?? 0), 0);
+    const restCountCurr = rest.reduce((s, r) => s + (currByKey.get(r.key)?.count ?? 0), 0);
+    const restPrevAvg = restCountPrev ? rest.reduce((s, r) => s + r.previous * (prevByKey.get(r.key)?.count ?? 0), 0) / restCountPrev : 0;
+    const restCurrAvg = restCountCurr ? rest.reduce((s, r) => s + r.current * (currByKey.get(r.key)?.count ?? 0), 0) / restCountCurr : 0;
+    top.push({
+      key: "Other",
+      previous: round4(restPrevAvg),
+      current: round4(restCurrAvg),
+      change: round4(restCurrAvg - restPrevAvg),
+      contribution: round4(rest.reduce((s, r) => s + (r.contribution ?? 0), 0)),
+    });
+    rows = top;
+  }
+
+  const verdict = classifyDriver(rows);
+
+  const mixShiftDelta = totalChange - withinSum;
+  const mixShiftPct = totalChange ? mixShiftDelta / totalChange : null;
+  const mixShift =
+    mixShiftPct !== null && Math.abs(mixShiftPct) >= MIX_SHIFT_NOTABLE_THRESHOLD
+      ? { deltaValue: round4(mixShiftDelta), pctOfTotalChange: round4(mixShiftPct) }
+      : null;
+
+  return { rows, verdict, mixShift };
+}
+
 export type AnomalyResult = { flagged: boolean; zScore: number };
 
 const MIN_HISTORY_FOR_ANOMALY = 4;

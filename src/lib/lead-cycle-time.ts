@@ -296,6 +296,45 @@ export function basisFor(metric: LeadCycleTimeMetric, hasPeerReviewTracking: boo
   };
 }
 
+export type SpanByIssueTypeRow = { issueType: string; count: number; avgMinutes: number };
+
+/**
+ * Lead/Cycle Time averages grouped by issue type — for Business Review Prep's duration driver
+ * (buildDurationDriver in lib/business-review-drivers.ts). Same span definition (basisFor) and
+ * fetch path (fetchTicketsInRange, which includes issue_type) as the deep-dive breakdowns below,
+ * just aggregated to one row per issue type instead of every drill-down cut.
+ *
+ * NOT used for SE Cycle Time — lib/business-review-cycle-time.ts owns that definition separately
+ * (a plain cycle_time_start -> cycle_time_end span, deliberately excluding peer-review wait time;
+ * see that file's own doc comment for why it's kept out of this one).
+ */
+export async function getSpanAveragesByIssueType(
+  teamKey: string,
+  metric: LeadCycleTimeMetric,
+  hasPeerReviewTracking: boolean,
+  startDate: string,
+  endDate: string
+): Promise<SpanByIssueTypeRow[]> {
+  const basis = basisFor(metric, hasPeerReviewTracking);
+  const rows = await fetchTicketsInRange(teamKey, basis.dateColumn, startDate, endDate);
+  const byType = new Map<string, number[]>();
+  for (const r of rows) {
+    if (isExcludedIssueType(teamKey, r.issue_type)) continue;
+    const bucket = toManilaDateString(basis.endedAt(r));
+    if (!bucket || bucket < startDate || bucket > endDate) continue;
+    const minutes = basis.duration(r);
+    if (minutes === null || !isFinite(minutes)) continue;
+    const type = r.issue_type || "(none)";
+    if (!byType.has(type)) byType.set(type, []);
+    byType.get(type)!.push(minutes);
+  }
+  return Array.from(byType.entries()).map(([issueType, values]) => ({
+    issueType,
+    count: values.length,
+    avgMinutes: round2(values.reduce((s, v) => s + v, 0) / values.length),
+  }));
+}
+
 /** Same coarse-UTC-prefilter + exact-Manila-day-check split as lib/backlog-aging.ts. */
 async function fetchTicketsInRange(
   teamKey: string,
