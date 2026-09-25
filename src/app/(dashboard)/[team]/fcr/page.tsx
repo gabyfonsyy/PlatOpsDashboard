@@ -5,6 +5,7 @@ import { getTeamByKey } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { getFcrReport } from "@/lib/ticket-breakdowns";
 import { resolveFilters } from "@/lib/date-ranges";
+import { getKpiBaselines, baselineTrend } from "@/lib/kpi-baselines";
 import { formatPercent, formatNumber } from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
@@ -22,7 +23,10 @@ export default async function FcrPage({
   if (!team.has_fcr_escalation) notFound();
 
   const { range, period, issueType } = resolveFilters(searchParams);
-  const report = await getFcrReport(team.team_key, range, period, issueType);
+  const [report, baselines] = await Promise.all([
+    getFcrReport(team.team_key, range, period, issueType),
+    getKpiBaselines(team.team_key),
+  ]);
 
   const issueTypes = team.issue_types_csv
     ? team.issue_types_csv.split(",").map((s) => s.trim()).filter(Boolean)
@@ -54,6 +58,7 @@ export default async function FcrPage({
           value={formatPercent(report.fcrRate)}
           sublabel={`${formatNumber(report.fcrYesTickets)} of ${formatNumber(report.resolvedInPeriod)} resolved`}
           tooltip="Tickets marked First Contact Resolution = Yes, divided by tickets resolved in the period. Same definition as the scorecard."
+          trend={baselineTrend(report.fcrRate, baselines.fcr_rate, { lowerIsBetter: false, formatValue: (v) => formatPercent(v) })}
         />
         <MetricCard
           label="Resolved by SE"

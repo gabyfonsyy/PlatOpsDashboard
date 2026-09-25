@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type { BacklogAgingDeepDiveReport } from "@/lib/backlog-aging";
+import type { KpiBaselineRow } from "@/lib/kpi-baselines";
+import { baselineLine } from "@/lib/kpi-baselines";
 import { useTheme } from "@/components/theme/ThemeProvider";
 import { backlogAgingCopy } from "@/lib/backlog-aging-view";
 import { MetricCard } from "@/components/dashboard/MetricCard";
@@ -66,9 +68,13 @@ function ratePtsDelta(deltaPts: number | null) {
 export function BacklogAgingDeepDive({
   report,
   jiraBaseUrl,
+  baseline,
 }: {
   report: BacklogAgingDeepDiveReport;
   jiraBaseUrl?: string;
+  /** The Q1+Q2 2026 reference value (src/lib/kpi-baselines.ts) — only ever set for a peer-review
+   * team (SE), per her ask; undefined elsewhere renders no line. */
+  baseline?: KpiBaselineRow;
 }) {
   const { theme } = useTheme();
   const copy = backlogAgingCopy(theme);
@@ -186,6 +192,7 @@ export function BacklogAgingDeepDive({
             value={formatPercent(rt.ageingRate, 2)}
             sublabel={`${formatNumber(rt.beyondDue)} of ${formatNumber(rt.resolved)} resolved overdue`}
             trend={ratePtsDelta(rt.comparison.deltaPts)}
+            baseline={baselineLine(baseline, (v) => formatPercent(v, 2))}
             tooltip="Resolved beyond due date ÷ total resolved, for the selected period. Unrelated to current backlog age."
           />
           <MetricCard label="Total Resolved" value={formatNumber(rt.resolved)} sublabel="the rate's denominator" />

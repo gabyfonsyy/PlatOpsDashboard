@@ -10,6 +10,7 @@ import { getP1SlaReport } from "@/lib/p1-sla";
 import { slaStatusForRate, STATUS_LABEL, STATUS_TONE } from "@/lib/sla-status";
 import { AUTOMATION_LABELS_COOKIE, resolveAutomationLabels } from "@/lib/automation-labels";
 import { resolveFilters } from "@/lib/date-ranges";
+import { getKpiBaselines, baselineTrend } from "@/lib/kpi-baselines";
 import {
   formatMinutesDecimalValue,
   formatDaysValue,
@@ -21,6 +22,7 @@ import {
 } from "@/lib/format";
 import { FilterBar } from "@/components/filters/FilterBar";
 import { MetricCard } from "@/components/dashboard/MetricCard";
+import { KpiBaselineControl } from "@/components/dashboard/KpiBaselineControl";
 import { MetricsSeriesChart } from "@/components/dashboard/MetricsSeriesChart";
 import { DistributionChart } from "@/components/dashboard/DistributionChart";
 import { InsightPanel } from "@/components/dashboard/InsightPanel";
@@ -47,7 +49,7 @@ export default async function TeamDashboardPage({
   // rather than the built-in default. Without this the card and the page it links to disagree the
   // moment she edits the automation-label catalogue.
   const automationLabels = resolveAutomationLabels(cookies().get(AUTOMATION_LABELS_COOKIE)?.value);
-  const [metrics, insight, automatedCount, p1Sla, outcomeCards] = await Promise.all([
+  const [metrics, insight, automatedCount, p1Sla, outcomeCards, baselines] = await Promise.all([
     getTicketMetrics(team.team_key, range, period, issueType),
     getInsight(`TEAM:${team.team_key}`),
     hasAssignedSe
@@ -55,7 +57,9 @@ export default async function TeamDashboardPage({
       : Promise.resolve(0),
     team.has_p1_sla_tracking ? getP1SlaReport(team.team_key, range, period, issueType) : Promise.resolve(null),
     getTicketOutcomeCards(team.team_key, range, period, issueType),
+    getKpiBaselines(team.team_key),
   ]);
+  const baselineComputedAt = baselines.lead_time?.computed_at ?? null;
 
   const issueTypes = team.issue_types_csv
     ? team.issue_types_csv.split(",").map((s) => s.trim()).filter(Boolean)
@@ -78,6 +82,8 @@ export default async function TeamDashboardPage({
         </div>
         <FilterBar issueTypes={issueTypes} />
       </div>
+
+      <KpiBaselineControl computedAt={baselineComputedAt} />
 
       <InsightPanel insight={insight} scope={`TEAM:${team.team_key}`} />
 
@@ -102,6 +108,7 @@ export default async function TeamDashboardPage({
               : "Average time from ticket creation until it moved to Ready for Checking or Cancelled, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes. Click through for the deep-dive (top assignee/product/label, longest tickets)."
           }
           href={`/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=lead`}
+          trend={baselineTrend(metrics.leadTimeAvgMinutes, baselines.lead_time, { lowerIsBetter: true, formatValue: formatDaysValue })}
         />
         <MetricCard
           label="Cycle Time"
@@ -113,6 +120,7 @@ export default async function TeamDashboardPage({
               : "Average time from when the ticket moved out of Backlog/To Do until it moved to Ready for Checking or Cancelled, across tickets resolved in the period. Shown in days, rounded up to 2 decimals. Click through for the deep-dive (top assignee/product/label, longest tickets)."
           }
           href={`/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=cycle`}
+          trend={baselineTrend(metrics.cycleTimeAvgMinutes, baselines.cycle_time_total, { lowerIsBetter: true, formatValue: formatDaysValueCeil })}
         />
         {team.has_peer_review_tracking && (
           <MetricCard
@@ -133,6 +141,7 @@ export default async function TeamDashboardPage({
               : "Overdue tickets ÷ total tickets resolved (moved to Ready for Checking or Cancelled) in the period. Overdue = resolved after the due date (resolved date > due date). Click through for the ticket-by-ticket list."
           }
           href={`/${team.team_key.toLowerCase()}/backlog-aging?${filterQuery}`}
+          trend={baselineTrend(metrics.backlogAgingRate, baselines.ageing_rate, { lowerIsBetter: true, formatValue: (v) => formatPercent(v, 2) })}
         />
         {hasAssignedSe && (
           <MetricCard
@@ -151,6 +160,7 @@ export default async function TeamDashboardPage({
               sublabel={`${formatNumber(metrics.fcrYesCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved FCR = Yes`}
               tooltip="Tickets marked FCR = Yes ÷ total tickets resolved in the period (by resolved date). Click through for what the team resolved without handing off, by product and label."
               href={`/${team.team_key.toLowerCase()}/fcr?${filterQuery}`}
+              trend={baselineTrend(metrics.fcrRate, baselines.fcr_rate, { lowerIsBetter: false, formatValue: (v) => formatPercent(v) })}
             />
             <MetricCard
               label="Escalation Rate"

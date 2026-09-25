@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type { LeadTimeDeepDiveReport } from "@/lib/lead-cycle-time";
+import type { KpiBaselineRow } from "@/lib/kpi-baselines";
+import { baselineLine } from "@/lib/kpi-baselines";
 import { useTheme } from "@/components/theme/ThemeProvider";
 import { leadTimeCopy } from "@/lib/lead-time-view";
 import { MetricCard } from "@/components/dashboard/MetricCard";
@@ -73,12 +75,16 @@ export function LeadTimeDeepDive({
   report,
   jiraBaseUrl,
   extraExcludedLabels,
+  baseline,
 }: {
   report: LeadTimeDeepDiveReport;
   jiraBaseUrl?: string;
   /** User-added label exclusions (lib/excluded-labels.ts) — resolved server-side from the cookie
    * and passed down so the ticket table's Labels column honors them without a client refetch. */
   extraExcludedLabels: string[];
+  /** The Q1+Q2 2026 reference value (src/lib/kpi-baselines.ts) — shown as a quiet second line under
+   * the Average card, separate from `trend` above it (period-over-period, not baseline). */
+  baseline?: KpiBaselineRow;
 }) {
   const { theme } = useTheme();
   const copy = leadTimeCopy(theme);
@@ -118,6 +124,7 @@ export function LeadTimeDeepDive({
           value={`${fmtDaysValue(report.pulse.avgMinutes)}d`}
           sublabel={daysBreakdown(report.pulse.avgMinutes)}
           trend={leadTimeTrend(c?.avgMinutes)}
+          baseline={baselineLine(baseline, (v) => (v === null ? "—" : `${fmtDaysValue(v)}d`))}
           tooltip="Mean Lead Time across completed tickets. Useful for overall comparison, but a few very slow tickets can pull it upward — read it next to Median."
         />
         <MetricCard

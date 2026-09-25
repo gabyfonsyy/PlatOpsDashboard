@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import type { CycleTimeDeepDiveReport } from "@/lib/lead-cycle-time";
+import type { KpiBaselineRow } from "@/lib/kpi-baselines";
+import { baselineLine } from "@/lib/kpi-baselines";
 import { useTheme } from "@/components/theme/ThemeProvider";
 import { cycleTimeCopy } from "@/lib/cycle-time-view";
 import { MetricCard } from "@/components/dashboard/MetricCard";
@@ -71,10 +73,15 @@ export function CycleTimeDeepDive({
   report,
   jiraBaseUrl,
   extraExcludedLabels,
+  baselines,
 }: {
   report: CycleTimeDeepDiveReport;
   jiraBaseUrl?: string;
   extraExcludedLabels: string[];
+  /** The Q1+Q2 2026 reference values (src/lib/kpi-baselines.ts) — total always present, doer/
+   * validator only for a peer-review team. Shown as quiet second lines, separate from the
+   * period-over-period `trend` already on these cards/the doer-validator centerpiece. */
+  baselines?: { total?: KpiBaselineRow; doer?: KpiBaselineRow; validator?: KpiBaselineRow };
 }) {
   const { theme } = useTheme();
   const copy = cycleTimeCopy(theme);
@@ -117,6 +124,8 @@ export function CycleTimeDeepDive({
           doerLabel={copy.doerLabel}
           validatorLabel={copy.validatorLabel}
           totalLabel={copy.totalLabel}
+          doerBaseline={baselines?.doer}
+          validatorBaseline={baselines?.validator}
         />
       )}
 
@@ -143,6 +152,7 @@ export function CycleTimeDeepDive({
           value={`${fmtDaysValue(report.pulse.total.avgMinutes)}d`}
           sublabel={daysBreakdown(report.pulse.total.avgMinutes)}
           trend={cycleTimeTrend(c?.totalAvgMinutes)}
+          baseline={baselineLine(baselines?.total, (v) => (v === null ? "—" : `${fmtDaysValue(v)}d`))}
           tooltip={
             split
               ? `Mean ${pulseCycleTimeLabel.toLowerCase()} across completed tickets — Doer average + Validator average (see the breakdown above). A few very slow tickets can pull it upward — read it next to Median.`
