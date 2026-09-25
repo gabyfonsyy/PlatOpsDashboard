@@ -173,7 +173,15 @@ export async function moveCategory(email: string, categoryId: string, direction:
   ]);
   if (a.error) throw new Error(`Could not reorder: ${a.error.message}`);
   if (b.error) throw new Error(`Could not reorder: ${b.error.message}`);
-  return getReferenceCategories(email);
+
+  // The two rows swapped sort_order — reflect that locally instead of a redundant re-fetch. The
+  // only caller (the API route) has its result discarded by the client anyway (it reloads the
+  // whole page via router.refresh()), so this was a pure wasted round trip.
+  const next = [...ordered];
+  next[index] = { ...current, sort_order: neighbor.sort_order };
+  next[neighborIndex] = { ...neighbor, sort_order: current.sort_order };
+  next.sort((a, b) => a.sort_order - b.sort_order);
+  return next;
 }
 
 // =====================================================================================
@@ -302,5 +310,12 @@ export async function moveType(email: string, typeId: string, direction: "up" | 
   ]);
   if (a.error) throw new Error(`Could not reorder: ${a.error.message}`);
   if (b.error) throw new Error(`Could not reorder: ${b.error.message}`);
-  return getReferenceTypes(email);
+
+  // Same reasoning as moveCategory: swap locally rather than re-fetching, since the API route's
+  // caller discards this return value and reloads the whole page anyway.
+  const next = [...ordered];
+  next[index] = { ...current, sort_order: neighbor.sort_order };
+  next[neighborIndex] = { ...neighbor, sort_order: current.sort_order };
+  next.sort((a, b) => a.sort_order - b.sort_order);
+  return next;
 }

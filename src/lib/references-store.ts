@@ -62,11 +62,17 @@ function assertSetup(error: { code?: string; message?: string } | null): void {
  * "Other" as the last resort. If the taxonomy tables don't exist yet at all, references are
  * returned exactly as before this feature — no category/type, no errors, no backfill attempted.
  */
-async function attachTaxonomy(email: string, rows: RawReferenceRow[]): Promise<WorkReference[]> {
-  const [categories, types] = await Promise.all([
-    getReferenceCategories(email).catch(() => null as ReferenceCategory[] | null),
-    getReferenceTypes(email).catch(() => null as ReferenceTypeRow[] | null),
-  ]);
+async function attachTaxonomy(
+  email: string,
+  rows: RawReferenceRow[],
+  preloaded?: { categories: ReferenceCategory[]; types: ReferenceTypeRow[] }
+): Promise<WorkReference[]> {
+  const [categories, types] = preloaded
+    ? [preloaded.categories, preloaded.types]
+    : await Promise.all([
+        getReferenceCategories(email).catch(() => null as ReferenceCategory[] | null),
+        getReferenceTypes(email).catch(() => null as ReferenceTypeRow[] | null),
+      ]);
 
   if (!categories || !types) {
     return rows.map((r) => ({ ...r, category_id: null, type_id: null, category: null, type: null }));
@@ -127,7 +133,10 @@ export async function getReferences(email: string): Promise<WorkReference[]> {
 
 export async function createReference(
   email: string,
-  input: { title: string; url: string; description?: string | null; category_id?: string | null; type_id?: string | null }
+  input: { title: string; url: string; description?: string | null; category_id?: string | null; type_id?: string | null },
+  /** Pass this when the caller already fetched categories/types for its own purposes (e.g. to
+   * validate the incoming category_id/type_id) — skips a redundant re-fetch inside attachTaxonomy. */
+  preloadedTaxonomy?: { categories: ReferenceCategory[]; types: ReferenceTypeRow[] }
 ): Promise<WorkReference> {
   const supabase = getSupabaseClient();
   // New references land at the end of the list — max + 1, not count(), so a gap left by a
@@ -145,8 +154,12 @@ export async function createReference(
 
   let categoryId = input.category_id ?? null;
   let typeId = input.type_id ?? null;
-  if (!categoryId || !typeId) {
-    const [categories, types] = await Promise.all([getReferenceCategories(email), getReferenceTypes(email)]);
+  let taxonomy = preloadedTaxonomy;
+  if (!categoryId || !typeId || !taxonomy) {
+    const [categories, types] = taxonomy
+      ? [taxonomy.categories, taxonomy.types]
+      : await Promise.all([getReferenceCategories(email), getReferenceTypes(email)]);
+    taxonomy = { categories, types };
     if (!categoryId) categoryId = (categories.find((c) => c.is_fallback) ?? categories[0]).category_id;
     if (!typeId) typeId = (types.find((t) => t.is_fallback) ?? types[0]).type_id;
   }
@@ -166,13 +179,14 @@ export async function createReference(
     .single();
   assertSetup(error);
   if (error) throw new Error(`Could not add reference: ${error.message}`);
-  return (await attachTaxonomy(email, [data as RawReferenceRow]))[0];
+  return (await attachTaxonomy(email, [data as RawReferenceRow], taxonomy))[0];
 }
 
 export async function updateReference(
   email: string,
   referenceId: string,
-  patch: { title?: string; url?: string; description?: string | null; category_id?: string | null; type_id?: string | null }
+  patch: { title?: string; url?: string; description?: string | null; category_id?: string | null; type_id?: string | null },
+  preloadedTaxonomy?: { categories: ReferenceCategory[]; types: ReferenceTypeRow[] }
 ): Promise<WorkReference> {
   const next: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (patch.title !== undefined) next.title = patch.title.trim();
@@ -190,7 +204,7 @@ export async function updateReference(
     .single();
   assertSetup(error);
   if (error) throw new Error(`Could not update reference: ${error.message}`);
-  return (await attachTaxonomy(email, [data as RawReferenceRow]))[0];
+  return (await attachTaxonomy(email, [data as RawReferenceRow], preloadedTaxonomy))[0];
 }
 
 export async function deleteReference(email: string, referenceId: string): Promise<void> {
@@ -234,5 +248,14 @@ export async function moveReference(
   if (a.error) throw new Error(`Could not reorder: ${a.error.message}`);
   if (b.error) throw new Error(`Could not reorder: ${b.error.message}`);
 
-  return getReferences(email);
+  // Reflect the swap locally instead of a full re-fetch (select + attachTaxonomy's own
+  // category/type lookups all over again) — the only caller (the API route) has this return
+  // value discarded by the client anyway, which reloads the whole page via router.refresh().
+  const nextList = ordered.map((r) => {
+    if (r.reference_id === current.reference_id) return { ...r, display_order: neighbor.display_order };
+    if (r.reference_id === neighbor.reference_id) return { ...r, display_order: current.display_order };
+    return r;
+  });
+  nextList.sort((a, b) => a.display_order - b.display_order || a.created_at.localeCompare(b.created_at));
+  return nextList;
 }
