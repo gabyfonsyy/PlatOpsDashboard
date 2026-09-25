@@ -38,9 +38,14 @@ export function BatchCalculator({
   const dash = (n?: number) => (n === undefined ? "—" : n.toLocaleString());
 
   return (
-    <div className={bare ? undefined : "card p-5 border-t-4 border-t-sprout-400"}>
+    <div className={bare ? undefined : "relative overflow-hidden card p-5"}>
       {!bare && (
         <>
+          {/* `background-color`, not `border-t-*`: `[data-theme="adhd"] .card` sets `border-color`
+              as an unlayered rule in globals.css, which beats any Tailwind border-* class
+              regardless of specificity — see HealthDot.tsx's `healthAccentBg` for the full
+              explanation. A bg overlay survives every theme instead. */}
+          <span className="absolute inset-x-0 top-0 h-1 bg-sprout-400" aria-hidden="true" />
           <h2 className="text-base font-semibold text-neutral-900 flex items-center gap-2">
             <span className="inline-block h-2.5 w-2.5 rounded-full bg-sprout-500" />
             Batch Projection Calculator

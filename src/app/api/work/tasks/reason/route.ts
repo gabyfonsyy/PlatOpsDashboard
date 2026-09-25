@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
-import { handle } from "@/lib/work-route";
+import { handle, ValidationError } from "@/lib/work-route";
 import { deleteLatestReschedule, setRescheduleReason } from "@/lib/work-store";
 import { RESCHEDULE_REASONS } from "@/lib/work";
 
@@ -23,12 +23,12 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const taskId = String(body.task_id ?? "").trim();
-    if (!taskId) throw new Error("task_id is required.");
+    if (!taskId) throw new ValidationError("task_id is required.");
 
     const reason = String(body.reason ?? "").trim();
     // Validated against the vocabulary rather than stored as free text: these codes are counted and
     // grouped by Work Mirror, and one stray label would quietly become its own category.
-    if (!REASON_CODES.includes(reason)) throw new Error(`Invalid reason: ${reason}`);
+    if (!REASON_CODES.includes(reason)) throw new ValidationError(`Invalid reason: ${reason}`);
 
     const rawNote = typeof body.note === "string" ? body.note.trim() : "";
     const note = rawNote ? rawNote.slice(0, NOTE_LIMIT) : null;
@@ -50,7 +50,7 @@ export async function DELETE(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const taskId = String(body.task_id ?? "").trim();
-    if (!taskId) throw new Error("task_id is required.");
+    if (!taskId) throw new ValidationError("task_id is required.");
     await deleteLatestReschedule(email, taskId);
     revalidatePath("/my-work");
     return { task_id: taskId, deleted: true };

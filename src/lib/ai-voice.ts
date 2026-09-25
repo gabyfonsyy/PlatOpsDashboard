@@ -121,20 +121,3 @@ const MODE_LAYERS: Record<VoiceMode, string> = {
 export function voicedSystemPrompt(featureInstructions: string, mode: VoiceMode = "normal"): string {
   return [BASE_VOICE, MODE_LAYERS[mode], HARD_RULES, "", "---", "", featureInstructions].join("\n");
 }
-
-/**
- * NOTE_ON_INCIDENT_FEEDBACK
- *
- * The incident-feedback rewriter deliberately does NOT use this voice layer.
- *
- * Everything else the AI writes here is addressed to Gaby about her own work, so a casual register
- * and the odd swear are appropriate. The incident rewrite is different in kind: its whole purpose
- * is to produce text that gets shown to the engineer being reviewed, and it feeds their evaluation.
- * Casual phrasing or profanity in someone's performance feedback is a different and much worse
- * thing than casual phrasing in a dashboard card.
- *
- * That prompt keeps its own brief (neutral, professional, warm) in
- * api/ai/incident-feedback/route.ts. If a Gaby-voiced layer is ever wanted there, it should apply
- * only to text that stays private to Gaby — not to the shareable rewrite.
- */
-export const INCIDENT_FEEDBACK_USES_VOICE = false;

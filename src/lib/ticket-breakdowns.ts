@@ -9,6 +9,7 @@ import {
 } from "@/lib/teams";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString } from "@/lib/manila-date";
+import { median as sharedMedian } from "@/lib/stats";
 
 /**
  * Labels stripped out of every Product+Label analysis AND every ticket list on these pages.
@@ -346,7 +347,8 @@ export async function getEscalationReport(
         .slice(0, BREAKDOWN_TICKET_LIMIT)
         .map((r) => toTicket(r, teamConfig, escalationTargets(r.escalation_value).join(", "), null)),
     };
-  } catch {
+  } catch (err) {
+    console.error("[getEscalationReport] failed:", err);
     return { team, range, period, issueType: issueType ?? null, ...EMPTY_ESCALATION };
   }
 }
@@ -429,7 +431,8 @@ export async function getFcrReport(
         .slice(0, BREAKDOWN_TICKET_LIMIT)
         .map((r) => toTicket(r, teamConfig, isFcrYes(r) ? "FCR = Yes" : "Not escalated", null)),
     };
-  } catch {
+  } catch (err) {
+    console.error("[getFcrReport] failed:", err);
     return { team, range, period, issueType: issueType ?? null, ...EMPTY_FCR };
   }
 }
@@ -501,11 +504,7 @@ export async function getOnHoldReport(
 
     // Median alongside the mean because on-hold time is heavily right-skewed — a handful of
     // tickets parked over a weekend drag the average to somewhere no real ticket sits.
-    const median = minutes.length
-      ? minutes.length % 2
-        ? minutes[(minutes.length - 1) / 2]
-        : (minutes[minutes.length / 2 - 1] + minutes[minutes.length / 2]) / 2
-      : null;
+    const median = sharedMedian(minutes);
 
     return {
       team, range, period, issueType: issueType ?? null,
@@ -529,7 +528,8 @@ export async function getOnHoldReport(
         .slice(0, 25)
         .map((r) => toTicket(r, teamConfig, "", Number(r.total_on_hold_minutes))),
     };
-  } catch {
+  } catch (err) {
+    console.error("[getOnHoldReport] failed:", err);
     return { team, range, period, issueType: issueType ?? null, ...EMPTY_ON_HOLD };
   }
 }

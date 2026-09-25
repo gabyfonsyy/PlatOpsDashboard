@@ -27,6 +27,7 @@ import {
   type CycleTimelineSummary,
   type DelayAttribution as CycleDelayAttribution,
 } from "@/lib/account-creation-cycle";
+import { median } from "@/lib/stats";
 
 /**
  * Account Creation page-facing report builders — one per Watchtower/Performance/SE Efficiency/
@@ -112,7 +113,8 @@ export async function getWatchtowerReport(range: string, period: string): Promis
       dataLoadingComplianceRate: day3Applicable.length ? round4(day3OnTime / day3Applicable.length) : null,
       tickets: active.sort((a, b) => attentionRank(a.overallStatus) - attentionRank(b.overallStatus)).slice(0, BREAKDOWN_TICKET_LIMIT),
     };
-  } catch {
+  } catch (err) {
+    console.error("[getWatchtowerReport] failed:", err);
     return {
       range, period, activeCount: 0, counts: { ...EMPTY_COUNTS }, day1NotStartedCount: 0,
       seStartComplianceRate: null, l3EndorsementComplianceRate: null, l3CompletionComplianceRate: null,
@@ -182,7 +184,8 @@ export async function getPerformanceReport(range: string, period: string): Promi
         day3Measured.filter((t) => t.day3.status === "late").length
       ),
     };
-  } catch {
+  } catch (err) {
+    console.error("[getPerformanceReport] failed:", err);
     return { range, period, totalCompleted: 0, day1SeSetup: stageStat(0, 0), day1L3Endorsement: stageStat(0, 0), day2: stageStat(0, 0), day3: stageStat(0, 0) };
   }
 }
@@ -202,12 +205,6 @@ export type CycleTimeStats = {
 const EMPTY_CYCLE_STATS: CycleTimeStats = {
   count: 0, medianMinutes: null, avgMinutes: null, p75Minutes: null, p90Minutes: null, minMinutes: null, maxMinutes: null,
 };
-
-function median(sortedAsc: number[]): number | null {
-  if (!sortedAsc.length) return null;
-  const mid = Math.floor(sortedAsc.length / 2);
-  return sortedAsc.length % 2 ? sortedAsc[mid] : (sortedAsc[mid - 1] + sortedAsc[mid]) / 2;
-}
 
 /** Nearest-rank percentile — consistent choice across median/p75/p90 rather than mixing methods. */
 function percentile(sortedAsc: number[], p: number): number | null {
@@ -335,7 +332,8 @@ export async function getSeEfficiencyReport(range: string, period: string): Prom
         stats: cycleTimeStats(mins),
       })),
     };
-  } catch {
+  } catch (err) {
+    console.error("[getSeEfficiencyReport] failed:", err);
     return {
       range, period, doer: { ...EMPTY_CYCLE_STATS }, validator: { ...EMPTY_CYCLE_STATS }, combinedAvgMinutes: null,
       distribution: distribution([]), byTrackType: [], byCutoffSide: [],
@@ -393,7 +391,8 @@ export async function getToolingImpactReport(range: string, period: string): Pro
     const adoptionDenominator = assisted + nonAssisted;
 
     return { range, period, byUsage, adoptionRate: adoptionDenominator ? round4(assisted / adoptionDenominator) : null };
-  } catch {
+  } catch (err) {
+    console.error("[getToolingImpactReport] failed:", err);
     return {
       range, period,
       byUsage: ["tool_assisted", "non_tool_assisted", "unknown"].map((usage) => ({
@@ -493,7 +492,8 @@ export async function getSePatternsReport(range: string, period: string): Promis
       range, period, bySe,
       delayAttribution: { seSideCount, l3SideCount, unknownCount },
     };
-  } catch {
+  } catch (err) {
+    console.error("[getSePatternsReport] failed:", err);
     return { range, period, bySe: [], delayAttribution: { seSideCount: 0, l3SideCount: 0, unknownCount: 0 } };
   }
 }
@@ -561,7 +561,8 @@ export async function getTicketReceiptsReport(
     for (const c of sliced) cycles[c.sla.issueKey] = { stages: c.stages, summary: c.summary, delay: c.delay };
 
     return { range, period, totalCount: computed.length, tickets: sliced.map((c) => c.sla), cycles };
-  } catch {
+  } catch (err) {
+    console.error("[getTicketReceiptsReport] failed:", err);
     return { range, period, totalCount: 0, tickets: [], cycles: {} };
   }
 }
@@ -627,7 +628,8 @@ export async function getCycleTimeDiagnosticsReport(range: string, period: strin
       seWorkDistribution: distribution(seMinutes),
       reviewDistribution: distribution(reviewMinutes),
     };
-  } catch {
+  } catch (err) {
+    console.error("[getCycleTimeDiagnosticsReport] failed:", err);
     return {
       range, period, seWork: { ...EMPTY_CYCLE_STATS }, review: { ...EMPTY_CYCLE_STATS }, total: { ...EMPTY_CYCLE_STATS },
       pctDelayedSeWork: null, pctDelayedReview: null, delayCounts: { ...EMPTY_DELAY_COUNTS },
@@ -689,7 +691,8 @@ export async function getSeCycleRoleReport(range: string, period: string): Promi
         .sort((a, b) => b.count - a.count);
 
     return { range, period, asOriginalSe: toRows(byOriginalSe), asReviewer: toRows(byReviewer) };
-  } catch {
+  } catch (err) {
+    console.error("[getSeCycleRoleReport] failed:", err);
     return { range, period, asOriginalSe: [], asReviewer: [] };
   }
 }
@@ -762,7 +765,8 @@ export async function getAccountCreationBottlenecksReport(range: string, period:
     );
 
     return { range, period, rows: combined };
-  } catch {
+  } catch (err) {
+    console.error("[getAccountCreationBottlenecksReport] failed:", err);
     return { range, period, rows: [] };
   }
 }

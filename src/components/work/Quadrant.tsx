@@ -96,7 +96,12 @@ export function QuadrantCell({
     // `min-w-0` for the same reason as the rows wrapper: a grid item defaults to its content
     // width as a minimum, so without it the cell grows to fit an unwrapped row instead of making
     // the row wrap, and the four boxes stop being the same size again.
-    <section className={cn("card border-l-2 p-4 flex flex-col gap-3 h-full min-w-0", meta.accent)}>
+    <section className="relative overflow-hidden card p-4 flex flex-col gap-3 h-full min-w-0">
+      {/* `background-color`, not a `border-l-*` utility: `[data-theme="adhd"] .card` sets
+          `border-color` as an unlayered rule in globals.css, which beats any Tailwind border-*
+          class regardless of specificity — see HealthDot.tsx's `healthAccentBg` for the full
+          explanation. A bg overlay survives every theme instead. */}
+      <span className={cn("absolute inset-y-0 left-0 w-[2px]", meta.accent)} aria-hidden="true" />
       {/* Fixed height, because the four headers are not naturally the same one: the axis lines and
           the failure-mode notes run from six words to fourteen, so headers sized to their content
           started each cell's task list on a different line and made the boxes look mismatched even

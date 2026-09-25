@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
+import { ValidationError } from "@/lib/work-route";
 
 /**
  * Generates POST/PATCH/DELETE handlers for a Supabase-backed Project Tracking table, injecting
@@ -25,7 +26,7 @@ export function createSupabaseCrudRouteHandlers<T>(table: {
   function fail(err: unknown) {
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : String(err) },
-      { status: 502 }
+      { status: err instanceof ValidationError ? 400 : 502 }
     );
   }
 
@@ -46,8 +47,11 @@ export function createSupabaseCrudRouteHandlers<T>(table: {
       const email = await requireSessionEmail();
       if (!email) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
       try {
-        const { id, ...payload } = await req.json();
-        if (!id) throw new Error("id is required.");
+        // created_by/author_email are stamped once at creation time and are not client-patchable —
+        // forwarding a client-supplied value here would let an edit forge who authored the record
+        // (or, worse, pass an author-only ownership check elsewhere by reassigning it to yourself).
+        const { id, created_by: _createdBy, author_email: _authorEmail, ...payload } = await req.json();
+        if (!id) throw new ValidationError("id is required.");
         const data = await table.update(id, payload, email);
         return NextResponse.json({ ok: true, data });
       } catch (err) {
@@ -60,7 +64,7 @@ export function createSupabaseCrudRouteHandlers<T>(table: {
       if (!email) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
       try {
         const { id } = await req.json();
-        if (!id) throw new Error("id is required.");
+        if (!id) throw new ValidationError("id is required.");
         await table.remove(id);
         return NextResponse.json({ ok: true, data: { id, deleted: true } });
       } catch (err) {

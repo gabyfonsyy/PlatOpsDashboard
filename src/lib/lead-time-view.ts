@@ -1,3 +1,5 @@
+import { resolveRegister } from "@/lib/theme";
+
 /**
  * Lead Time deep-dive's Gaby's View label overlay — same idea as lib/cycle-time-view.ts's
  * CYCLE_TIME_COPY, scoped to this one page. ONLY section/table titles and microcopy differ; every
@@ -69,5 +71,5 @@ export type LeadTimeView = keyof typeof LEAD_TIME_COPY;
 export type LeadTimeCopy = { readonly [K in keyof (typeof LEAD_TIME_COPY)["professional"]]: string };
 
 export function leadTimeCopy(theme: string | undefined): LeadTimeCopy {
-  return theme === "adhd" ? LEAD_TIME_COPY.gaby : LEAD_TIME_COPY.professional;
+  return resolveRegister<LeadTimeCopy>(theme, LEAD_TIME_COPY);
 }

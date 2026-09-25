@@ -1,3 +1,5 @@
+import { unstable_cache } from "next/cache";
+
 const GAS_WEB_APP_URL = process.env.GAS_WEB_APP_URL;
 const GAS_API_KEY = process.env.GAS_API_KEY;
 
@@ -27,16 +29,39 @@ function buildGasUrl(route: string, params: Record<string, string | undefined> =
   return url.toString();
 }
 
-export async function fetchGas<T>(
+async function fetchGasUncached<T>(
   route: string,
-  params: Record<string, string | undefined> = {},
-  init: RequestInit = {}
+  params: Record<string, string | undefined>,
+  init: RequestInit
 ): Promise<T> {
   const res = await fetch(buildGasUrl(route, params), init);
   if (!res.ok) throw new GasApiError(`GAS request failed with HTTP ${res.status}`);
   const body = (await res.json()) as GasEnvelope<T>;
   if (!body.ok) throw new GasApiError(body.error);
   return body.data;
+}
+
+export async function fetchGas<T>(
+  route: string,
+  params: Record<string, string | undefined> = {},
+  init: RequestInit & { revalidate?: number } = {}
+): Promise<T> {
+  const { revalidate, ...rest } = init;
+  if (revalidate === undefined) return fetchGasUncached<T>(route, params, rest);
+  // Next's fetch() Data Cache keys on the exact request URL, but every GAS URL carries a
+  // cache-busting `_` timestamp (see buildGasUrl above) to dodge a Google edge-caching bug —
+  // so passing `next: { revalidate }` straight to fetch() never actually cached anything, since
+  // every call produced a unique URL. unstable_cache keys on `route`+`params` instead, which is
+  // independent of the URL actually sent over the wire, so the two cache-busting concerns
+  // (Google's edge vs. Next's Data Cache) can coexist.
+  const cached = unstable_cache(
+    () => fetchGasUncached<T>(route, params, rest),
+    [route, JSON.stringify(params)],
+    // Tagged "gas" (not just keyed) so /api/gas/refresh's revalidateTag("gas") can bust every
+    // cached GAS read at once, the same way it already busts GAS's own 10-minute sheet cache.
+    { revalidate, tags: ["gas"] }
+  );
+  return cached();
 }
 
 /** Server-only: for writes (create/update/delete) proxied from /api/gas/* route handlers. */

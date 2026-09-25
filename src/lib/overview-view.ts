@@ -28,6 +28,15 @@ export type OverviewView = (typeof OVERVIEW_VIEWS)[number];
  *
  * Mirrors voiceForTheme in lib/ai-voice.ts exactly, and must keep doing so: they answer the same
  * question ("is this Gaby's register?") for two different layers.
+ *
+ * Deliberately NOT built on lib/theme.ts's resolveRegister<T>, and not a candidate for it, even
+ * though the other view modules' `*Copy(theme)` functions (cycle time, account creation, backlog
+ * ageing, capacity, lead time, ticket outcomes) all share that shape. Those resolve directly to one
+ * `{ professional, gaby }` copy object each. This one instead returns the OverviewView KEY, because
+ * callers need that key itself, not a resolved value: it indexes into two different maps
+ * (VIEW_COPY[view], SECTION_ORDER[view]) at two different call sites, feeds voiceForView(view), and
+ * is compared with `===` in AssessmentHeader.tsx to detect a stale theme cookie. None of that works
+ * if this returned an already-resolved object. Keep it this way.
  */
 export function viewForTheme(theme: string | undefined): OverviewView {
   return theme === "adhd" ? "gaby" : "professional";

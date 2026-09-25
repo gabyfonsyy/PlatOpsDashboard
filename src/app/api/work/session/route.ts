@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
-import { handle } from "@/lib/work-route";
+import { handle, ValidationError } from "@/lib/work-route";
 import {
   createSession,
   deleteSession,
@@ -18,11 +18,11 @@ import {
  */
 function parseInstant(value: unknown, field: string): string {
   const raw = String(value ?? "").trim();
-  if (!raw) throw new Error(`${field} is required.`);
+  if (!raw) throw new ValidationError(`${field} is required.`);
   const at = new Date(raw);
-  if (Number.isNaN(at.getTime())) throw new Error(`${field} isn't a valid date and time.`);
+  if (Number.isNaN(at.getTime())) throw new ValidationError(`${field} isn't a valid date and time.`);
   if (!/(?:Z|[+-]\d{2}:?\d{2})$/.test(raw)) {
-    throw new Error(`${field} must include a timezone offset.`);
+    throw new ValidationError(`${field} must include a timezone offset.`);
   }
   return at.toISOString();
 }
@@ -60,14 +60,14 @@ export async function PATCH(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const sessionId = String(body.session_id ?? "").trim();
-    if (!sessionId) throw new Error("session_id is required.");
+    if (!sessionId) throw new ValidationError("session_id is required.");
 
     const patch: { started_at?: string; ended_at?: string | null } = {};
     if (body.started_at !== undefined) patch.started_at = parseInstant(body.started_at, "Start time");
     if (body.ended_at !== undefined) {
       patch.ended_at = body.ended_at === null ? null : parseInstant(body.ended_at, "End time");
     }
-    if (Object.keys(patch).length === 0) throw new Error("Nothing to change.");
+    if (Object.keys(patch).length === 0) throw new ValidationError("Nothing to change.");
 
     const session = await updateSession(email, sessionId, patch);
     revalidatePath("/my-work");
@@ -80,7 +80,7 @@ export async function DELETE(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const sessionId = String(body.session_id ?? "").trim();
-    if (!sessionId) throw new Error("session_id is required.");
+    if (!sessionId) throw new ValidationError("session_id is required.");
     await deleteSession(email, sessionId);
     revalidatePath("/my-work");
     return { session_id: sessionId, deleted: true };

@@ -19,6 +19,7 @@ import {
   type CountRow,
 } from "@/lib/ticket-breakdowns";
 import { riskTierForConsumed, type RiskTier } from "@/lib/sla-status";
+import { median as sharedMedian } from "@/lib/stats";
 
 /**
  * Jira's native Priority field value for a P1 ticket. Matched case-insensitively (see fetchP1Rows)
@@ -185,11 +186,12 @@ function resolutionMinutesOf(r: P1Row): number | null {
   return r.resolved_datetime ? round2(minutesBetween(r.created, r.resolved_datetime)) : null;
 }
 
+// Values here are already round2()'d individually (see resolutionMinutesOf); the local wrapper
+// re-rounds the shared median's result so an even-length average of two 2-decimal values still
+// comes out at 2 decimals, matching this function's historical contract.
 function median(values: number[]): number | null {
-  if (!values.length) return null;
-  const sorted = values.slice().sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid] : round2((sorted[mid - 1] + sorted[mid]) / 2);
+  const m = sharedMedian(values);
+  return m === null ? null : round2(m);
 }
 
 // ---------------------------------------------------------------- Trend series
@@ -872,7 +874,8 @@ export async function getP1SlaReport(
           deltaPct: pctDelta(current.medianResolutionMinutes, prev.medianResolutionMinutes),
         },
       };
-    } catch {
+    } catch (err) {
+      console.error("[getP1SlaReport] comparison failed:", err);
       comparison = null;
     }
 
@@ -948,7 +951,8 @@ export async function getP1SlaReport(
     report.positiveHighlights = buildPositiveHighlights(byProduct, comparison);
 
     return report;
-  } catch {
+  } catch (err) {
+    console.error("[getP1SlaReport] failed:", err);
     return { team, range, period, issueType: issueType ?? null, ...EMPTY_REPORT };
   }
 }

@@ -1,11 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import { Search, X } from "lucide-react";
 import type { P1TicketRow } from "@/lib/p1-sla";
 import { Badge } from "@/components/ui/Badge";
 import { formatManilaDate } from "@/lib/format";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { useColumnSearch } from "@/lib/use-column-search";
 import { TablePagination } from "@/components/dashboard/TablePagination";
 
 const STATUS_META: Record<P1TicketRow["status"], { label: string; tone: "success" | "warning" | "danger" }> = {
@@ -42,34 +42,20 @@ export function P1TicketsTable({
   jiraBaseUrl?: string;
   totalCount?: number;
 }) {
-  const [filters, setFilters] = useState<Record<string, string>>({});
-
-  const searchable = useMemo(
-    () =>
-      tickets.map((t) => ({
-        ticket: t,
-        cells: {
-          issueKey: `${t.issueKey} ${t.issueType}`,
-          assignee: t.assignee,
-          product: t.product,
-          labels: t.labels,
-          status: STATUS_META[t.status].label,
-          due: formatManilaDate(t.dueDate),
-          resolved: formatManilaDate(t.resolvedAt),
-          escalated: t.escalationTargets.join(", "),
-          held: t.holdingReasons.join(", "),
-        } as Record<string, string>,
-      })),
+  const { filters, setFilters, active, visible } = useColumnSearch(
+    tickets,
+    (t) => ({
+      issueKey: `${t.issueKey} ${t.issueType}`,
+      assignee: t.assignee,
+      product: t.product,
+      labels: t.labels,
+      status: STATUS_META[t.status].label,
+      due: formatManilaDate(t.dueDate),
+      resolved: formatManilaDate(t.resolvedAt),
+      escalated: t.escalationTargets.join(", "),
+      held: t.holdingReasons.join(", "),
+    }),
     [tickets]
-  );
-
-  const active = Object.entries(filters).filter(([, v]) => v.trim() !== "");
-  const visible = useMemo(
-    () =>
-      searchable
-        .filter(({ cells }) => active.every(([key, value]) => (cells[key] ?? "").toLowerCase().includes(value.trim().toLowerCase())))
-        .map(({ ticket }) => ticket),
-    [searchable, active]
   );
 
   const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(visible);

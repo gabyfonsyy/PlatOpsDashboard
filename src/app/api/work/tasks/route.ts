@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { revalidatePath } from "next/cache";
-import { handle } from "@/lib/work-route";
+import { handle, ValidationError } from "@/lib/work-route";
 import { copyTask, createTask, deleteTask, updateTask, updateTasks } from "@/lib/work-store";
 import { TASK_LANES, TASK_PRIORITIES, TASK_STATUSES, parkComplaint } from "@/lib/work";
 
@@ -89,18 +89,18 @@ export async function POST(req: NextRequest) {
     const copyOf = String(body.copy_of ?? "").trim();
     if (copyOf) {
       const bad = invalidDate(body.work_date);
-      if (bad) throw new Error(bad);
+      if (bad) throw new ValidationError(bad);
       const workDate = String(body.work_date ?? "").trim();
-      if (!workDate) throw new Error("A copy needs a day to land on.");
+      if (!workDate) throw new ValidationError("A copy needs a day to land on.");
       const copy = await copyTask(email, copyOf, workDate);
       revalidatePath("/my-work");
       return copy;
     }
 
     const title = String(body.title ?? "").trim();
-    if (!title) throw new Error("A task needs a title.");
+    if (!title) throw new ValidationError("A task needs a title.");
     const bad = validate(body);
-    if (bad) throw new Error(bad);
+    if (bad) throw new ValidationError(bad);
     const task = await createTask(email, {
       title,
       lane: body.lane as string | undefined,
@@ -129,9 +129,9 @@ export async function PATCH(req: NextRequest) {
       ? body.task_ids.map((v) => String(v).trim()).filter(Boolean)
       : [];
     const id = String(body.task_id ?? "").trim();
-    if (!id && ids.length === 0) throw new Error("task_id or task_ids is required.");
+    if (!id && ids.length === 0) throw new ValidationError("task_id or task_ids is required.");
     const bad = validate(body);
-    if (bad) throw new Error(bad);
+    if (bad) throw new ValidationError(bad);
     const patch: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(body)) if (PATCHABLE.has(k)) patch[k] = v;
 
@@ -146,7 +146,7 @@ export async function PATCH(req: NextRequest) {
         park_reason: patch.park_reason as string | null,
         park_decision: patch.park_decision as string | null,
       });
-      if (complaint) throw new Error(complaint);
+      if (complaint) throw new ValidationError(complaint);
     }
     const result = ids.length > 0 ? await updateTasks(email, ids, patch) : await updateTask(email, id, patch);
     revalidatePath("/my-work");
@@ -158,7 +158,7 @@ export async function DELETE(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
   return handle(async (email) => {
     const id = String(body.task_id ?? "").trim();
-    if (!id) throw new Error("task_id is required.");
+    if (!id) throw new ValidationError("task_id is required.");
     await deleteTask(email, id);
     revalidatePath("/my-work");
     return { task_id: id, deleted: true };

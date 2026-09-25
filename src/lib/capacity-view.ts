@@ -12,6 +12,7 @@
 import type { CapacityOverview, TeamCapacity, CapacityTrend, PersonCapacity } from "@/lib/capacity";
 import { CAPACITY_TIER_LABEL, type CapacityTier } from "@/lib/capacity-config";
 import { teamLabel } from "@/lib/utils";
+import { resolveRegister } from "@/lib/theme";
 
 export const CAPACITY_COPY = {
   professional: {
@@ -57,7 +58,7 @@ export const CAPACITY_COPY = {
 export type CapacityCopy = { readonly [K in keyof (typeof CAPACITY_COPY)["professional"]]: string };
 
 export function capacityCopy(theme: string | undefined): CapacityCopy {
-  return theme === "adhd" ? CAPACITY_COPY.gaby : CAPACITY_COPY.professional;
+  return resolveRegister<CapacityCopy>(theme, CAPACITY_COPY);
 }
 
 export const SUSTAINABILITY_TIER_DESCRIPTION: Record<CapacityTier, string> = {

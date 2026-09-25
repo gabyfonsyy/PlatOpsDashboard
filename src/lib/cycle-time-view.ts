@@ -1,3 +1,5 @@
+import { resolveRegister } from "@/lib/theme";
+
 /**
  * Cycle Time deep-dive's Gaby's View label overlay — same idea as lib/overview-view.ts's
  * VIEW_COPY, scoped to this one page. ONLY section/table titles and microcopy differ; every
@@ -74,5 +76,5 @@ export type CycleTimeView = keyof typeof CYCLE_TIME_COPY;
 export type CycleTimeCopy = { readonly [K in keyof (typeof CYCLE_TIME_COPY)["professional"]]: string };
 
 export function cycleTimeCopy(theme: string | undefined): CycleTimeCopy {
-  return theme === "adhd" ? CYCLE_TIME_COPY.gaby : CYCLE_TIME_COPY.professional;
+  return resolveRegister<CycleTimeCopy>(theme, CYCLE_TIME_COPY);
 }

@@ -62,7 +62,7 @@ export function CycleTimeBreakdownTable({
       <tr
         key={r.key}
         onClick={onSelect ? () => onSelect(isSelected ? null : r.key) : undefined}
-        className={onSelect ? `cursor-pointer transition-colors ${isSelected ? "bg-sprout-50" : "hover:bg-neutral-50"}` : undefined}
+        className={onSelect ? `cursor-pointer transition-colors ${isSelected ? "row-active" : "hover:bg-neutral-50"}` : undefined}
       >
         <td className="px-3 py-2.5 text-neutral-900 break-words">{r.key}</td>
         <td className="px-3 py-2.5 text-right tabular-nums">{formatNumber(r.count)}</td>

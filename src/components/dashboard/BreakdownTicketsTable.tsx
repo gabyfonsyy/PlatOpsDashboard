@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo, useState } from "react";
 import { Search, X } from "lucide-react";
 import type { BreakdownTicket } from "@/lib/ticket-breakdowns";
 import {
@@ -9,6 +8,7 @@ import {
   formatManilaDate,
 } from "@/lib/format";
 import { useTablePagination } from "@/lib/use-table-pagination";
+import { useColumnSearch } from "@/lib/use-column-search";
 import { TablePagination } from "@/components/dashboard/TablePagination";
 
 /**
@@ -53,39 +53,19 @@ export function BreakdownTicketsTable({
   id?: string;
   description?: string;
 }) {
-  const [filters, setFilters] = useState<Record<string, string>>({});
-
-  // One row of derived strings per ticket, in column order — built once so filtering never
-  // re-formats dates or re-derives cells on every keystroke.
-  const searchable = useMemo(
-    () =>
-      tickets.map((t) => ({
-        ticket: t,
-        cells: {
-          issueKey: `${t.issueKey} ${t.issueType}`,
-          assignee: t.assignee,
-          product: t.product,
-          labels: t.labels,
-          detail: t.detail,
-          minutes: t.minutes === null ? "" : formatMinutesDecimalValue(t.minutes),
-          resolved: formatManilaDate(t.resolvedAt),
-        } as Record<string, string>,
-      })),
+  // One row of derived strings per ticket, in column order — see useColumnSearch for why.
+  const { filters, setFilters, active, visible } = useColumnSearch(
+    tickets,
+    (t) => ({
+      issueKey: `${t.issueKey} ${t.issueType}`,
+      assignee: t.assignee,
+      product: t.product,
+      labels: t.labels,
+      detail: t.detail,
+      minutes: t.minutes === null ? "" : formatMinutesDecimalValue(t.minutes),
+      resolved: formatManilaDate(t.resolvedAt),
+    }),
     [tickets]
-  );
-
-  const active = Object.entries(filters).filter(([, v]) => v.trim() !== "");
-
-  const visible = useMemo(
-    () =>
-      searchable
-        .filter(({ cells }) =>
-          active.every(([key, value]) =>
-            (cells[key] ?? "").toLowerCase().includes(value.trim().toLowerCase())
-          )
-        )
-        .map(({ ticket }) => ticket),
-    [searchable, active]
   );
 
   const { page, setPage, pageCount, pageRows, pageSize } = useTablePagination(visible);

@@ -1,4 +1,5 @@
 import type { OutcomeKind } from "@/lib/ticket-outcomes";
+import { resolveRegister } from "@/lib/theme";
 
 /**
  * Ticket Outcomes' Gaby's View label overlay — same partial-overlay pattern as
@@ -55,5 +56,5 @@ export type TicketOutcomeCopy = {
 };
 
 export function ticketOutcomeCopy(theme: string | undefined): TicketOutcomeCopy {
-  return theme === "adhd" ? TICKET_OUTCOME_COPY.gaby : TICKET_OUTCOME_COPY.professional;
+  return resolveRegister<TicketOutcomeCopy>(theme, TICKET_OUTCOME_COPY);
 }

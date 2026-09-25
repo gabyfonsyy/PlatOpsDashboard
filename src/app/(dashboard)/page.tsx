@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getOverview, type OverviewData } from "@/lib/overview";
 import { getBriefing, type OverviewBriefing } from "@/lib/overview-ai";
+import { manilaToday } from "@/lib/work-store";
 import {
   SECTION_ORDER,
   VIEW_COPY,
@@ -60,9 +61,15 @@ export default async function OverviewPage() {
   const copy = VIEW_COPY[view];
   const firstName = session.user?.name?.split(" ")[0] ?? "there";
 
-  const data = await getOverview(email);
-  // Never generates — that is the snapshot route's job, triggered by AssessmentHeader.
-  const briefing = await getBriefing(email, data.today, voiceForView(view));
+  // getBriefing only needs email/today/voice, not anything getOverview computes — today is
+  // resolved independently here (both derive it from the same manilaToday()) so the two run
+  // concurrently instead of stacking the briefing's Supabase round trip after the (GAS-bound)
+  // overview load.
+  const [data, briefing] = await Promise.all([
+    getOverview(email),
+    // Never generates — that is the snapshot route's job, triggered by AssessmentHeader.
+    getBriefing(email, manilaToday(), voiceForView(view)),
+  ]);
 
   const dateLabel = new Date().toLocaleDateString("en-US", {
     timeZone: "Asia/Manila",

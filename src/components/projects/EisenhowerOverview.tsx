@@ -98,8 +98,13 @@ export function EisenhowerOverview({
           return (
             <div
               key={q}
-              className={cn("card border-l-2 p-4 flex flex-col gap-2 hover:shadow-md transition-shadow", meta.accent)}
+              className="relative overflow-hidden card p-4 flex flex-col gap-2 hover:shadow-md transition-shadow"
             >
+              {/* `background-color`, not a `border-l-*` utility: `[data-theme="adhd"] .card` sets
+                  `border-color` as an unlayered rule in globals.css, which beats any Tailwind
+                  border-* class regardless of specificity — see HealthDot.tsx's `healthAccentBg`
+                  for the full explanation. A bg overlay survives every theme instead. */}
+              <span className={cn("absolute inset-y-0 left-0 w-[2px]", meta.accent)} aria-hidden="true" />
               <button type="button" onClick={() => setOpenQuadrant(q)} className="text-left flex flex-col gap-2">
                 <div className="flex items-baseline justify-between gap-2">
                   <h3 className={cn("text-sm font-semibold", meta.text)}>{meta.verb}</h3>

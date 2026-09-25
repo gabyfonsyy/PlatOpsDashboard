@@ -423,6 +423,14 @@
     @apply text-sprout-700 bg-sprout-50 shadow-[inset_0_0_0_1px_rgb(var(--a-500)/0.16)];
   }
 
+  /* Selected-row / active-item highlight — the breakdown tables' pinned row and
+     MonitoringSidebar's active tab. See the "PRIMARY ACTION ON AN INVERTED RAMP" comment further
+     down for why a plain `bg-sprout-50` doesn't survive Dark/Gaby View unchanged: it's correct
+     here in Light too, so it stays the base rule, and gets an explicit override there instead. */
+  .row-active {
+    @apply bg-sprout-50;
+  }
+
   /* Segmented pill navigation — floating glass capsule.
      2026-09-10: the translucency wasn't visibly reading as glass — bg-surface/60 against this
      app's near-white canvas has almost no colour contrast to reveal through, and --line is
@@ -563,6 +571,19 @@
 [data-theme="dark"] .btn-primary:hover,
 [data-theme="adhd"] .btn-primary:hover {
   box-shadow: inset 0 1px 0 0 rgb(var(--a-500) / 0.5), 0 14px 34px -10px rgb(var(--a-400) / 0.75);
+}
+
+/* `.row-active` shares the inverted-ramp problem above, in miniature: `bg-sprout-50` is meant as
+   the lightest possible tint, but 50 is the DARKEST fill in Dark/Gaby View, so the "selected" row
+   became the single darkest thing on it — next to an unselected hover state (`hover:bg-neutral-50`)
+   that is also a dark fill in those themes, i.e. two states that read as indistinguishable.
+   Rebuilt from --a-500 (a genuinely mid-ramp token in every theme) at low alpha instead, the same
+   alpha-blended-token technique `[data-theme="adhd"] .card:hover` uses for its border tint below —
+   so it reads as "a little brighter than the row around it" in every theme without needing a
+   separately hand-picked swatch per theme. */
+[data-theme="dark"] .row-active,
+[data-theme="adhd"] .row-active {
+  background-color: rgb(var(--a-500) / 0.16);
 }
 
 /* ============================================================================

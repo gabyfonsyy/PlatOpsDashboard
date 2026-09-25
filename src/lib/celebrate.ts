@@ -36,17 +36,3 @@ export function celebrate(kind: CelebrationKind, at?: { x: number; y: number }):
     })
   );
 }
-
-/**
- * Briefly marks an element as just-changed so the ADHD stylesheet can flash it. No-op outside
- * ADHD View because the class it adds is only styled there.
- */
-export function flashElement(el: HTMLElement | null): void {
-  if (!el) return;
-  el.classList.remove("adhd-flash");
-  // Reading offsetWidth forces a reflow so re-adding the class restarts the animation rather
-  // than being coalesced into no change at all.
-  void el.offsetWidth;
-  el.classList.add("adhd-flash");
-  window.setTimeout(() => el.classList.remove("adhd-flash"), 500);
-}

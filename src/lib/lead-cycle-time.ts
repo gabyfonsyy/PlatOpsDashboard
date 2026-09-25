@@ -12,6 +12,7 @@ import { shiftPeriod, type RangeType } from "@/lib/date-ranges";
 import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
 import { BREAKDOWN_TICKET_LIMIT } from "@/lib/ticket-breakdowns";
 import { BACKEND_EXECUTION_ISSUE_TYPES } from "@/lib/tool-assisted";
+import { median } from "@/lib/stats";
 
 export type LeadCycleTimeMetric = "lead" | "cycle";
 
@@ -488,8 +489,11 @@ function percentile(sortedAsc: number[], p: number): number | null {
   return round2(sortedAsc[lo] + (sortedAsc[hi] - sortedAsc[lo]) * (idx - lo));
 }
 
+// medianOf preserves its historical round-to-2-decimal contract (percentile's rounding) even
+// though the actual median math now comes from the shared lib/stats helper.
 function medianOf(sortedAsc: number[]): number | null {
-  return percentile(sortedAsc, 50);
+  const m = median(sortedAsc);
+  return m === null ? null : round2(m);
 }
 
 /** holding_reasons_json is an array of plain reason strings, same shape lib/p1-sla.ts reads. */
@@ -1305,7 +1309,8 @@ export async function getLeadTimeDeepDive(
         previousActiveSharePct =
           prevCycle.totalAvgMinutes !== null && prev.avgMinutes ? round4(Math.min(1, prevCycle.totalAvgMinutes / prev.avgMinutes)) : null;
       }
-    } catch {
+    } catch (err) {
+      console.error("[getLeadTimeDeepDive] comparison failed:", err);
       comparison = null;
     }
 
@@ -1362,7 +1367,8 @@ export async function getLeadTimeDeepDive(
           };
         }
       }
-    } catch {
+    } catch (err) {
+      console.error("[getLeadTimeDeepDive] activeWork failed:", err);
       activeWork = null;
       activeVsWaitingInsight = null;
     }
@@ -1423,7 +1429,8 @@ export async function getLeadTimeDeepDive(
     report.positiveHighlights = buildLeadTimePositiveHighlights(report);
 
     return report;
-  } catch {
+  } catch (err) {
+    console.error("[getLeadTimeDeepDive] failed:", err);
     return emptyDeepDive(team, range, period, issueType, workCategory);
   }
 }
@@ -2299,7 +2306,8 @@ export async function getCycleTimeDeepDive(
           ? { current: validatorStat!.avgMinutes, previous: prev.validatorAvgMinutes, deltaPct: pctDelta(validatorStat!.avgMinutes, prev.validatorAvgMinutes) }
           : null,
       };
-    } catch {
+    } catch (err) {
+      console.error("[getCycleTimeDeepDive] comparison failed:", err);
       comparison = null;
     }
 
@@ -2358,7 +2366,8 @@ export async function getCycleTimeDeepDive(
     report.positiveHighlights = buildCycleTimePositiveHighlights(report);
 
     return report;
-  } catch {
+  } catch (err) {
+    console.error("[getCycleTimeDeepDive] failed:", err);
     return emptyCycleTimeDeepDive(team, range, period, issueType, workCategory);
   }
 }

@@ -10,6 +10,7 @@ import {
   sanitizeAutomationLabels,
   KNOWN_AUTOMATION_LABELS,
 } from "@/lib/automation-labels";
+import { median } from "@/lib/stats";
 
 /**
  * Assigned SE values that mean "a bot did this, not a person".
@@ -329,12 +330,6 @@ async function countResolvedInPeriod(
   }).length;
 }
 
-function median(values: number[]): number | null {
-  if (!values.length) return null;
-  const s = [...values].sort((a, b) => a - b);
-  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
-}
-
 /**
  * Median alongside the mean because these spans are extremely right-skewed: on ST's 2026 automated
  * tickets a mean lead time near a day sits against a median measured in minutes — a handful of
@@ -472,7 +467,8 @@ export async function getAutomatedTicketsReport(
       cycleTimeDescription: cycleBasis.description,
       tickets,
     };
-  } catch {
+  } catch (err) {
+    console.error("[getAutomatedTicketsReport] failed:", err);
     return { team, range, period, issueType: issueType ?? null, ...EMPTY, automationLabels: labels };
   }
 }
@@ -528,7 +524,8 @@ export async function getAutomatedTicketCount(
       const iso = toManilaDateString(r.resolved_datetime);
       return iso !== null && iso >= startDate && iso <= endDate;
     }).length;
-  } catch {
+  } catch (err) {
+    console.error("[getAutomatedTicketCount] failed:", err);
     return 0;
   }
 }
