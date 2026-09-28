@@ -64,6 +64,12 @@ export type MetricComparison = {
   unit: "count" | "days" | "percent";
   driverAvailable: boolean;
   driverDimensionLabel: string | null;
+  /** One-line clarification of what the driver table's Previous/Current columns actually count, and
+   * how that population relates to the headline number — the breakdown is often a different (or
+   * differently-shaped) population than the metric it explains, so its totals need not equal the
+   * headline. Shown right above the breakdown table. Null when there's no driver breakdown. See
+   * ticket-volume-breakdown.ts's own doc comment for the canonical example (assigned vs all-created). */
+  driverNote: string | null;
   driverBreakdown: DriverRow[];
   driverVerdict: DriverVerdict;
   /** Set only for a duration driver (Lead/Cycle Time) when no single category's own pace explains
@@ -106,6 +112,22 @@ export type BusinessReview = {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * Fallback breakdown note by unit, used when a spec doesn't set its own `driverNote`. Duration and
+ * rate breakdowns don't share the headline's units at all (per-issue-type averages, or composition
+ * COUNTS behind a percentage), so their columns never sum to the headline — say so explicitly rather
+ * than let a reader assume the table should reconcile.
+ */
+function defaultDriverNote(unit: MetricComparison["unit"]): string {
+  if (unit === "days") {
+    return "Previous/Current are the average days for each category (not ticket counts); the headline is their volume-weighted average across all categories, so the rows don't sum to it.";
+  }
+  if (unit === "percent") {
+    return "Previous/Current are ticket counts making up this rate, not the rate itself — they show what the percentage is composed of and won't sum to the headline figure.";
+  }
+  return "Previous/Current are ticket counts by category and sum to the breakdown total shown below.";
 }
 
 function pctDiffOf(current: number, previous: number): { pctDiff: number | null; isNew: boolean } {
@@ -201,6 +223,8 @@ type MetricSpec = {
   previous: number | null;
   history: number[];
   driver: { rows: DriverRow[]; verdict: DriverVerdict; dimensionLabel: string; mixShift?: MixShiftFlag | null } | null;
+  /** See MetricComparison.driverNote. Null falls back to a generic note in buildComparison. */
+  driverNote?: string | null;
   source: string;
   calculation: string;
   recordCount: number;
@@ -259,6 +283,7 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
     unit: spec.unit,
     driverAvailable: spec.driver !== null,
     driverDimensionLabel: spec.driver?.dimensionLabel ?? null,
+    driverNote: spec.driver ? (spec.driverNote ?? defaultDriverNote(spec.unit)) : null,
     driverBreakdown: driverRows,
     driverVerdict,
     mixShift,
@@ -358,6 +383,8 @@ export async function getBusinessReview(
       current: currentTM.ticketVolume, previous: previousTM.ticketVolume,
       history: priorTMs.map((m) => m.ticketVolume),
       driver: { ...buildDriver(previousVolByType.rows, currentVolByType.rows, currentTM.ticketVolume - previousTM.ticketVolume), dimensionLabel: "Issue Type" },
+      driverNote:
+        "Counts here are ALL tickets created in the period (assigned + unassigned), so the totals run higher than the headline, which counts only ASSIGNED created tickets. The gap between the two is the unassigned tickets.",
       source: "Supabase tickets (created in period)",
       calculation: "Count of tickets created during the reporting period, by issue type.",
       recordCount: currentVolByType.totalTickets,
@@ -396,6 +423,8 @@ export async function getBusinessReview(
         ),
         dimensionLabel: "Issue Type",
       },
+      driverNote:
+        "Previous/Current are counts of OVERDUE tickets by issue type — the composition behind the rate, not the rate itself. They won't sum to the headline percentage.",
       source: "Supabase tickets (resolved after due date)",
       calculation: "Share of tickets resolved in the period that were resolved after their due date; driver breakdown is the composition of those overdue tickets, by issue type.",
       recordCount: currentAging.resolvedInPeriod,
@@ -432,6 +461,8 @@ export async function getBusinessReview(
           ),
           dimensionLabel: "Holding Reason",
         },
+        driverNote:
+          "Previous/Current are counts of P1 tickets by holding reason (breaches) — the composition behind the rate, not the rate itself. More breaches LOWERS the on-time rate, so this table moves opposite the headline.",
         source: "Supabase tickets (P1 / Very Urgent priority)",
         calculation: "Share of decided P1 tickets resolved on time; driver breakdown is the composition of P1 tickets by holding reason.",
         recordCount: currentP1.decided,
@@ -444,6 +475,8 @@ export async function getBusinessReview(
           ...buildDriver(previousAuto.byIssueType, currentAuto.byIssueType, currentAuto.automatedCount - previousAuto.automatedCount),
           dimensionLabel: "Issue Type",
         },
+        driverNote:
+          "Previous/Current are counts of automated tickets resolved in the period, by issue type — this table sums to the headline count.",
         source: "Supabase tickets (automation-owned or automation-labelled)",
         calculation: "Count of tickets resolved in the period that were automated, by issue type.",
         recordCount: currentAuto.resolvedInPeriod,
@@ -461,6 +494,8 @@ export async function getBusinessReview(
           ),
           dimensionLabel: "Issue Type",
         },
+        driverNote:
+          "Previous/Current are counts of first-contact-resolved tickets by issue type — the composition behind the rate, not the rate itself. They won't sum to the headline percentage.",
         source: "Supabase tickets (resolved without escalation, or FCR = Yes)",
         calculation: "Share of resolved tickets that were first-contact-resolved; driver breakdown is the composition of that population by issue type.",
         recordCount: currentFcr.resolvedInPeriod,
