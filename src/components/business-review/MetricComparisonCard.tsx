@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Sparkles, Loader2 } from "lucide-react";
 import { Copy } from "@/components/ui/Copy";
+import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { useTheme } from "@/components/theme/ThemeProvider";
 import { DriverBreakdownTable } from "@/components/business-review/DriverBreakdownTable";
 import { formatPct } from "@/lib/business-review-view";
@@ -74,7 +75,10 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
     <div className="card p-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-medium text-neutral-500 uppercase tracking-wide">{metric.label}</p>
+          <p className="text-xs font-medium text-neutral-500 uppercase tracking-wide inline-flex items-center gap-1.5">
+            {metric.label}
+            <InfoTooltip text={metric.calculation} widthClass="w-64" />
+          </p>
           <p className="text-2xl font-semibold text-neutral-900 mt-1">{formatValue(metric.current, metric.unit)}</p>
           <p className="text-xs text-neutral-400 mt-1">
             Previous: {formatValue(metric.previous, metric.unit)}
@@ -143,7 +147,12 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
       {expanded && (
         <div className="mt-3 pt-3 border-t border-neutral-100">
           {metric.driverAvailable ? (
-            <DriverBreakdownTable rows={metric.driverBreakdown} dimensionLabel={metric.driverDimensionLabel ?? "Dimension"} />
+            <>
+              {metric.driverNote && (
+                <p className="text-xs text-neutral-400 mb-2 leading-snug">{metric.driverNote}</p>
+              )}
+              <DriverBreakdownTable rows={metric.driverBreakdown} dimensionLabel={metric.driverDimensionLabel ?? "Dimension"} />
+            </>
           ) : (
             <p className="text-sm text-neutral-400 py-2">No driver breakdown is computed for this metric yet.</p>
           )}
