@@ -3,6 +3,7 @@ import { getLeadTimeDeepDive, getCycleTimeDeepDive } from "@/lib/lead-cycle-time
 import { getFcrReport } from "@/lib/ticket-breakdowns";
 import { getBacklogAgingDeepDive } from "@/lib/backlog-aging";
 import { getSupabaseClient } from "@/lib/supabase";
+import { computeReviewWaitBaseline } from "@/lib/review-wait";
 
 /**
  * The two quarters her ask is locking in as the reference point. Combined with a count-weighted
@@ -19,7 +20,9 @@ export type KpiMetricKey =
   | "cycle_time_doer"
   | "cycle_time_validator"
   | "fcr_rate"
-  | "ageing_rate";
+  | "ageing_rate"
+  /** Average completed Review Wait Time per review cycle (minutes) — the deep-dive's default target. */
+  | "review_wait";
 
 export type KpiBaselineRow = {
   team_key: string;
@@ -119,6 +122,11 @@ export async function computeTeamBaselines(team: TeamConfig): Promise<KpiBaselin
       )
     );
 
+    // Per review cycle over the whole Q1+Q2 window (not quarter-weighted — each cycle is one
+    // sample already). Same function the Review Wait page falls back to live, so they can't differ.
+    const reviewWait = await computeReviewWaitBaseline(team.team_key);
+    rows.push(baselineRow(team.team_key, "review_wait", reviewWait, computedAt));
+
     const ageingReports = await Promise.all(
       BASELINE_QUARTERS.map((period) => getBacklogAgingDeepDive(team.team_key, "quarter", period))
     );
@@ -149,10 +157,24 @@ export async function computeTeamBaselines(team: TeamConfig): Promise<KpiBaselin
   return rows;
 }
 
+/**
+ * `review_wait` is upserted on its own, after the rest: until
+ * supabase/add-kpi-baselines-review-wait.sql widens the table's `metric` check constraint, the
+ * database rejects that row — and a single upsert would then fail the whole batch, taking the
+ * existing baselines down with it. The Review Wait page computes the same value live meanwhile.
+ */
 export async function storeTeamBaselines(rows: KpiBaselineRow[]): Promise<void> {
   if (!rows.length) return;
-  const { error } = await getSupabaseClient().from("kpi_baselines").upsert(rows, { onConflict: "team_key,metric" });
-  if (error) throw new Error(`Failed to store KPI baselines: ${error.message}`);
+  const core = rows.filter((r) => r.metric !== "review_wait");
+  const reviewWait = rows.filter((r) => r.metric === "review_wait");
+  if (core.length) {
+    const { error } = await getSupabaseClient().from("kpi_baselines").upsert(core, { onConflict: "team_key,metric" });
+    if (error) throw new Error(`Failed to store KPI baselines: ${error.message}`);
+  }
+  if (reviewWait.length) {
+    const { error } = await getSupabaseClient().from("kpi_baselines").upsert(reviewWait, { onConflict: "team_key,metric" });
+    if (error) console.warn(`[storeTeamBaselines] review_wait not stored (run supabase/add-kpi-baselines-review-wait.sql): ${error.message}`);
+  }
 }
 
 /** One team at a time — this is a rare admin action, not a hot path, so sequential is simpler and

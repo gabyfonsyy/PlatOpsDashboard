@@ -9,8 +9,11 @@ import { getTicketOutcomeCards, outcomeDef } from "@/lib/ticket-outcomes";
 import { getP1SlaReport } from "@/lib/p1-sla";
 import { slaStatusForRate, STATUS_LABEL, STATUS_TONE } from "@/lib/sla-status";
 import { AUTOMATION_LABELS_COOKIE, resolveAutomationLabels } from "@/lib/automation-labels";
-import { resolveFilters } from "@/lib/date-ranges";
+import { resolveFilters, shiftPeriod } from "@/lib/date-ranges";
+import { vsPreviousTrend } from "@/lib/period-trend";
 import { getKpiBaselines, baselineTrend } from "@/lib/kpi-baselines";
+import { getReviewWaitScorecard } from "@/lib/review-wait";
+import { REVIEW_TARGET_COOKIE, parseReviewTargetCookie, fmtDur } from "@/lib/review-wait-view";
 import {
   formatMinutesDecimalValue,
   formatDaysValue,
@@ -49,7 +52,9 @@ export default async function TeamDashboardPage({
   // rather than the built-in default. Without this the card and the page it links to disagree the
   // moment she edits the automation-label catalogue.
   const automationLabels = resolveAutomationLabels(cookies().get(AUTOMATION_LABELS_COOKIE)?.value);
-  const [metrics, insight, automatedCount, p1Sla, outcomeCards, baselines] = await Promise.all([
+  // The previous period of the same length, for each card's "vs previous period" line.
+  const prevPeriod = shiftPeriod(range, period, -1);
+  const [metrics, insight, automatedCount, p1Sla, outcomeCards, baselines, prevMetrics, prevAutomatedCount] = await Promise.all([
     getTicketMetrics(team.team_key, range, period, issueType),
     getInsight(`TEAM:${team.team_key}`),
     hasAssignedSe
@@ -58,7 +63,21 @@ export default async function TeamDashboardPage({
     team.has_p1_sla_tracking ? getP1SlaReport(team.team_key, range, period, issueType) : Promise.resolve(null),
     getTicketOutcomeCards(team.team_key, range, period, issueType),
     getKpiBaselines(team.team_key),
+    getTicketMetrics(team.team_key, range, prevPeriod, issueType),
+    hasAssignedSe
+      ? getAutomatedTicketCount(team.team_key, range, prevPeriod, issueType, automationLabels)
+      : Promise.resolve(0),
   ]);
+  // Same population + target as the Review Wait deep-dive it links to (lib/review-wait.ts), not the
+  // GAS metrics_daily.peer_review_wait_* columns (bucketed by ticket created date, older exit rule).
+  // Needs the baselines for the target, so it runs after the batch above rather than inside it.
+  const reviewWait = team.has_peer_review_tracking
+    ? await getReviewWaitScorecard(team.team_key, range, period, {
+        issueType,
+        baseline: baselines.review_wait,
+        targetOverrideMinutes: parseReviewTargetCookie(cookies().get(REVIEW_TARGET_COOKIE)?.value),
+      })
+    : null;
   const baselineComputedAt = baselines.lead_time?.computed_at ?? null;
 
   const issueTypes = team.issue_types_csv
@@ -92,6 +111,8 @@ export default async function TeamDashboardPage({
           label="Ticket Volume"
           value={formatNumber(metrics.ticketsCreated)}
           sublabel={`${formatNumber(metrics.ticketsResolvedInPeriod)} resolved`}
+          trend={vsPreviousTrend(metrics.ticketsCreated, prevMetrics.ticketsCreated, { better: "neutral" })}
+          baseline={{ label: `Previous period: ${formatNumber(prevMetrics.ticketsCreated)} created` }}
           tooltip={
             team.has_peer_review_tracking
               ? "Total tickets created during the selected period. The sublabel shows how many tickets were resolved during the period (by resolved date)."
@@ -108,7 +129,8 @@ export default async function TeamDashboardPage({
               : "Average time from ticket creation until it moved to Ready for Checking or Cancelled, across all tickets resolved in the period. Shown in days; the subnote breaks the same value down into days/hours/minutes. Click through for the deep-dive (top assignee/product/label, longest tickets)."
           }
           href={`/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=lead`}
-          trend={baselineTrend(metrics.leadTimeAvgMinutes, baselines.lead_time, { lowerIsBetter: true, formatValue: formatDaysValue })}
+          trend={vsPreviousTrend(metrics.leadTimeAvgMinutes, prevMetrics.leadTimeAvgMinutes, { better: "lower" })}
+          baseline={baselineLabel(baselineTrend(metrics.leadTimeAvgMinutes, baselines.lead_time, { lowerIsBetter: true, formatValue: formatDaysValue }))}
         />
         <MetricCard
           label="Cycle Time"
@@ -120,15 +142,26 @@ export default async function TeamDashboardPage({
               : "Average time from when the ticket moved out of Backlog/To Do until it moved to Ready for Checking or Cancelled, across tickets resolved in the period. Shown in days, rounded up to 2 decimals. Click through for the deep-dive (top assignee/product/label, longest tickets)."
           }
           href={`/${team.team_key.toLowerCase()}/lead-cycle-time?${filterQuery}&metric=cycle`}
-          trend={baselineTrend(metrics.cycleTimeAvgMinutes, baselines.cycle_time_total, { lowerIsBetter: true, formatValue: formatDaysValueCeil })}
+          trend={vsPreviousTrend(metrics.cycleTimeAvgMinutes, prevMetrics.cycleTimeAvgMinutes, { better: "lower" })}
+          baseline={baselineLabel(baselineTrend(metrics.cycleTimeAvgMinutes, baselines.cycle_time_total, { lowerIsBetter: true, formatValue: formatDaysValueCeil }))}
         />
         {team.has_peer_review_tracking && (
           <MetricCard
             label="Review Wait Time"
-            value={formatMinutesDecimalValue(metrics.peerReviewWaitAvgMinutes)}
-            sublabel={formatDurationBreakdown(metrics.peerReviewWaitAvgMinutes)}
-            tooltip="Average time a ticket spends in For Peer Review before moving on to On Hold or For Checking, across review cycles that finished during the period. Attributed to the reviewer it was handed to on entry. Click through for the breakdown."
+            value={formatDaysValue(reviewWait?.stats.avgMinutes ?? null)}
+            sublabel={
+              reviewWait && reviewWait.stats.avgMinutes !== null
+                ? `${fmtDur(reviewWait.stats.avgMinutes)} avg · median ${fmtDur(reviewWait.stats.medianMinutes)}${reviewWait.stats.p90Minutes !== null ? ` · P90 ${fmtDur(reviewWait.stats.p90Minutes)}` : ""}`
+                : undefined
+            }
+            tooltip="Average time a ticket sits in For Peer Review before moving to On Hold, For Checking, Archived or Rejected, per review cycle that started in the period (pass-throughs under a minute aren't counted). Shown in days; calendar time, same basis as Cycle Time. Click through for reviewer load, the review queue, the longest reviews and what's driving them."
             href={`/${team.team_key.toLowerCase()}/review-wait?${filterQuery}`}
+            trend={vsPreviousTrend(reviewWait?.stats.avgMinutes, reviewWait?.comparison?.previousAvgMinutes, { better: "lower" })}
+            baseline={
+              reviewWait?.stats.withinTargetPct != null && reviewWait.target.minutes !== null
+                ? { label: `${formatPercent(reviewWait.stats.withinTargetPct, 0)} within ${fmtDur(reviewWait.target.minutes)} target` }
+                : undefined
+            }
           />
         )}
         <MetricCard
@@ -141,13 +174,16 @@ export default async function TeamDashboardPage({
               : "Overdue tickets ÷ total tickets resolved (moved to Ready for Checking or Cancelled) in the period. Overdue = resolved after the due date (resolved date > due date). Click through for the ticket-by-ticket list."
           }
           href={`/${team.team_key.toLowerCase()}/backlog-aging?${filterQuery}`}
-          trend={baselineTrend(metrics.backlogAgingRate, baselines.ageing_rate, { lowerIsBetter: true, formatValue: (v) => formatPercent(v, 2) })}
+          trend={vsPreviousTrend(metrics.backlogAgingRate, prevMetrics.backlogAgingRate, { better: "lower", mode: "pts" })}
+          baseline={baselineLabel(baselineTrend(metrics.backlogAgingRate, baselines.ageing_rate, { lowerIsBetter: true, formatValue: (v) => formatPercent(v, 2) }))}
         />
         {hasAssignedSe && (
           <MetricCard
             label="Automated Tickets"
             value={formatNumber(automatedCount)}
             sublabel={`of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved`}
+            trend={vsPreviousTrend(automatedCount, prevAutomatedCount, { better: "neutral" })}
+            baseline={{ label: `Previous period: ${formatNumber(prevAutomatedCount)} of ${formatNumber(prevMetrics.ticketsResolvedInPeriod)} resolved` }}
             tooltip="Tickets resolved in the period that no person on the team owns — Assigned SE is blank or set to the automation account — plus any ticket carrying one of your catalogued automation labels. Archived and Rejected tickets are excluded, since nobody did the work on them. Jira's own assignee is not used to decide this. Click through for the labels behind them, their lead and cycle times, and the ticket list."
             href={`/${team.team_key.toLowerCase()}/automated?${filterQuery}`}
           />
@@ -234,4 +270,13 @@ export default async function TeamDashboardPage({
       )}
     </div>
   );
+}
+
+/**
+ * Lead/Cycle/Ageing used to put the Q1+Q2 baseline comparison in the card's coloured `trend` slot.
+ * That slot now carries "vs previous period" (like Review Wait Time), so the baseline comparison —
+ * same text, including its % difference — moves to the quiet second line underneath.
+ */
+function baselineLabel(t: ReturnType<typeof baselineTrend>): { label: string } | undefined {
+  return t ? { label: t.label } : undefined;
 }

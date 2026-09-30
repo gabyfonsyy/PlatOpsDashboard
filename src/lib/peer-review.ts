@@ -1,6 +1,8 @@
 import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
 import { resolvePeriodToDateRange } from "@/lib/period-range";
 import { toManilaDateString } from "@/lib/manila-date";
+import { isExcludedIssueType } from "@/lib/teams";
+import { classifyReviewCycle, UNASSIGNED_REVIEWER, type PeerReviewCycleRaw } from "@/lib/review-wait";
 
 export type PeerReviewCycle = {
   issueKey: string;
@@ -42,43 +44,30 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-type PeerReviewCycleRaw = {
-  enteredAt?: string;
-  exitedAt?: string;
-  exitedToStatus?: string;
-  reviewer?: string;
-  reviewerAtEntry?: string;
-};
 
 type TicketRow = {
   issue_key: string;
+  issue_type: string | null;
   peer_review_cycles_json: PeerReviewCycleRaw[] | null;
 };
 
 /**
- * Mirrors gas/PeerReviewApi.gs's own looseness: GAS reads every RAW_ST_<year> tab the period's
- * years span (getRawRowsForYears_), not a tight per-row filter, since the JSON payload's cycle
- * dates aren't queryable at that granularity anyway — the exact enteredAt/exitedAt check happens
- * in JS regardless. Filtering by `created` year here gives Postgres a real bound without
- * pretending to be more precise than the source data allows.
+ * Every ST ticket that has ever been in review (~5k rows), filtered to the period by each cycle's
+ * own enteredAt in JS below. This used to bound the query by the ticket's `created` year, which
+ * silently dropped any review that happened in a later year than the ticket was created (e.g.
+ * ST-66311: created 2025-03, reviewed 2026-07). `neq '[]'` is what keeps the fetch small — the
+ * column is non-null on ~86k rows but a real array on only ~5k.
  */
-async function fetchPeerReviewTickets(startDate: string, endDate: string): Promise<TicketRow[]> {
-  const startYear = Number(startDate.slice(0, 4));
-  const endYear = Number(endDate.slice(0, 4));
-
-  // Pages requested CONCURRENTLY via fetchAllRowsParallel, ordered by issue_key (the primary key,
-  // so the ordering is total) — MANDATORY, not a nicety: an unordered .range() page silently drops
-  // and duplicates rows once a query spans more than one page, which this one routinely does (it
-  // pulls every ST ticket for the FULL calendar year(s) the period touches, regardless of range).
+async function fetchPeerReviewTickets(): Promise<TicketRow[]> {
+  // Ordered by issue_key (the primary key) — MANDATORY for fetchAllRowsParallel's page offsets.
   return fetchAllRowsParallel<TicketRow>(
     (head) =>
       getSupabaseClient()
         .from("tickets")
-        .select("issue_key,peer_review_cycles_json", head ? { count: "exact", head: true } : undefined)
+        .select("issue_key,issue_type,peer_review_cycles_json", head ? { count: "exact", head: true } : undefined)
         .eq("team_key", "ST")
         .not("peer_review_cycles_json", "is", null)
-        .gte("created", `${startYear}-01-01T00:00:00Z`)
-        .lte("created", `${endYear}-12-31T23:59:59Z`),
+        .neq("peer_review_cycles_json", "[]"),
     "issue_key"
   );
 }
@@ -108,37 +97,38 @@ export async function getCompletedPeerReviewCycles(
   period: string
 ): Promise<{ cycles: PeerReviewCycle[]; inReview: PeerReviewInReview[] }> {
   const { startDate, endDate } = resolvePeriodToDateRange(range, period);
-  const rows = await fetchPeerReviewTickets(startDate, endDate);
+  const rows = await fetchPeerReviewTickets();
 
   const cycles: PeerReviewCycle[] = [];
   const inReview: PeerReviewInReview[] = [];
 
   for (const r of rows) {
     if (!r.peer_review_cycles_json) continue;
+    // Technical Story is out of every SE metric (lib/teams.ts's excludedIssueTypes) — Cycle Time
+    // already skipped it, this report didn't.
+    if (isExcludedIssueType("ST", r.issue_type)) continue;
 
     for (const c of r.peer_review_cycles_json) {
-      if (!c.enteredAt) continue;
       const enteredDate = toManilaDateString(c.enteredAt);
       if (!enteredDate || enteredDate < startDate || enteredDate > endDate) continue;
 
-      if (!c.exitedAt) {
-        inReview.push({ issueKey: r.issue_key, reviewer: c.reviewerAtEntry || "", enteredAt: c.enteredAt });
+      // Shared with the Review Wait deep-dive (lib/review-wait.ts): a completed review exits to
+      // On Hold, For Checking, Archived or Rejected. Other exits (For Execution, For Product Team)
+      // and bad timestamps are real rows the deep-dive reports under Data Quality, not here.
+      const { kind, waitMinutes } = classifyReviewCycle(c);
+      if (kind === "open") {
+        inReview.push({ issueKey: r.issue_key, reviewer: c.reviewerAtEntry || "", enteredAt: c.enteredAt! });
         continue;
       }
-
-      // Business rule only cares about exits to On Hold / For Checking — cycles that exit
-      // some other way (e.g. cancelled) are still recorded by the extractor but excluded
-      // here rather than dropped at extraction time, so no data is silently lost upstream.
-      const exitedToStatus = (c.exitedToStatus || "").toLowerCase();
-      if (exitedToStatus !== "on hold" && exitedToStatus !== "for checking") continue;
+      if (kind !== "completed") continue;
 
       cycles.push({
         issueKey: r.issue_key,
-        reviewer: c.reviewerAtEntry || "(unassigned)",
-        enteredAt: c.enteredAt,
-        exitedAt: c.exitedAt,
+        reviewer: c.reviewerAtEntry || UNASSIGNED_REVIEWER,
+        enteredAt: c.enteredAt!,
+        exitedAt: c.exitedAt!,
         exitedToStatus: c.exitedToStatus || "",
-        waitMinutes: round2((new Date(c.exitedAt).getTime() - new Date(c.enteredAt).getTime()) / 60000),
+        waitMinutes: waitMinutes!,
       });
     }
   }

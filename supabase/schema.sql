@@ -164,7 +164,7 @@ create table kpi_baselines (
   team_key text not null references teams_config(team_key),
   metric text not null check (metric in (
     'lead_time', 'cycle_time_total', 'cycle_time_doer', 'cycle_time_validator',
-    'fcr_rate', 'ageing_rate'
+    'fcr_rate', 'ageing_rate', 'review_wait'
   )),
   value numeric,
   sample_count integer not null default 0,
