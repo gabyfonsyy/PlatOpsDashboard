@@ -13,6 +13,7 @@ import { toManilaDateString, minutesBetween } from "@/lib/manila-date";
 import { BREAKDOWN_TICKET_LIMIT } from "@/lib/ticket-breakdowns";
 import { BACKEND_EXECUTION_ISSUE_TYPES } from "@/lib/tool-assisted";
 import { median } from "@/lib/stats";
+import { SKIPPED_REVIEW_MINUTES } from "@/lib/review-wait";
 
 export type LeadCycleTimeMetric = "lead" | "cycle";
 
@@ -69,7 +70,11 @@ const SELECT_COLUMNS =
  * Sums the qualifying peer-review cycles on one ticket — same business rule as
  * lib/peer-review.ts/lib/tool-assisted.ts's peerReviewFor: only cycles that exited to On Hold or
  * For Checking count (a cycle that exited some other way, e.g. cancelled, is real but out of
- * scope here), and an open cycle (no exitedAt yet) has no duration to contribute. Returns null
+ * scope here), and an open cycle (no exitedAt yet) has no duration to contribute. A pass-through
+ * that left review in under SKIPPED_REVIEW_MINUTES is not a review either (same rule as the Review
+ * Wait page, lib/review-wait.ts — confirmed with the user 2026-09-30): a ticket whose ONLY review
+ * was a pass-through now counts as never reviewed (null), instead of as a 0-minute review that
+ * dragged the Validator average down (~2-5% on SE Cycle Time). Returns null
  * rather than 0 when there were no qualifying cycles, so "never reviewed" and "reviewed in zero
  * minutes" stay distinguishable — null is excluded from the average instead of dragging it down.
  */
@@ -81,7 +86,9 @@ function sumPeerReviewMinutes(cycles: PeerReviewCycleRaw[] | null | undefined): 
     if (!c.enteredAt || !c.exitedAt) continue;
     const exitedTo = (c.exitedToStatus || "").toLowerCase();
     if (exitedTo !== "on hold" && exitedTo !== "for checking") continue;
-    total += minutesBetween(c.enteredAt, c.exitedAt);
+    const minutes = minutesBetween(c.enteredAt, c.exitedAt);
+    if (minutes < SKIPPED_REVIEW_MINUTES) continue;
+    total += minutes;
     count++;
   }
   return count ? round2(total) : null;
