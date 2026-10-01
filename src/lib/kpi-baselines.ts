@@ -1,9 +1,10 @@
-import { getTeams, type TeamConfig } from "@/lib/teams";
+import { getTeams, backlogAgingAssigneeLabel, type TeamConfig } from "@/lib/teams";
 import { getLeadTimeDeepDive, getCycleTimeDeepDive } from "@/lib/lead-cycle-time";
 import { getFcrReport } from "@/lib/ticket-breakdowns";
 import { getBacklogAgingDeepDive } from "@/lib/backlog-aging";
 import { getSupabaseClient } from "@/lib/supabase";
 import { computeReviewWaitBaseline } from "@/lib/review-wait";
+import { computeAutomatedShareBaseline } from "@/lib/automated-tickets";
 
 /**
  * The two quarters her ask is locking in as the reference point. Combined with a count-weighted
@@ -22,7 +23,9 @@ export type KpiMetricKey =
   | "fcr_rate"
   | "ageing_rate"
   /** Average completed Review Wait Time per review cycle (minutes) — the deep-dive's default target. */
-  | "review_wait";
+  | "review_wait"
+  /** Automated tickets ÷ tickets resolved (0-1), default automation-label catalogue — Assigned SE teams only. */
+  | "automated_share";
 
 export type KpiBaselineRow = {
   team_key: string;
@@ -140,6 +143,12 @@ export async function computeTeamBaselines(team: TeamConfig): Promise<KpiBaselin
     );
   }
 
+  // Automated Tickets is defined on Assigned SE, so only teams owned through that field get one.
+  // Pooled over the whole Q1+Q2 window with the built-in label catalogue (not a browser's cookie).
+  if (backlogAgingAssigneeLabel(team) === "Assigned SE") {
+    rows.push(baselineRow(team.team_key, "automated_share", await computeAutomatedShareBaseline(team.team_key), computedAt));
+  }
+
   if (team.has_fcr_escalation) {
     const fcrReports = await Promise.all(
       BASELINE_QUARTERS.map((period) => getFcrReport(team.team_key, "quarter", period))
@@ -158,22 +167,26 @@ export async function computeTeamBaselines(team: TeamConfig): Promise<KpiBaselin
 }
 
 /**
- * `review_wait` is upserted on its own, after the rest: until
- * supabase/add-kpi-baselines-review-wait.sql widens the table's `metric` check constraint, the
- * database rejects that row — and a single upsert would then fail the whole batch, taking the
- * existing baselines down with it. The Review Wait page computes the same value live meanwhile.
+ * Metrics added after the table, each upserted on its own after the rest: until its migration
+ * widens the table's `metric` check constraint, the database rejects that row — and a single
+ * upsert would then fail the whole batch, taking the existing baselines down with it. Both pages
+ * compute the same value live meanwhile.
  */
+const LATE_METRICS: Partial<Record<KpiMetricKey, string>> = {
+  review_wait: "supabase/add-kpi-baselines-review-wait.sql",
+  automated_share: "supabase/add-kpi-baselines-automated-share.sql",
+};
+
 export async function storeTeamBaselines(rows: KpiBaselineRow[]): Promise<void> {
   if (!rows.length) return;
-  const core = rows.filter((r) => r.metric !== "review_wait");
-  const reviewWait = rows.filter((r) => r.metric === "review_wait");
+  const core = rows.filter((r) => !LATE_METRICS[r.metric]);
   if (core.length) {
     const { error } = await getSupabaseClient().from("kpi_baselines").upsert(core, { onConflict: "team_key,metric" });
     if (error) throw new Error(`Failed to store KPI baselines: ${error.message}`);
   }
-  if (reviewWait.length) {
-    const { error } = await getSupabaseClient().from("kpi_baselines").upsert(reviewWait, { onConflict: "team_key,metric" });
-    if (error) console.warn(`[storeTeamBaselines] review_wait not stored (run supabase/add-kpi-baselines-review-wait.sql): ${error.message}`);
+  for (const row of rows.filter((r) => LATE_METRICS[r.metric])) {
+    const { error } = await getSupabaseClient().from("kpi_baselines").upsert([row], { onConflict: "team_key,metric" });
+    if (error) console.warn(`[storeTeamBaselines] ${row.metric} not stored (run ${LATE_METRICS[row.metric]}): ${error.message}`);
   }
 }
 

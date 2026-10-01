@@ -351,8 +351,8 @@ export async function getBusinessReview(
         ? Promise.all([
             getP1SlaReport(team.team_key, "custom", key, undefined, undefined, resolvedCurrent.start, resolvedCurrent.end),
             getP1SlaReport(team.team_key, "custom", key, undefined, undefined, resolvedPrevious.start, resolvedPrevious.end),
-            getAutomatedTicketsReport(team.team_key, "custom", key, undefined, undefined, resolvedCurrent.start, resolvedCurrent.end),
-            getAutomatedTicketsReport(team.team_key, "custom", key, undefined, undefined, resolvedPrevious.start, resolvedPrevious.end),
+            getAutomatedTicketsReport(team.team_key, "custom", key, { start: resolvedCurrent.start, end: resolvedCurrent.end }),
+            getAutomatedTicketsReport(team.team_key, "custom", key, { start: resolvedPrevious.start, end: resolvedPrevious.end }),
             getFcrReport(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
             getFcrReport(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
             getEndToEndCycleTimeAverage(team.team_key, resolvedCurrent.start, resolvedCurrent.end),

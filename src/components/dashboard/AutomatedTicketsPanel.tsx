@@ -20,6 +20,12 @@ import {
 } from "@/components/dashboard/LabelPrefsContext";
 import { formatDaysValue, formatManilaDate, formatNumber, formatPercent } from "@/lib/format";
 
+const QUALIFIED_LABEL: Record<AutomatedTicket["qualifiedBy"], string> = {
+  bot: "bot-owned",
+  label: "by label",
+  blank: "blank SE",
+};
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
@@ -186,7 +192,7 @@ export function AutomatedTicketsPanel({
       issueKey: `${t.issueKey} ${t.issueType}`,
       product: t.product,
       labels: labelsByIssueKey.get(t.issueKey) ?? "",
-      assignedSe: `${t.assignedSe || "(none)"} ${t.jiraAssignee}`,
+      assignedSe: `${t.assignedSe || "(none)"} ${QUALIFIED_LABEL[t.qualifiedBy]}`,
       escalation: t.escalation || "(none)",
       lead: t.leadMinutes === null ? "" : formatDaysValue(t.leadMinutes),
       cycle: t.cycleMinutes === null ? "" : formatDaysValue(t.cycleMinutes),
@@ -283,8 +289,8 @@ export function AutomatedTicketsPanel({
           canReset={!sameList(known, KNOWN_AUTOMATION_LABELS)}
           addPlaceholder="Add an automation label…"
           addLabel="Add"
-          emptyMessage="No labels catalogued yet — only unowned tickets are counted."
-          chipTitle={(l) => `Remove "${l}" — its tickets leave this report unless they are unowned`}
+          emptyMessage="No labels catalogued yet — only bot-owned tickets are counted."
+          chipTitle={(l) => `Remove "${l}" — its tickets leave this report unless the bot owns them`}
           tone="sprout"
           busy={pending}
         />
@@ -383,8 +389,10 @@ export function AutomatedTicketsPanel({
             <h3 className="text-sm font-semibold text-neutral-900">Automated Tickets</h3>
             <p className="text-xs text-neutral-400 mt-0.5">
               Filter any column to find a specific ticket. Filter Assigned SE on{" "}
-              <code className="text-[11px] bg-neutral-100 px-1 rounded">(none)</code> for the ones
-              missing an SE entirely, or on the automation account for the ones a bot owns.
+              <code className="text-[11px] bg-neutral-100 px-1 rounded">bot-owned</code> or{" "}
+              <code className="text-[11px] bg-neutral-100 px-1 rounded">by label</code> (or{" "}
+              <code className="text-[11px] bg-neutral-100 px-1 rounded">blank SE</code> when included) to
+              split by how a ticket qualified.
             </p>
             <p className="text-xs text-neutral-400 mt-0.5">
               {active.length > 0
@@ -466,16 +474,10 @@ export function AutomatedTicketsPanel({
                     {labelsByIssueKey.get(t.issueKey) || "—"}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap align-top">
-                    {t.assignedSe ? t.assignedSe : <span className="text-amber-700">(none)</span>}
-                    {/* Jira's assignee is a repair hint for a blank Assigned SE, never attribution
-                        — the same rule as the Tool-Assisted page's unattributable list. The report
-                        already blanks it when it just repeats the reporter (assigneeRepairHint), so
-                        this only renders when it names someone new. */}
-                    {!t.assignedSe && t.jiraAssignee && (
-                      <span className="block text-[11px] text-neutral-400 font-normal">
-                        Jira: {t.jiraAssignee}
-                      </span>
-                    )}
+                    {t.assignedSe || <span className="text-amber-700">(none)</span>}
+                    <span className="block text-[11px] text-neutral-400 font-normal">
+                      {QUALIFIED_LABEL[t.qualifiedBy]}
+                    </span>
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap align-top">{t.escalation || "—"}</td>
                   <td className="px-4 py-3 whitespace-nowrap align-top">
