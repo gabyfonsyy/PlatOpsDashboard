@@ -586,7 +586,7 @@ export function defaultGrainFor(range: string): ReviewWaitGrain {
   return "day";
 }
 
-function bucketKey(grain: ReviewWaitGrain, isoDate: string): string {
+export function bucketKey(grain: ReviewWaitGrain, isoDate: string): string {
   if (grain === "month") return isoDate.slice(0, 7);
   if (grain === "week") {
     const d = new Date(`${isoDate}T00:00:00Z`);
@@ -597,7 +597,7 @@ function bucketKey(grain: ReviewWaitGrain, isoDate: string): string {
 }
 
 /** Buckets covering [startDate, endDate], each with its last calendar day (clamped to the range). */
-function enumerateBuckets(grain: ReviewWaitGrain, startDate: string, endDate: string): { key: string; firstDay: string; lastDay: string }[] {
+export function enumerateBuckets(grain: ReviewWaitGrain, startDate: string, endDate: string): { key: string; firstDay: string; lastDay: string }[] {
   const out: { key: string; firstDay: string; lastDay: string }[] = [];
   const cursor = new Date(`${startDate}T00:00:00Z`);
   const end = new Date(`${endDate}T00:00:00Z`);

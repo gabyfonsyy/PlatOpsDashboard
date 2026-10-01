@@ -40,7 +40,7 @@ const GRAINS: { key: ReviewWaitGrain; label: string }[] = [
 ];
 
 /** Daily/Weekly/Monthly — re-buckets server-side via the `grain` URL param (same pattern as FilterBar). */
-function GrainToggle({ active }: { active: ReviewWaitGrain }) {
+export function GrainToggle({ active }: { active: ReviewWaitGrain }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();

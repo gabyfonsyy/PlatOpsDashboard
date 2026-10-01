@@ -4,11 +4,11 @@ import { notFound } from "next/navigation";
 import { getTeamByKey, backlogAgingAssigneeLabel } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
-import { getAutomatedTicketCount } from "@/lib/automated-tickets";
+import { getAutomatedScorecard } from "@/lib/automated-tickets";
 import { getTicketOutcomeCards, outcomeDef } from "@/lib/ticket-outcomes";
 import { getP1SlaReport } from "@/lib/p1-sla";
 import { slaStatusForRate, STATUS_LABEL, STATUS_TONE } from "@/lib/sla-status";
-import { AUTOMATION_LABELS_COOKIE, resolveAutomationLabels } from "@/lib/automation-labels";
+import { AUTOMATION_LABELS_COOKIE, AUTOMATION_INCLUDE_BLANK_COOKIE, resolveAutomationLabels, resolveIncludeBlank } from "@/lib/automation-labels";
 import { resolveFilters, shiftPeriod } from "@/lib/date-ranges";
 import { vsPreviousTrend } from "@/lib/period-trend";
 import { getKpiBaselines, baselineTrend } from "@/lib/kpi-baselines";
@@ -52,21 +52,19 @@ export default async function TeamDashboardPage({
   // rather than the built-in default. Without this the card and the page it links to disagree the
   // moment she edits the automation-label catalogue.
   const automationLabels = resolveAutomationLabels(cookies().get(AUTOMATION_LABELS_COOKIE)?.value);
+  const includeBlankSe = resolveIncludeBlank(cookies().get(AUTOMATION_INCLUDE_BLANK_COOKIE)?.value);
   // The previous period of the same length, for each card's "vs previous period" line.
   const prevPeriod = shiftPeriod(range, period, -1);
-  const [metrics, insight, automatedCount, p1Sla, outcomeCards, baselines, prevMetrics, prevAutomatedCount] = await Promise.all([
+  const [metrics, insight, automated, p1Sla, outcomeCards, baselines, prevMetrics] = await Promise.all([
     getTicketMetrics(team.team_key, range, period, issueType),
     getInsight(`TEAM:${team.team_key}`),
     hasAssignedSe
-      ? getAutomatedTicketCount(team.team_key, range, period, issueType, automationLabels)
-      : Promise.resolve(0),
+      ? getAutomatedScorecard(team.team_key, range, period, issueType, automationLabels, includeBlankSe)
+      : Promise.resolve(null),
     team.has_p1_sla_tracking ? getP1SlaReport(team.team_key, range, period, issueType) : Promise.resolve(null),
     getTicketOutcomeCards(team.team_key, range, period, issueType),
     getKpiBaselines(team.team_key),
     getTicketMetrics(team.team_key, range, prevPeriod, issueType),
-    hasAssignedSe
-      ? getAutomatedTicketCount(team.team_key, range, prevPeriod, issueType, automationLabels)
-      : Promise.resolve(0),
   ]);
   // Same population + target as the Review Wait deep-dive it links to (lib/review-wait.ts), not the
   // GAS metrics_daily.peer_review_wait_* columns (bucketed by ticket created date, older exit rule).
@@ -177,14 +175,24 @@ export default async function TeamDashboardPage({
           trend={vsPreviousTrend(metrics.backlogAgingRate, prevMetrics.backlogAgingRate, { better: "lower", mode: "pts" })}
           baseline={baselineLabel(baselineTrend(metrics.backlogAgingRate, baselines.ageing_rate, { lowerIsBetter: true, formatValue: (v) => formatPercent(v, 2) }))}
         />
-        {hasAssignedSe && (
+        {automated && (
           <MetricCard
             label="Automated Tickets"
-            value={formatNumber(automatedCount)}
-            sublabel={`of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved`}
-            trend={vsPreviousTrend(automatedCount, prevAutomatedCount, { better: "neutral" })}
-            baseline={{ label: `Previous period: ${formatNumber(prevAutomatedCount)} of ${formatNumber(prevMetrics.ticketsResolvedInPeriod)} resolved` }}
-            tooltip="Tickets resolved in the period that no person on the team owns — Assigned SE is blank or set to the automation account — plus any ticket carrying one of your catalogued automation labels. Archived and Rejected tickets are excluded, since nobody did the work on them. Jira's own assignee is not used to decide this. Click through for the labels behind them, their lead and cycle times, and the ticket list."
+            value={formatPercent(automated.automatedShare)}
+            sublabel={`${formatNumber(automated.automatedCount)} of ${formatNumber(automated.resolvedInPeriod)} resolved${automated.includeBlank ? " · incl. blank SE" : ""}`}
+            trend={vsPreviousTrend(automated.automatedShare, automated.previous?.automatedShare, { better: "higher", mode: "pts" })}
+            baseline={baselineLabel(
+              baselineTrend(
+                automated.automatedShare,
+                // With blank SE included, the stored (default-definition) baseline would compare a
+                // different population — use the live one computed under the same rule instead.
+                automated.liveBaseline
+                  ? { team_key: team.team_key, metric: "automated_share", value: automated.liveBaseline.value, sample_count: automated.liveBaseline.sampleCount, period_label: "2026-Q1+Q2", computed_at: "" }
+                  : baselines.automated_share,
+                { lowerIsBetter: false, formatValue: (v) => formatPercent(v) }
+              )
+            )}
+            tooltip="Share of tickets resolved in the period that automation handled: Assigned SE is the automation account, or the ticket carries one of your catalogued automation labels. A blank Assigned SE no longer counts — those are tagging gaps, listed under Data quality on the drill-down. Archived and Rejected automated tickets are left out of the count but every resolved ticket stays in the denominator. Higher is better. Click through for trends, automated vs manual, and the ticket list."
             href={`/${team.team_key.toLowerCase()}/automated?${filterQuery}`}
           />
         )}

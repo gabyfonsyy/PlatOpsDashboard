@@ -102,3 +102,26 @@ export function hasAutomationLabel(labelsCsv: string | null | undefined, set: Se
     .filter(Boolean)
     .some((l) => set.has(l));
 }
+
+/**
+ * Opt-in: count tickets with a BLANK Assigned SE as automated too — the definition before
+ * 2026-10-01. Off by default because on ST most blank-SE tickets are CA tagging gaps, not bots.
+ * A cookie for the same reason as the catalogue: the server decides the population, and the Team
+ * Stats card must read the same setting as the page it links to. "1" = on; anything else = off.
+ */
+export const AUTOMATION_INCLUDE_BLANK_COOKIE = "platops-automation-include-blank";
+
+export function resolveIncludeBlank(cookieValue: string | undefined): boolean {
+  return cookieValue === "1";
+}
+
+/** Client-side only. */
+export function persistIncludeBlankCookie(on: boolean): void {
+  try {
+    document.cookie = on
+      ? `${AUTOMATION_INCLUDE_BLANK_COOKIE}=1; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`
+      : `${AUTOMATION_INCLUDE_BLANK_COOKIE}=; path=/; max-age=0; samesite=lax`;
+  } catch {
+    // Cookies blocked: the server keeps the default (blank SE excluded).
+  }
+}
