@@ -157,7 +157,7 @@ export async function computeTeamBaselines(team: TeamConfig): Promise<KpiBaselin
       baselineRow(
         team.team_key,
         "fcr_rate",
-        weightedRate(fcrReports.map((r) => ({ numerator: r.fcrYesTickets, denominator: r.resolvedInPeriod }))),
+        weightedRate(fcrReports.map((r) => ({ numerator: r.fcrYesTickets, denominator: r.fcrKnownTickets }))),
         computedAt
       )
     );
