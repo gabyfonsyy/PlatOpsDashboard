@@ -197,7 +197,7 @@ const FULL_SELECT =
 const NARROW_SELECT = "issue_key,issue_type,fcr_value,priority,product,labels,assigned_se,assigned_cod,reporter_display_name,resolved_datetime";
 
 /** Resolved in [startDate, endDate] by Manila day — the same split as lib/ticket-breakdowns.ts. */
-async function fetchResolved<T extends { resolved_datetime: string; issue_type: string | null }>(
+export async function fetchResolved<T extends { resolved_datetime: string; issue_type: string | null }>(
   teamKey: string,
   startDate: string,
   endDate: string,
@@ -230,7 +230,7 @@ async function fetchResolved<T extends { resolved_datetime: string; issue_type: 
   });
 }
 
-function countsOf(rows: { fcr_value: string | null }[]): FcrCounts {
+export function countsOf(rows: { fcr_value: string | null }[]): FcrCounts {
   let fcr = 0;
   let nonFcr = 0;
   let unknown = 0;
@@ -250,7 +250,7 @@ const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 type SegRow = Pick<Row, "issue_type" | "priority" | "product" | "assigned_se" | "assigned_cod" | "reporter_display_name" | "resolved_datetime" | "fcr_value">;
 
-function segmentKey(dim: FcrSegmentDimension, r: SegRow, team: Parameters<typeof backlogAgingAssignee>[0]): string {
+export function segmentKey(dim: FcrSegmentDimension, r: SegRow, team: Parameters<typeof backlogAgingAssignee>[0]): string {
   switch (dim) {
     case "se":
       return backlogAgingAssignee(team, r).trim() || "(unassigned)";

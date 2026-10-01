@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 const pct = (n: number | null | undefined, d = 1) => formatPercent(n ?? null, d);
 const segLabel = (dim: FcrSegmentDimension, key: string) => (dim === "dow" ? key.replace(/^\d+ · /, "") : key);
 
-function Section({ title, subtitle, right, children }: { title: string; subtitle?: string; right?: React.ReactNode; children: React.ReactNode }) {
+export function Section({ title, subtitle, right, children }: { title: string; subtitle?: string; right?: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-end justify-between gap-3 flex-wrap">
@@ -36,7 +36,7 @@ function Section({ title, subtitle, right, children }: { title: string; subtitle
 }
 
 /** Builds a link to this page with some params changed, keeping range/period/issueType/grain. */
-function useHref() {
+export function useHref() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   return (changes: Record<string, string | null>, hash = "#tickets") => {
@@ -49,7 +49,7 @@ function useHref() {
   };
 }
 
-function JiraLink({ issueKey, jiraBaseUrl }: { issueKey: string; jiraBaseUrl?: string }) {
+export function JiraLink({ issueKey, jiraBaseUrl }: { issueKey: string; jiraBaseUrl?: string }) {
   return jiraBaseUrl ? (
     <a href={`${jiraBaseUrl.replace(/\/$/, "")}/browse/${issueKey}`} target="_blank" rel="noreferrer" className="text-sprout-700 hover:underline">
       {issueKey}
@@ -59,7 +59,7 @@ function JiraLink({ issueKey, jiraBaseUrl }: { issueKey: string; jiraBaseUrl?: s
   );
 }
 
-function PtsDelta({ value }: { value: number | null }) {
+export function PtsDelta({ value }: { value: number | null }) {
   if (value === null) return <span className="text-neutral-300">—</span>;
   if (Math.abs(value) < 0.5) return <span className="text-neutral-400">—</span>;
   return (
@@ -214,7 +214,7 @@ function SplitCard({ report, title }: { report: FcrDeepDiveReport; title: string
   );
 }
 
-function Tile({ label, value, sub, href }: { label: string; value: string; sub?: string; href?: string }) {
+export function Tile({ label, value, sub, href }: { label: string; value: string; sub?: string; href?: string }) {
   const body = (
     <>
       <p className="text-[11px] uppercase tracking-wide text-neutral-500">{label}</p>
@@ -264,7 +264,7 @@ function RelatedStrip({ report, title, caveat, teamSlug, query }: { report: FcrD
 
 const DRIVER_DIMS: FcrSegmentDimension[] = ["se", "issueType", "reporter", "priority", "product", "month", "week", "dow"];
 
-function DimTabs({ dims, active, onChange }: { dims: FcrSegmentDimension[]; active: FcrSegmentDimension; onChange: (d: FcrSegmentDimension) => void }) {
+export function DimTabs({ dims, active, onChange }: { dims: FcrSegmentDimension[]; active: FcrSegmentDimension; onChange: (d: FcrSegmentDimension) => void }) {
   return (
     <div className="flex items-center gap-1 bg-neutral-100 rounded-lg p-1 w-fit flex-wrap">
       {dims.map((d) => (
@@ -283,7 +283,7 @@ function DimTabs({ dims, active, onChange }: { dims: FcrSegmentDimension[]; acti
   );
 }
 
-function RateBar({ rate }: { rate: number | null }) {
+export function RateBar({ rate }: { rate: number | null }) {
   return (
     <span className="flex items-center gap-2">
       <span className="tabular-nums w-12 text-right font-medium text-neutral-900">{pct(rate)}</span>
@@ -519,7 +519,7 @@ function OpportunityTable({ report }: { report: FcrDeepDiveReport }) {
 
 // ------------------------------------------------------------------------------ Trend
 
-const tooltipStyle = {
+export const tooltipStyle = {
   background: "rgb(var(--surface))",
   border: "1px solid rgb(var(--line))",
   borderRadius: 8,
@@ -527,7 +527,7 @@ const tooltipStyle = {
   color: "rgb(var(--n-900))",
 };
 
-function formatBucketLabel(value: string): string {
+export function formatBucketLabel(value: string): string {
   const parts = String(value).slice(0, 10).split("-").map(Number);
   if (parts.length >= 3 && !Number.isNaN(parts[2])) {
     const [y, m, d] = parts;

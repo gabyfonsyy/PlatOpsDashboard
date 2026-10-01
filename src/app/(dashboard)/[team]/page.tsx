@@ -229,10 +229,29 @@ export default async function TeamDashboardPage({
             />
             <MetricCard
               label="Escalation Rate"
-              value={formatPercent(metrics.escalationRate)}
-              sublabel={`${formatNumber(metrics.escalationCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved escalated`}
-              tooltip="Tickets whose Ticket Escalation is set to something other than N/A, CA, SE, or blank ÷ total tickets resolved in the period. Click through for where the work went, counted per receiving team."
+              value={formatPercent(fcr ? fcr.current.resolved ? fcr.current.nonFcr / fcr.current.resolved : null : metrics.escalationRate)}
+              sublabel={
+                fcr
+                  ? `${formatNumber(fcr.current.nonFcr)} / ${formatNumber(fcr.current.resolved)} resolved required additional help${fcr.smallSample ? " · Small sample" : ""}`
+                  : `${formatNumber(metrics.escalationCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved escalated`
+              }
+              tooltip="First Contact Resolution = No ÷ tickets resolved in the period with FCR = Yes or No — the inverse of FCR Rate, same tickets. Change in percentage points vs the previous period. Click through for which teams SE leans on (each team counted separately)."
               href={`/${team.team_key.toLowerCase()}/escalation?${filterQuery}`}
+              trend={
+                fcr && fcr.previous
+                  ? vsPreviousTrend(
+                      fcr.current.resolved ? fcr.current.nonFcr / fcr.current.resolved : null,
+                      fcr.previous.resolved ? fcr.previous.nonFcr / fcr.previous.resolved : null,
+                      { better: "lower", mode: "pts" }
+                    )
+                  : undefined
+              }
+              baseline={
+                fcr?.previous && fcr.previous.resolved
+                  ? { label: `Previous period: ${formatPercent(fcr.previous.nonFcr / fcr.previous.resolved)}` }
+                  : undefined
+              }
+              badge={fcr?.smallSample ? { label: "Small sample", tone: "warning" } : undefined}
             />
           </>
         )}
