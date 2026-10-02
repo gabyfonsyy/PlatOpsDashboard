@@ -154,7 +154,7 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
               <DriverBreakdownTable
                 rows={metric.driverBreakdown}
                 dimensionLabel={metric.driverDimensionLabel ?? "Dimension"}
-                showTotal={metric.key === "ticket_volume"}
+                total={metric.driverTotal}
               />
             </>
           ) : (
