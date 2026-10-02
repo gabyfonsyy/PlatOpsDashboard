@@ -364,6 +364,11 @@ export type FcrReport = {
   resolvedInPeriod: number;
   /** fcr_value = 'Yes' — the definition behind the scorecard's FCR Rate. */
   fcrYesTickets: number;
+  /**
+   * Tickets with FCR = Yes or No — the rate's denominator. A blank FCR value is unknown, not "No",
+   * so it is left out of both sides (Gaby, 2026-10-01); see lib/fcr.ts's isFcrKnown.
+   */
+  fcrKnownTickets: number;
   fcrRate: number | null;
   /** Gaby's definition: handled without leaving the team (CA/SE/N/A/blank) OR FCR = Yes. */
   resolvedBySeTickets: number;
@@ -384,7 +389,7 @@ export type FcrReport = {
 };
 
 const EMPTY_FCR: Omit<FcrReport, "team" | "range" | "period" | "issueType"> = {
-  assigneeLabel: "Assignee", resolvedInPeriod: 0, fcrYesTickets: 0, fcrRate: null,
+  assigneeLabel: "Assignee", resolvedInPeriod: 0, fcrYesTickets: 0, fcrKnownTickets: 0, fcrRate: null,
   resolvedBySeTickets: 0, resolvedBySeRate: null, escalatedButFcrYes: 0,
   escalatedButFcrYesTickets: [], byProductLabel: [],
   byProduct: [], byAssignee: [], byIssueType: [], tickets: [],
@@ -403,6 +408,7 @@ export async function getFcrReport(
     const isFcrYes = (r: BreakdownRow) => (r.fcr_value || "").trim() === "Yes";
 
     const fcrYes = rows.filter(isFcrYes);
+    const fcrKnown = rows.filter((r) => ["yes", "no"].includes((r.fcr_value || "").trim().toLowerCase())).length;
     // "Resolved by SE" per Gaby: it never left the team, OR it was first-contact resolved anyway.
     const resolvedBySe = rows.filter((r) => !isRealEscalation(r.escalation_value) || isFcrYes(r));
     const escalatedButFcrYesRows = rows.filter((r) => isRealEscalation(r.escalation_value) && isFcrYes(r));
@@ -412,7 +418,8 @@ export async function getFcrReport(
       assigneeLabel: backlogAgingAssigneeLabel(teamConfig),
       resolvedInPeriod: rows.length,
       fcrYesTickets: fcrYes.length,
-      fcrRate: rows.length ? round4(fcrYes.length / rows.length) : null,
+      fcrKnownTickets: fcrKnown,
+      fcrRate: fcrKnown ? round4(fcrYes.length / fcrKnown) : null,
       resolvedBySeTickets: resolvedBySe.length,
       resolvedBySeRate: rows.length ? round4(resolvedBySe.length / rows.length) : null,
       escalatedButFcrYes: escalatedButFcrYesRows.length,

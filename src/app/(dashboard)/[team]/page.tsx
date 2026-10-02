@@ -5,6 +5,7 @@ import { getTeamByKey, backlogAgingAssigneeLabel } from "@/lib/teams";
 import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
 import { getAutomatedScorecard } from "@/lib/automated-tickets";
+import { getFcrScorecard } from "@/lib/fcr";
 import { getTicketOutcomeCards, outcomeDef } from "@/lib/ticket-outcomes";
 import { getP1SlaReport } from "@/lib/p1-sla";
 import { slaStatusForRate, STATUS_LABEL, STATUS_TONE } from "@/lib/sla-status";
@@ -55,7 +56,7 @@ export default async function TeamDashboardPage({
   const includeBlankSe = resolveIncludeBlank(cookies().get(AUTOMATION_INCLUDE_BLANK_COOKIE)?.value);
   // The previous period of the same length, for each card's "vs previous period" line.
   const prevPeriod = shiftPeriod(range, period, -1);
-  const [metrics, insight, automated, p1Sla, outcomeCards, baselines, prevMetrics] = await Promise.all([
+  const [metrics, insight, automated, p1Sla, outcomeCards, baselines, prevMetrics, fcr] = await Promise.all([
     getTicketMetrics(team.team_key, range, period, issueType),
     getInsight(`TEAM:${team.team_key}`),
     hasAssignedSe
@@ -65,6 +66,9 @@ export default async function TeamDashboardPage({
     getTicketOutcomeCards(team.team_key, range, period, issueType),
     getKpiBaselines(team.team_key),
     getTicketMetrics(team.team_key, range, prevPeriod, issueType),
+    // Same population as the FCR deep-dive (lib/fcr.ts), not GAS metrics_daily — blank FCR values
+    // are excluded there and the card must agree with the page it links to.
+    team.has_fcr_escalation ? getFcrScorecard(team.team_key, range, period, issueType) : Promise.resolve(null),
   ]);
   // Same population + target as the Review Wait deep-dive it links to (lib/review-wait.ts), not the
   // GAS metrics_daily.peer_review_wait_* columns (bucketed by ticket created date, older exit rule).
@@ -200,18 +204,54 @@ export default async function TeamDashboardPage({
           <>
             <MetricCard
               label="FCR Rate"
-              value={formatPercent(metrics.fcrRate)}
-              sublabel={`${formatNumber(metrics.fcrYesCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved FCR = Yes`}
-              tooltip="Tickets marked FCR = Yes ÷ total tickets resolved in the period (by resolved date). Click through for what the team resolved without handing off, by product and label."
+              value={formatPercent(fcr ? fcr.current.rate : metrics.fcrRate)}
+              sublabel={
+                fcr
+                  ? `${formatNumber(fcr.current.fcr)} / ${formatNumber(fcr.current.resolved)} resolved on first contact${fcr.smallSample ? " · Small sample" : ""}`
+                  : `${formatNumber(metrics.fcrYesCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved FCR = Yes`
+              }
+              tooltip="Tickets marked FCR = Yes ÷ tickets resolved in the period with FCR = Yes or No (by resolved date). A blank FCR value is left out of both sides. The change is in percentage points vs the previous period. Click through for what drives it and where the follow-up work comes from."
               href={`/${team.team_key.toLowerCase()}/fcr?${filterQuery}`}
-              trend={baselineTrend(metrics.fcrRate, baselines.fcr_rate, { lowerIsBetter: false, formatValue: (v) => formatPercent(v) })}
+              trend={fcr ? vsPreviousTrend(fcr.current.rate, fcr.previous?.rate, { better: "higher", mode: "pts" }) : undefined}
+              baseline={
+                fcr
+                  ? {
+                      label: [
+                        fcr.previous ? `Previous period: ${formatPercent(fcr.previous.rate)}` : null,
+                        baselines.fcr_rate?.value != null ? `Baseline (${baselines.fcr_rate.period_label}): ${formatPercent(Number(baselines.fcr_rate.value))}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · "),
+                    }
+                  : baselineLabel(baselineTrend(metrics.fcrRate, baselines.fcr_rate, { lowerIsBetter: false, formatValue: (v) => formatPercent(v) }))
+              }
+              badge={fcr?.smallSample ? { label: "Small sample", tone: "warning" } : undefined}
             />
             <MetricCard
               label="Escalation Rate"
-              value={formatPercent(metrics.escalationRate)}
-              sublabel={`${formatNumber(metrics.escalationCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved escalated`}
-              tooltip="Tickets whose Ticket Escalation is set to something other than N/A, CA, SE, or blank ÷ total tickets resolved in the period. Click through for where the work went, counted per receiving team."
+              value={formatPercent(fcr ? fcr.current.resolved ? fcr.current.nonFcr / fcr.current.resolved : null : metrics.escalationRate)}
+              sublabel={
+                fcr
+                  ? `${formatNumber(fcr.current.nonFcr)} / ${formatNumber(fcr.current.resolved)} resolved required additional help${fcr.smallSample ? " · Small sample" : ""}`
+                  : `${formatNumber(metrics.escalationCount)} of ${formatNumber(metrics.ticketsResolvedInPeriod)} resolved escalated`
+              }
+              tooltip="First Contact Resolution = No ÷ tickets resolved in the period with FCR = Yes or No — the inverse of FCR Rate, same tickets. Change in percentage points vs the previous period. Click through for which teams SE leans on (each team counted separately)."
               href={`/${team.team_key.toLowerCase()}/escalation?${filterQuery}`}
+              trend={
+                fcr && fcr.previous
+                  ? vsPreviousTrend(
+                      fcr.current.resolved ? fcr.current.nonFcr / fcr.current.resolved : null,
+                      fcr.previous.resolved ? fcr.previous.nonFcr / fcr.previous.resolved : null,
+                      { better: "lower", mode: "pts" }
+                    )
+                  : undefined
+              }
+              baseline={
+                fcr?.previous && fcr.previous.resolved
+                  ? { label: `Previous period: ${formatPercent(fcr.previous.nonFcr / fcr.previous.resolved)}` }
+                  : undefined
+              }
+              badge={fcr?.smallSample ? { label: "Small sample", tone: "warning" } : undefined}
             />
           </>
         )}
