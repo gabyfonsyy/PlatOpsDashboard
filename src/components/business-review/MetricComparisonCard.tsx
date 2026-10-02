@@ -6,7 +6,7 @@ import { Copy } from "@/components/ui/Copy";
 import { InfoTooltip } from "@/components/ui/InfoTooltip";
 import { useTheme } from "@/components/theme/ThemeProvider";
 import { DriverBreakdownTable } from "@/components/business-review/DriverBreakdownTable";
-import { formatPct } from "@/lib/business-review-view";
+import { formatPct, changeTone } from "@/lib/business-review-view";
 import type { MetricComparison } from "@/lib/business-review";
 
 function formatValue(value: number | null, unit: MetricComparison["unit"]): string {
@@ -36,8 +36,6 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
   const [insightSource, setInsightSource] = useState(metric.insightSource);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
-  const isUp = metric.pctDiff !== null && metric.pctDiff > 0;
-  const isDown = metric.pctDiff !== null && metric.pctDiff < 0;
 
   async function getAiTake() {
     setAiLoading(true);
@@ -94,7 +92,7 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
         <div className="text-right shrink-0">
           <p
             className={`text-sm font-semibold ${
-              metric.isNew ? "text-neutral-500" : isUp ? "text-emerald-700" : isDown ? "text-red-600" : "text-neutral-400"
+              metric.isNew ? "text-neutral-500" : changeTone(metric.pctDiff, metric.better)
             }`}
           >
             {metric.isNew ? "New" : formatPct(metric.pctDiff)}
@@ -155,6 +153,8 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
                 rows={metric.driverBreakdown}
                 dimensionLabel={metric.driverDimensionLabel ?? "Dimension"}
                 total={metric.driverTotal}
+                better={metric.driverBetter}
+                rates={metric.driverRates}
               />
             </>
           ) : (

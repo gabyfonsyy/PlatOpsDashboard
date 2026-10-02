@@ -14,6 +14,19 @@ import { topDriver, type DriverRow, type DriverVerdict, type MixShiftFlag } from
  * call is unavailable or fails.
  */
 
+/** Which way is an improvement, per metric. "neutral" = more isn't good or bad on its own (volume). */
+export type Better = "higher" | "lower" | "neutral";
+
+/**
+ * Colour for a change: green when it moved the good way, red when it moved the bad way, grey for
+ * no change or a neutral metric. Never colour by direction alone — a lower Lead Time is good.
+ */
+export function changeTone(delta: number | null | undefined, better: Better): string {
+  if (delta === null || delta === undefined || delta === 0 || better === "neutral") return "text-neutral-500";
+  const improved = better === "higher" ? delta > 0 : delta < 0;
+  return improved ? "text-emerald-700" : "text-red-600";
+}
+
 export function formatPct(pctDiff: number | null): string {
   if (pctDiff === null) return "—";
   const sign = pctDiff > 0 ? "+" : "";

@@ -30,12 +30,15 @@ export type BacklogAgingReport = {
   overdueCount: number;
   resolvedInPeriod: number;
   backlogAgingRate: number | null;
+  /** Tickets resolved in the period per issue type ("(none)" when blank) — the per-type denominator
+   * for Business Review Prep's ageing-rate-by-issue-type column. */
+  resolvedByIssueType: Record<string, number>;
   tickets: BacklogAgingTicket[];
 };
 
 const EMPTY_REPORT: BacklogAgingReport = {
   team: "", range: "month", period: "", issueType: null, assigneeLabel: "Assignee",
-  overdueCount: 0, resolvedInPeriod: 0, backlogAgingRate: null, tickets: [],
+  overdueCount: 0, resolvedInPeriod: 0, backlogAgingRate: null, resolvedByIssueType: {}, tickets: [],
 };
 
 function round4(n: number): number {
@@ -116,6 +119,7 @@ export async function getBacklogAgingReport(
 
     const tickets: BacklogAgingTicket[] = [];
     let resolvedInPeriod = 0;
+    const resolvedByIssueType: Record<string, number> = {};
 
     for (const r of rows) {
       // Skipped before the denominator, exactly as lib/metrics.ts skips its metrics_daily rows —
@@ -126,6 +130,8 @@ export async function getBacklogAgingReport(
       const resolvedIso = toManilaDateString(r.resolved_datetime);
       if (!resolvedIso || resolvedIso < startDate || resolvedIso > endDate) continue;
       resolvedInPeriod++;
+      const typeKey = r.issue_type || "(none)";
+      resolvedByIssueType[typeKey] = (resolvedByIssueType[typeKey] || 0) + 1;
 
       const dueIso = r.due_date;
       if (!dueIso || resolvedIso <= dueIso) continue;
@@ -152,6 +158,7 @@ export async function getBacklogAgingReport(
       overdueCount: tickets.length,
       resolvedInPeriod,
       backlogAgingRate: resolvedInPeriod ? round4(tickets.length / resolvedInPeriod) : null,
+      resolvedByIssueType,
       tickets,
     };
   } catch (err) {
