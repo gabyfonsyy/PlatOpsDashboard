@@ -49,7 +49,7 @@ function formatPctChange(previous: number, current: number): string {
 /**
  * Driver / Previous / Current / Change / Contribution table, per the brief's section 8 example,
  * with a Total row underneath when the metric has one (lib/business-review.ts totalOf): the sum
- * for count breakdowns, the volume-weighted average for duration breakdowns.
+ * for count breakdowns, the headline team average for duration breakdowns.
  */
 export function DriverBreakdownTable({
   rows,
@@ -118,10 +118,14 @@ export function DriverBreakdownTable({
               className={`py-2 px-2 text-right whitespace-nowrap ${changeClass(totalChange)}`}
               title={total.kind === "average" ? "Change in the overall average vs the previous period" : "Combined change vs the previous period"}
             >
-              {total.kind === "average" ? `${totalChange > 0 ? "+" : ""}${totalChange.toFixed(2)}` : formatChange(totalChange)} ({formatPctChange(total.previous, total.current)})
+              {total.kind === "average" ? `${totalChange > 0 ? "+" : ""}${totalChange.toFixed(2)}` : formatChange(totalChange)} (
+              {total.pctDiff !== undefined && total.pctDiff !== null
+                ? `${total.pctDiff > 0 ? "+" : ""}${total.pctDiff.toFixed(2)}%`
+                : formatPctChange(total.previous, total.current)}
+              )
               {rates && <RatePts prev={rates.__total?.previous} curr={rates.__total?.current} better={better} />}
             </td>
-            <td className="py-2 pl-2 text-right text-neutral-500">{totalChange === 0 ? "—" : "100.00%"}</td>
+            <td className="py-2 pl-2 text-right text-neutral-500">{totalChange === 0 || total.kind === "average" ? "—" : "100.00%"}</td>
           </tr>
         </tfoot>
       )}

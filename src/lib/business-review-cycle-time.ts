@@ -1,30 +1,27 @@
 import { getSupabaseClient, fetchAllRowsParallel } from "@/lib/supabase";
 import { minutesBetween, toManilaDateString } from "@/lib/manila-date";
 import { isExcludedIssueType } from "@/lib/teams";
+import { sumPeerReviewMinutes } from "@/lib/lead-cycle-time";
 
 /**
- * Business Review Prep's own Cycle Time average, for peer-review teams (SE) ONLY — per her
- * correction: the time from when a ticket moved out of Backlog/To Do to when it reached Archived,
- * Rejected, For Checking, or For Product Team (or, for backend-change types, For Peer Review —
- * the same hand-off, just named differently by work type). That span is EXACTLY what
- * `cycle_time_start`/`cycle_time_end` already store, per lib/lead-cycle-time.ts's basisFor's own
- * doc comment (`cycle (peer-review team): cycle_time_start -> cycle_time_end`) — no validator/
- * peer-review-wait time is added on top. (An earlier version of this file added the peer review
- * span too, per an initial "doer + validator" request that she then corrected — removed.)
+ * Business Review Prep's Cycle Time for peer-review teams (SE) ONLY: END-TO-END Cycle Time =
+ * Doer (out of Backlog/To Do -> reached review: cycle_time_start -> cycle_time_end) + Validator
+ * (completed peer-review wait, sumPeerReviewMinutes — exits to On Hold / For Checking, pass-throughs
+ * under a minute skipped). Same "average doer + average validator" the team-page Cycle Time card,
+ * the Cycle Time deep-dive's headline and the Q1+Q2 cycle_time_total baseline all use
+ * (getPeerReviewCycleAverages in lib/lead-cycle-time.ts), so Business Review and the dashboard
+ * report one number.
  *
- * Deliberately a separate function rather than a call into lib/lead-cycle-time.ts's
- * getPeerReviewCycleAverages: that one BUNDLES this exact span average together with the peer-
- * review-wait average before returning (feeding the sitewide Cycle Time scorecard, which wants
- * the combined number), with no way for a caller to get just this piece back out. Duplicating the
- * query here — rather than exporting internals from that heavily-depended-on file — keeps this
- * feature's definition change from having any chance of affecting what every other page reports.
- * DBA/DevOps have no peer-review stage at all, so their existing single-stage cycleTimeAvgMinutes
- * (lib/metrics.ts) already measures the same kind of span — they don't need this function.
+ * History: this file first used doer + validator, was then narrowed to the doer span only, and was
+ * moved back to end-to-end on 2026-10-02 (Gaby: "SE Cycle Time should be the end-to-end cycle time,
+ * not just doer").
  *
- * Same population gate as getPeerReviewCycleAverages: bucketed by cycle_time_end falling in the
- * period (not resolution — a span that closed inside the period is what the period is reporting
- * on, independent of whether the ticket has since resolved), same coarse-UTC-widen +
- * exact-Manila-day-recheck split every other Phase-4 report in this codebase uses.
+ * Kept as its own query (rather than calling getLeadCycleTimeAverages) because the driver breakdown
+ * needs the same computation grouped by issue type, and both come from one fetch.
+ *
+ * Population: tickets whose cycle_time_end falls in the period (Manila day) — the same gate as
+ * getPeerReviewCycleAverages. DBA/DevOps have no peer-review stage, so their single-stage
+ * cycleTimeAvgMinutes (lib/metrics.ts) is already end-to-end and they don't use this file.
  */
 
 type Row = {
@@ -32,9 +29,10 @@ type Row = {
   issue_type: string | null;
   cycle_time_start: string | null;
   cycle_time_end: string;
+  peer_review_cycles_json: Parameters<typeof sumPeerReviewMinutes>[0];
 };
 
-const SELECT = "issue_key,issue_type,cycle_time_start,cycle_time_end";
+const SELECT = "issue_key,issue_type,cycle_time_start,cycle_time_end,peer_review_cycles_json";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -46,7 +44,7 @@ async function fetchCycleEndRows(teamKey: string, startDate: string, endDate: st
   const rangeEndUtc = new Date(`${endDate}T00:00:00Z`);
   rangeEndUtc.setUTCDate(rangeEndUtc.getUTCDate() + 2);
 
-  return fetchAllRowsParallel<Row>((head) => {
+  const rows = await fetchAllRowsParallel<Row>((head) => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     let q: any = getSupabaseClient()
       .from("tickets")
@@ -59,63 +57,66 @@ async function fetchCycleEndRows(teamKey: string, startDate: string, endDate: st
     /* eslint-enable @typescript-eslint/no-explicit-any */
     return q;
   }, "issue_key");
+
+  return rows.filter((r) => {
+    if (isExcludedIssueType(teamKey, r.issue_type)) return false;
+    const iso = toManilaDateString(r.cycle_time_end);
+    return iso !== null && iso >= startDate && iso <= endDate;
+  });
+}
+
+/**
+ * Average doer span + average validator wait, mirroring getPeerReviewCycleAverages exactly: the
+ * doer average is over tickets with both span ends, the validator average over tickets that had a
+ * completed review, and the record count is the doer count (falling back to the reviewed count).
+ */
+function endToEnd(rows: Row[]): { avgMinutes: number | null; count: number } {
+  let actualSum = 0;
+  let actualCount = 0;
+  let reviewSum = 0;
+  let reviewCount = 0;
+  for (const r of rows) {
+    if (r.cycle_time_start) {
+      const m = minutesBetween(r.cycle_time_start, r.cycle_time_end);
+      if (isFinite(m)) {
+        actualSum += m;
+        actualCount++;
+      }
+    }
+    const review = sumPeerReviewMinutes(r.peer_review_cycles_json);
+    if (review !== null) {
+      reviewSum += review;
+      reviewCount++;
+    }
+  }
+  const actualAvg = actualCount ? actualSum / actualCount : null;
+  const reviewAvg = reviewCount ? reviewSum / reviewCount : null;
+  const avg = actualAvg !== null && reviewAvg !== null ? actualAvg + reviewAvg : actualAvg ?? reviewAvg;
+  return { avgMinutes: avg === null ? null : round2(avg), count: actualCount || reviewCount };
 }
 
 export type CycleTimeResult = { avgMinutes: number | null; recordCount: number };
 
 export type CycleTimeByIssueTypeRow = { issueType: string; count: number; avgMinutes: number };
 
-/**
- * The same end-to-end Cycle Time average as getEndToEndCycleTimeAverage above, grouped by issue
- * type instead of collapsed to one number — feeds buildDurationDriver (lib/business-review-drivers.ts)
- * for SE's Cycle Time driver breakdown. Deliberately its own query, same reasoning as the rest of
- * this file: keeps SE Cycle Time's definition (here, in both its headline and its driver) isolated
- * from lib/lead-cycle-time.ts's basisFor, which lib/business-review.ts uses for every OTHER
- * Lead/Cycle Time driver (every team's Lead Time, and DBA/DevOps's Cycle Time).
- */
-export async function getEndToEndCycleTimeByIssueType(
-  teamKey: string,
-  startDate: string,
-  endDate: string
-): Promise<CycleTimeByIssueTypeRow[]> {
-  const rows = (await fetchCycleEndRows(teamKey, startDate, endDate)).filter((r) => {
-    if (isExcludedIssueType(teamKey, r.issue_type)) return false;
-    const iso = toManilaDateString(r.cycle_time_end);
-    return iso !== null && iso >= startDate && iso <= endDate;
-  });
-
-  const byType = new Map<string, number[]>();
+/** End-to-end Cycle Time per issue type — feeds SE's Cycle Time driver breakdown. */
+export async function getEndToEndCycleTimeByIssueType(teamKey: string, startDate: string, endDate: string): Promise<CycleTimeByIssueTypeRow[]> {
+  const rows = await fetchCycleEndRows(teamKey, startDate, endDate);
+  const byType = new Map<string, Row[]>();
   for (const r of rows) {
-    if (!r.cycle_time_start) continue;
     const type = r.issue_type || "(none)";
     if (!byType.has(type)) byType.set(type, []);
-    byType.get(type)!.push(minutesBetween(r.cycle_time_start, r.cycle_time_end));
+    byType.get(type)!.push(r);
   }
-  return Array.from(byType.entries()).map(([issueType, values]) => ({
-    issueType,
-    count: values.length,
-    avgMinutes: round2(values.reduce((s, v) => s + v, 0) / values.length),
-  }));
+  const out: CycleTimeByIssueTypeRow[] = [];
+  for (const [issueType, rs] of Array.from(byType.entries())) {
+    const e = endToEnd(rs);
+    if (e.avgMinutes !== null && e.count) out.push({ issueType, count: e.count, avgMinutes: e.avgMinutes });
+  }
+  return out;
 }
 
-export async function getEndToEndCycleTimeAverage(
-  teamKey: string,
-  startDate: string,
-  endDate: string,
-  issueType?: string
-): Promise<CycleTimeResult> {
-  const rows = (await fetchCycleEndRows(teamKey, startDate, endDate, issueType)).filter((r) => {
-    if (isExcludedIssueType(teamKey, r.issue_type)) return false;
-    const iso = toManilaDateString(r.cycle_time_end);
-    return iso !== null && iso >= startDate && iso <= endDate;
-  });
-
-  const durations: number[] = [];
-  for (const r of rows) {
-    if (!r.cycle_time_start) continue;
-    durations.push(minutesBetween(r.cycle_time_start, r.cycle_time_end));
-  }
-
-  if (!durations.length) return { avgMinutes: null, recordCount: 0 };
-  return { avgMinutes: round2(durations.reduce((a, b) => a + b, 0) / durations.length), recordCount: durations.length };
+export async function getEndToEndCycleTimeAverage(teamKey: string, startDate: string, endDate: string, issueType?: string): Promise<CycleTimeResult> {
+  const e = endToEnd(await fetchCycleEndRows(teamKey, startDate, endDate, issueType));
+  return { avgMinutes: e.avgMinutes, recordCount: e.count };
 }

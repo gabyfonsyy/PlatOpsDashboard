@@ -78,7 +78,7 @@ const SELECT_COLUMNS =
  * rather than 0 when there were no qualifying cycles, so "never reviewed" and "reviewed in zero
  * minutes" stay distinguishable — null is excluded from the average instead of dragging it down.
  */
-function sumPeerReviewMinutes(cycles: PeerReviewCycleRaw[] | null | undefined): number | null {
+export function sumPeerReviewMinutes(cycles: PeerReviewCycleRaw[] | null | undefined): number | null {
   if (!cycles || !cycles.length) return null;
   let total = 0;
   let count = 0;

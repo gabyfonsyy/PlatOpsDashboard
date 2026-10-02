@@ -370,6 +370,10 @@ export type FcrReport = {
    */
   fcrKnownTickets: number;
   fcrRate: number | null;
+  /** Every issue type (not top-N): FCR = Yes counts and Yes+No counts — Business Review Prep's
+   * FCR breakdown and its per-type rate. Their sums are fcrYesTickets / fcrKnownTickets. */
+  fcrYesByIssueType: Record<string, number>;
+  fcrKnownByIssueType: Record<string, number>;
   /** Gaby's definition: handled without leaving the team (CA/SE/N/A/blank) OR FCR = Yes. */
   resolvedBySeTickets: number;
   resolvedBySeRate: number | null;
@@ -389,7 +393,7 @@ export type FcrReport = {
 };
 
 const EMPTY_FCR: Omit<FcrReport, "team" | "range" | "period" | "issueType"> = {
-  assigneeLabel: "Assignee", resolvedInPeriod: 0, fcrYesTickets: 0, fcrKnownTickets: 0, fcrRate: null,
+  assigneeLabel: "Assignee", resolvedInPeriod: 0, fcrYesTickets: 0, fcrKnownTickets: 0, fcrRate: null, fcrYesByIssueType: {}, fcrKnownByIssueType: {},
   resolvedBySeTickets: 0, resolvedBySeRate: null, escalatedButFcrYes: 0,
   escalatedButFcrYesTickets: [], byProductLabel: [],
   byProduct: [], byAssignee: [], byIssueType: [], tickets: [],
@@ -408,7 +412,8 @@ export async function getFcrReport(
     const isFcrYes = (r: BreakdownRow) => (r.fcr_value || "").trim() === "Yes";
 
     const fcrYes = rows.filter(isFcrYes);
-    const fcrKnown = rows.filter((r) => ["yes", "no"].includes((r.fcr_value || "").trim().toLowerCase())).length;
+    const knownRows = rows.filter((r) => ["yes", "no"].includes((r.fcr_value || "").trim().toLowerCase()));
+    const fcrKnown = knownRows.length;
     // "Resolved by SE" per Gaby: it never left the team, OR it was first-contact resolved anyway.
     const resolvedBySe = rows.filter((r) => !isRealEscalation(r.escalation_value) || isFcrYes(r));
     const escalatedButFcrYesRows = rows.filter((r) => isRealEscalation(r.escalation_value) && isFcrYes(r));
@@ -420,6 +425,8 @@ export async function getFcrReport(
       fcrYesTickets: fcrYes.length,
       fcrKnownTickets: fcrKnown,
       fcrRate: fcrKnown ? round4(fcrYes.length / fcrKnown) : null,
+      fcrYesByIssueType: groupCounts(fcrYes, (r) => r.issue_type || "(none)"),
+      fcrKnownByIssueType: groupCounts(knownRows, (r) => r.issue_type || "(none)"),
       resolvedBySeTickets: resolvedBySe.length,
       resolvedBySeRate: rows.length ? round4(resolvedBySe.length / rows.length) : null,
       escalatedButFcrYes: escalatedButFcrYesRows.length,
