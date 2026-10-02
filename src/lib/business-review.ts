@@ -79,9 +79,9 @@ export type MetricComparison = {
   /**
    * The breakdown's Total row. "sum" for count breakdowns (rows add up exactly — anything past the
    * top drivers is folded into "Other"); "average" for duration breakdowns, where it is the
-   * volume-weighted average across every category, since per-category averages can't be summed.
+   * headline team average itself (per-category averages can't be summed).
    */
-  driverTotal: { previous: number; current: number; kind: "sum" | "average"; label: string } | null;
+  driverTotal: { previous: number; current: number; kind: "sum" | "average"; label: string; pctDiff?: number | null } | null;
   /**
    * Ageing Rate only: each breakdown row's own rate (overdue ÷ resolved for that issue type, 0-1),
    * keyed by row key, plus "__total" for the whole team (= the headline). Null elsewhere.
@@ -162,6 +162,12 @@ function minutesToDays(minutes: number | null): number | null {
   return minutes === null ? null : round2(minutes / MINUTES_PER_DAY);
 }
 
+/** A { key: count } map as CountRow-shaped rows for buildDriver. */
+function countRowsOf(m: Record<string, number>) {
+  const total = Object.values(m).reduce((a, b) => a + b, 0);
+  return Object.entries(m).map(([key, count]) => ({ key, count, share: total ? count / total : null }));
+}
+
 function overdueByIssueType(tickets: BacklogAgingTicket[]) {
   const counts: Record<string, number> = {};
   for (const t of tickets) counts[t.issueType || "(none)"] = (counts[t.issueType || "(none)"] || 0) + 1;
@@ -238,7 +244,13 @@ type MetricSpec = {
   current: number | null;
   previous: number | null;
   history: number[];
-  driver: { rows: DriverRow[]; verdict: DriverVerdict; dimensionLabel: string; mixShift?: MixShiftFlag | null; overall?: { previous: number; current: number } | null } | null;
+  driver: { rows: DriverRow[]; verdict: DriverVerdict; dimensionLabel: string; mixShift?: MixShiftFlag | null } | null;
+  /**
+   * Unrounded current/previous for the % change. Duration metrics display days rounded to 2
+   * decimals, and a % change taken from those rounded values drifts badly on small numbers
+   * (DBA Lead Time 0.3158 -> 0.3606 days is +14.19%, but 0.32 -> 0.36 reads +12.5%).
+   */
+  exact?: { current: number | null; previous: number | null };
   /** Per-key denominators (resolved tickets by issue type) for MetricComparison.driverRates. */
   rateDenominators?: { previous: Record<string, number>; current: Record<string, number> };
   /** See MetricComparison.driverNote. Null falls back to a generic note in buildComparison. */
@@ -262,8 +274,8 @@ function buildDurationSpecDriver(
   previousRows: { issueType: string; count: number; avgMinutes: number }[],
   currentRows: { issueType: string; count: number; avgMinutes: number }[]
 ) {
-  const { rows, verdict, mixShift, overall } = buildDurationDriver(toDurationDriverRows(previousRows), toDurationDriverRows(currentRows));
-  return { rows, verdict, mixShift, overall, dimensionLabel: "Issue Type" };
+  const { rows, verdict, mixShift } = buildDurationDriver(toDurationDriverRows(previousRows), toDurationDriverRows(currentRows));
+  return { rows, verdict, mixShift, dimensionLabel: "Issue Type" };
 }
 
 /**
@@ -303,8 +315,15 @@ const METRIC_BETTER: Record<string, Better> = {
 
 function totalOf(spec: MetricSpec, rows: DriverRow[]): MetricComparison["driverTotal"] {
   if (!spec.driver || !rows.length) return null;
-  const overall = spec.driver.overall;
-  if (spec.unit === "days") return overall ? { ...overall, kind: "average", label: "All issue types (avg)" } : null;
+  // Duration metrics: the Total row IS the headline (the team average), so the card and the table
+  // agree exactly (Gaby, 2026-10-02). The rows above are the per-issue-type breakdown; they come from
+  // a separate per-type query and are not re-averaged into this number.
+  if (spec.unit === "days") {
+    const toDays = (m: number | null | undefined) => (m === null || m === undefined ? null : Math.round((m / MINUTES_PER_DAY) * 10000) / 10000);
+    const previous = spec.exact ? toDays(spec.exact.previous) : spec.previous;
+    const current = spec.exact ? toDays(spec.exact.current) : spec.current;
+    return previous === null || current === null ? null : { previous, current, kind: "average", label: "Team average" };
+  }
   return {
     previous: rows.reduce((n, r) => n + r.previous, 0),
     current: rows.reduce((n, r) => n + r.current, 0),
@@ -317,7 +336,7 @@ function totalOf(spec: MetricSpec, rows: DriverRow[]): MetricComparison["driverT
 async function buildComparison(spec: MetricSpec, theme: Theme, email: string | null): Promise<MetricComparison> {
   const current = spec.current ?? 0;
   const previous = spec.previous ?? 0;
-  const { pctDiff, isNew } = pctDiffOf(current, previous);
+  const { pctDiff, isNew } = spec.exact ? pctDiffOf(spec.exact.current ?? 0, spec.exact.previous ?? 0) : pctDiffOf(current, previous);
   const anomaly = spec.history.length ? detectAnomaly(current, spec.history) : null;
   const driverRows = spec.driver?.rows ?? [];
   const driverVerdict = spec.driver?.verdict ?? "none";
@@ -353,7 +372,12 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
     better: METRIC_BETTER[spec.key] ?? "neutral",
     driverBetter: spec.key === "p1_sla_compliance" ? "lower" : METRIC_BETTER[spec.key] ?? "neutral",
     driverBreakdown: driverRows,
-    driverTotal: totalOf(spec, driverRows),
+    driverTotal: (() => {
+      const t = totalOf(spec, driverRows);
+      // An average Total is the headline, so it shows the headline's exact % (not one recomputed
+      // from the rounded days it displays).
+      return t && t.kind === "average" ? { ...t, pctDiff } : t;
+    })(),
     driverRates: spec.rateDenominators ? ratesOf(driverRows, spec.rateDenominators) : null,
     driverVerdict,
     mixShift,
@@ -401,7 +425,7 @@ export async function getBusinessReview(
   // seed step, which needs keyChanges, does.)
   const [
     [currentTM, previousTM, ...priorTMs],
-    [currentVolByType, previousVolByType, currentAging, previousAging],
+    [currentVolByType, previousVolByType, currentAging, previousAging, priorVolByType],
     seReports,
     personalState,
     [leadByTypeCurrent, leadByTypePrevious, cycleByTypeCurrent, cycleByTypePrevious],
@@ -416,6 +440,9 @@ export async function getBusinessReview(
         getTicketVolumeBreakdown(team.team_key, resolvedPrevious.start, resolvedPrevious.end, "issue_type"),
         getBacklogAgingReport(team.team_key, "custom", key, undefined, resolvedCurrent.start, resolvedCurrent.end),
         getBacklogAgingReport(team.team_key, "custom", key, undefined, resolvedPrevious.start, resolvedPrevious.end),
+        // Ticket Volume's headline is ALL created tickets (same set as its breakdown), so its anomaly
+        // history has to be that set too, not metrics_daily's assigned-only count.
+        Promise.all(priorPeriods.map((p) => getTicketVolumeBreakdown(team.team_key, p.start, p.end, "issue_type"))),
       ]),
       isSe
         ? Promise.all([
@@ -428,6 +455,9 @@ export async function getBusinessReview(
             getEndToEndCycleTimeAverage(team.team_key, resolvedCurrent.start, resolvedCurrent.end),
             getEndToEndCycleTimeAverage(team.team_key, resolvedPrevious.start, resolvedPrevious.end),
             Promise.all(priorPeriods.map((p) => getEndToEndCycleTimeAverage(team.team_key, p.start, p.end))),
+            // FCR's headline uses getFcrReport's rate (blank FCR excluded, as on the FCR page), so its
+            // history must too.
+            Promise.all(priorPeriods.map((p) => getFcrReport(team.team_key, "custom", key, undefined, p.start, p.end))),
           ])
         : Promise.resolve(null),
       email ? Promise.all([getChecklistState(email, key), getTalkingPoints(email, key)]) : Promise.resolve(null),
@@ -450,18 +480,21 @@ export async function getBusinessReview(
   const specs: MetricSpec[] = [
     {
       key: "ticket_volume", label: "Ticket Volume", unit: "count",
-      current: currentTM.ticketVolume, previous: previousTM.ticketVolume,
-      history: priorTMs.map((m) => m.ticketVolume),
-      driver: { ...buildDriver(previousVolByType.rows, currentVolByType.rows, currentTM.ticketVolume - previousTM.ticketVolume), dimensionLabel: "Issue Type" },
-      driverNote:
-        "Counts here are ALL tickets created in the period (assigned + unassigned), so the totals run higher than the headline, which counts only ASSIGNED created tickets. The gap between the two is the unassigned tickets.",
+      // ALL tickets created (assigned + unassigned) — the same set as the breakdown below, so the
+      // headline and the table's Total agree (Gaby, 2026-10-02). Previously the headline was
+      // metrics_daily's assigned-only count while the table counted everything.
+      current: currentVolByType.totalTickets, previous: previousVolByType.totalTickets,
+      history: priorVolByType.map((v) => v.totalTickets),
+      driver: { ...buildDriver(previousVolByType.rows, currentVolByType.rows, currentVolByType.totalTickets - previousVolByType.totalTickets), dimensionLabel: "Issue Type" },
+      driverNote: "All tickets created in the period (assigned + unassigned), by issue type. The Total row is the headline.",
       source: "Supabase tickets (created in period)",
-      calculation: "Count of tickets created during the reporting period, by issue type.",
+      calculation: "Count of all tickets created during the reporting period (assigned and unassigned), by issue type.",
       recordCount: currentVolByType.totalTickets,
     },
     {
       key: "lead_time", label: "Lead Time", unit: "days",
       current: minutesToDays(currentTM.leadTimeAvgMinutes), previous: minutesToDays(previousTM.leadTimeAvgMinutes),
+      exact: { current: currentTM.leadTimeAvgMinutes, previous: previousTM.leadTimeAvgMinutes },
       history: priorTMs.map((m) => minutesToDays(m.leadTimeAvgMinutes)).filter((n): n is number => n !== null),
       driver: buildDurationSpecDriver(leadByTypePrevious, leadByTypeCurrent),
       source: "Supabase tickets (live span average)",
@@ -471,6 +504,7 @@ export async function getBusinessReview(
     {
       key: "cycle_time", label: "Cycle Time", unit: "days",
       current: minutesToDays(currentTM.cycleTimeAvgMinutes), previous: minutesToDays(previousTM.cycleTimeAvgMinutes),
+      exact: { current: currentTM.cycleTimeAvgMinutes, previous: previousTM.cycleTimeAvgMinutes },
       history: priorTMs.map((m) => minutesToDays(m.cycleTimeAvgMinutes)).filter((n): n is number => n !== null),
       // For SE this is overwritten below with the end-to-end values, but NOT the driver — it's
       // already built from the same cycleByType source getEndToEndCycleTimeByIssueType provides,
@@ -503,7 +537,7 @@ export async function getBusinessReview(
   ];
 
   if (isSe && seReports) {
-    const [currentP1, previousP1, currentAuto, previousAuto, currentFcr, previousFcr, currentEte, previousEte, priorEte] = seReports;
+    const [currentP1, previousP1, currentAuto, previousAuto, currentFcr, previousFcr, currentEte, previousEte, priorEte, priorFcr] = seReports;
 
     // Cycle Time, for SE only, is the time from Backlog/To Do exit to Archived, Rejected, For
     // Checking, For Product Team, or For Peer Review (per her explicit correction) — replaces
@@ -512,6 +546,7 @@ export async function getBusinessReview(
     const cycleTimeSpec = specs.find((s) => s.key === "cycle_time")!;
     cycleTimeSpec.current = minutesToDays(currentEte.avgMinutes);
     cycleTimeSpec.previous = minutesToDays(previousEte.avgMinutes);
+    cycleTimeSpec.exact = { current: currentEte.avgMinutes, previous: previousEte.avgMinutes };
     cycleTimeSpec.history = priorEte.map((e) => minutesToDays(e.avgMinutes)).filter((n): n is number => n !== null);
     cycleTimeSpec.recordCount = currentEte.recordCount;
     cycleTimeSpec.calculation =
@@ -554,21 +589,25 @@ export async function getBusinessReview(
       },
       {
         key: "fcr", label: "First Contact Resolution", unit: "percent",
-        current: currentTM.fcrRate !== null ? round2(currentTM.fcrRate * 100) : null,
-        previous: previousTM.fcrRate !== null ? round2(previousTM.fcrRate * 100) : null,
-        history: priorTMs.map((m) => m.fcrRate).filter((n): n is number => n !== null).map((n) => round2(n * 100)),
+        // getFcrReport's rate: FCR = Yes ÷ (Yes + No), blank FCR left out of both sides — the FCR
+        // page's definition and the stored baseline's. metrics_daily's fcrRate counts a blank as No.
+        current: currentFcr.fcrRate !== null ? round2(currentFcr.fcrRate * 100) : null,
+        previous: previousFcr.fcrRate !== null ? round2(previousFcr.fcrRate * 100) : null,
+        exact: { current: currentFcr.fcrRate, previous: previousFcr.fcrRate },
+        history: priorFcr.map((f) => f.fcrRate).filter((n): n is number => n !== null).map((n) => round2(n * 100)),
         driver: {
           ...buildDriver(
-            previousFcr.byIssueType,
-            currentFcr.byIssueType,
-            (currentTM.fcrRate ?? 0) - (previousTM.fcrRate ?? 0)
+            countRowsOf(previousFcr.fcrYesByIssueType),
+            countRowsOf(currentFcr.fcrYesByIssueType),
+            (currentFcr.fcrRate ?? 0) - (previousFcr.fcrRate ?? 0)
           ),
           dimensionLabel: "Issue Type",
         },
         driverNote:
-          "Previous/Current are counts of first-contact-resolved tickets by issue type — the composition behind the rate, not the rate itself. They won't sum to the headline percentage.",
-        source: "Supabase tickets (resolved without escalation, or FCR = Yes)",
-        calculation: "Share of resolved tickets that were first-contact-resolved; driver breakdown is the composition of that population by issue type.",
+          "Previous/Current are FCR = Yes tickets by issue type, with that issue type's own FCR rate (Yes ÷ Yes + No) underneath. The Total row's rate is the headline.",
+        rateDenominators: { previous: previousFcr.fcrKnownByIssueType, current: currentFcr.fcrKnownByIssueType },
+        source: "Supabase tickets (First Contact Resolution = Yes / No)",
+        calculation: "FCR = Yes ÷ resolved tickets with FCR = Yes or No (a blank FCR value is left out); driver breakdown is the FCR = Yes tickets by issue type.",
         recordCount: currentFcr.resolvedInPeriod,
       }
     );
