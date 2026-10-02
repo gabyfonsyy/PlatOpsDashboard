@@ -166,6 +166,7 @@ function mapRawTicketRowToSupabase_(teamKey, r) {
     total_on_hold_minutes: toNumberOrNull_(r.total_on_hold_minutes),
     total_in_progress_minutes: toNumberOrNull_(r.total_in_progress_minutes),
     se_work_cycles_json: toJsonOrNull_(r.se_work_cycles_json),
+    on_hold_cycles_json: toJsonOrNull_(r.on_hold_cycles_json),
     assignee_display_name: toStringOrNull_(r.assignee_display_name),
     reporter_display_name: toStringOrNull_(r.reporter_display_name),
     last_synced_at: toTimestampOrNull_(r.last_synced_at) || nowIso_(),

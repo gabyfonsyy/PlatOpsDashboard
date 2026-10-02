@@ -6,6 +6,8 @@ import { teamLabel } from "@/lib/utils";
 import { getTicketMetrics, getInsight } from "@/lib/metrics";
 import { getAutomatedScorecard } from "@/lib/automated-tickets";
 import { getFcrScorecard } from "@/lib/fcr";
+import { getOnHoldScorecard } from "@/lib/on-hold";
+import { holdText } from "@/lib/on-hold-view";
 import { getTicketOutcomeCards, outcomeDef } from "@/lib/ticket-outcomes";
 import { getP1SlaReport } from "@/lib/p1-sla";
 import { slaStatusForRate, STATUS_LABEL, STATUS_TONE } from "@/lib/sla-status";
@@ -56,7 +58,7 @@ export default async function TeamDashboardPage({
   const includeBlankSe = resolveIncludeBlank(cookies().get(AUTOMATION_INCLUDE_BLANK_COOKIE)?.value);
   // The previous period of the same length, for each card's "vs previous period" line.
   const prevPeriod = shiftPeriod(range, period, -1);
-  const [metrics, insight, automated, p1Sla, outcomeCards, baselines, prevMetrics, fcr] = await Promise.all([
+  const [metrics, insight, automated, p1Sla, outcomeCards, baselines, prevMetrics, fcr, onHold] = await Promise.all([
     getTicketMetrics(team.team_key, range, period, issueType),
     getInsight(`TEAM:${team.team_key}`),
     hasAssignedSe
@@ -69,6 +71,9 @@ export default async function TeamDashboardPage({
     // Same population as the FCR deep-dive (lib/fcr.ts), not GAS metrics_daily — blank FCR values
     // are excluded there and the card must agree with the page it links to.
     team.has_fcr_escalation ? getFcrScorecard(team.team_key, range, period, issueType) : Promise.resolve(null),
+    // Same population as the On-Hold deep-dive (lib/on-hold.ts): per hold episode, resolved-date
+    // bucketed. Replaces GAS metrics_daily.on_hold_pickup_* (created-date, per-ticket totals).
+    team.has_holding_reason ? getOnHoldScorecard(team.team_key, range, period, issueType) : Promise.resolve(null),
   ]);
   // Same population + target as the Review Wait deep-dive it links to (lib/review-wait.ts), not the
   // GAS metrics_daily.peer_review_wait_* columns (bucketed by ticket created date, older exit rule).
@@ -270,13 +275,24 @@ export default async function TeamDashboardPage({
             href={`/${team.team_key.toLowerCase()}/p1-sla?${filterQuery}`}
           />
         )}
-        {team.has_holding_reason && (
+        {team.has_holding_reason && onHold && (
           <MetricCard
-            label="Avg. On-Hold Pickup Time"
-            value={formatMinutesDecimalValue(metrics.onHoldAvgPickupMinutes)}
-            sublabel={formatDurationBreakdown(metrics.onHoldAvgPickupMinutes)}
-            tooltip="Average total time tickets spent On Hold, across tickets placed on hold at least once. Click through for holding reasons and the longest holds."
+            label="On-Hold Wait Time"
+            value={formatDaysValue(onHold.current.wait.avgMinutes)}
+            sublabel={
+              onHold.current.legacyMode
+                ? `${formatDurationBreakdown(onHold.current.wait.avgMinutes) ?? "—"} per held ticket · ${formatNumber(onHold.current.heldTickets)} tickets`
+                : `${formatDurationBreakdown(onHold.current.wait.avgMinutes) ?? "—"} per hold · ${formatNumber(onHold.current.heldTickets)} tickets · ${formatPercent(onHold.current.heldShare)} of resolved`
+            }
+            badge={onHold.smallSample ? { label: "Small sample", tone: "warning" } : undefined}
+            tooltip="Average time per completed On Hold episode (entering On Hold → In Progress, For Checking, For Peer Review, For Product Team, Archived or Rejected), on tickets resolved in the period. Calendar time. Holds still open aren't counted. The change is shown as absolute time. Click through for holding reasons, the current queue and where tickets go next."
             href={`/${team.team_key.toLowerCase()}/on-hold?${filterQuery}`}
+            trend={vsPreviousTrend(onHold.current.wait.avgMinutes, onHold.previous?.wait.avgMinutes, { better: "lower", mode: "abs", formatAbs: holdText })}
+            baseline={
+              baselines.on_hold_wait && baselines.on_hold_wait.value !== null
+                ? baselineLabel(baselineTrend(onHold.current.wait.avgMinutes, baselines.on_hold_wait, { lowerIsBetter: true, formatValue: formatDaysValue }))
+                : { label: `${formatNumber(onHold.currentQueue)} on hold right now` }
+            }
           />
         )}
       </div>

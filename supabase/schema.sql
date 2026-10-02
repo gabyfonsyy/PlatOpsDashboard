@@ -64,6 +64,9 @@ create table tickets (
   -- span, mirroring peer_review_cycles_json below. Backs Account Creation's SE-execution-vs-
   -- peer-review breakdown (src/lib/account-creation-cycle.ts).
   se_work_cycles_json jsonb,
+  -- Per-episode { enteredAt, exitedAt, exitedToStatus, reason, assigneeAtEntry } for every "On Hold"
+  -- span (exitedAt null while still held). Backs the On-Hold Wait Time deep-dive (src/lib/on-hold.ts).
+  on_hold_cycles_json jsonb,
   assignee_display_name text,
   reporter_display_name text,
   last_synced_at timestamptz not null default now(),
@@ -164,7 +167,7 @@ create table kpi_baselines (
   team_key text not null references teams_config(team_key),
   metric text not null check (metric in (
     'lead_time', 'cycle_time_total', 'cycle_time_doer', 'cycle_time_validator',
-    'fcr_rate', 'ageing_rate', 'review_wait', 'automated_share'
+    'fcr_rate', 'ageing_rate', 'review_wait', 'automated_share', 'on_hold_wait', 'on_hold_wait_p75'
   )),
   value numeric,
   sample_count integer not null default 0,

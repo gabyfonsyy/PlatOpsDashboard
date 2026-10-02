@@ -12,7 +12,7 @@ const RAW_TICKET_HEADERS = [
   'total_on_hold_minutes', 'total_in_progress_minutes', 'se_work_cycles_json', 'assignee_display_name',
   'reporter_display_name', 'last_synced_at', 'peer_review_cycles_json',
   'cycle_time_start', 'cycle_time_end', 'labels', 'priority', 'archive_reason',
-  'l3_issue_key', 'l3_endorsed_at', 'l3_completed_at',
+  'l3_issue_key', 'l3_endorsed_at', 'l3_completed_at', 'on_hold_cycles_json',
 ];
 
 function syncAllTeams() {
@@ -107,6 +107,10 @@ function processAndUpsertIssue_(team, issue) {
     if (team.has_holding_reason) {
       const cycles = extractHoldingCyclesWithReasons_(changelog);
       row.holding_reasons_json = JSON.stringify(cycles.map((c) => c.reason).filter(Boolean));
+      // Full per-cycle array (see extractHoldingCyclesWithReasons_) for the On-Hold Wait Time
+      // deep-dive: per-episode duration, reason, exit status and current hold age. The two summary
+      // columns above stay as they were for the GAS metrics and older readers.
+      row.on_hold_cycles_json = JSON.stringify(cycles);
       row.total_on_hold_minutes = round2_(cycles.reduce((sum, c) => {
         return c.exitedAt ? sum + (new Date(c.exitedAt) - new Date(c.enteredAt)) / 60000 : sum;
       }, 0));
@@ -200,6 +204,7 @@ function mapIssueToRawRow_(team, issue, resolved) {
     total_on_hold_minutes: 0,
     total_in_progress_minutes: 0,
     se_work_cycles_json: '[]',
+    on_hold_cycles_json: '[]',
     assignee_display_name: fields.assignee ? fields.assignee.displayName : '',
     reporter_display_name: fields.reporter ? fields.reporter.displayName : '',
     labels: Array.isArray(fields.labels) ? fields.labels.join(', ') : '',
@@ -412,17 +417,31 @@ function extractDeDevResolvedAt_(changelog) {
 
 /**
  * Walks the changelog chronologically and returns every On Hold cycle as
- * { enteredAt, exitedAt, reason }, where `reason` is the value of customfield_11463
- * at the moment the ticket entered On Hold. Jira batches field changes that happen
- * simultaneously into one changelog entry, so the reason and status transition appear
- * together when set via automation — both are processed in the same pass.
+ * { enteredAt, exitedAt, exitedToStatus, reason, assigneeAtEntry }.
+ *
+ * `reason` is customfield_11463 (Ticket Holding Reason) as a running value: Jira batches field
+ * changes that happen simultaneously into one changelog entry, so a reason set together with the
+ * transition is applied before the status item is checked. It is read when the cycle CLOSES, so a
+ * reason filled in a few minutes after the ticket went On Hold still lands on that cycle. If the
+ * field was cleared in the same entry that left On Hold (automation tidying up), the last non-blank
+ * value seen during the cycle is kept instead of losing it. Blank stays blank: the dashboard shows
+ * it as "Not specified" and never guesses one.
+ *
+ * `exitedToStatus` is the status the ticket moved to when it left On Hold (In Progress, For
+ * Checking, For Peer Review, For Product Team, Archived, Rejected, ...); every exit is recorded and
+ * callers decide which ones count. `assigneeAtEntry` mirrors extractInProgressCycles_'s
+ * currentAssignee running value: who held the ticket when it went On Hold.
+ *
  * Supports tickets that cycle through On Hold multiple times (e.g. PlatOps dependency
- * → client feedback → L3 dependency).
+ * → client feedback → L3 dependency). A still-open cycle is emitted with exitedAt = null.
  */
 function extractHoldingCyclesWithReasons_(changelog) {
   let currentReason = null;
+  let currentAssignee = null;
   const cycles = [];
   let cycleStart = null;
+  let cycleStartAssignee = null;
+  let cycleLastReason = null;
 
   for (let i = 0; i < changelog.length; i++) {
     const items = changelog[i].items || [];
@@ -431,24 +450,45 @@ function extractHoldingCyclesWithReasons_(changelog) {
       if (item.field === 'customfield_11463' || item.fieldId === 'customfield_11463') {
         currentReason = item.toString || null;
       }
+      if (item.field === 'assignee' || item.fieldId === 'assignee') {
+        currentAssignee = item.toString || null;
+      }
     });
 
     const statusItem = items.find((item) => item.field === 'status');
-    if (!statusItem) continue;
+    if (!statusItem) {
+      if (cycleStart && currentReason) cycleLastReason = currentReason;
+      continue;
+    }
 
     const toStatus = (statusItem.toString || '').toLowerCase();
     const fromStatus = (statusItem.fromString || '').toLowerCase();
 
     if (toStatus === 'on hold') {
       cycleStart = changelog[i].created;
+      cycleStartAssignee = currentAssignee;
+      cycleLastReason = currentReason;
     } else if (fromStatus === 'on hold' && cycleStart) {
-      cycles.push({ enteredAt: cycleStart, exitedAt: changelog[i].created, reason: currentReason || '' });
+      cycles.push({
+        enteredAt: cycleStart, exitedAt: changelog[i].created,
+        exitedToStatus: statusItem.toString || '',
+        reason: currentReason || cycleLastReason || '',
+        assigneeAtEntry: cycleStartAssignee || '',
+      });
       cycleStart = null;
+      cycleStartAssignee = null;
+      cycleLastReason = null;
+    } else if (cycleStart && currentReason) {
+      cycleLastReason = currentReason;
     }
   }
 
   if (cycleStart) {
-    cycles.push({ enteredAt: cycleStart, exitedAt: null, reason: currentReason || '' });
+    cycles.push({
+      enteredAt: cycleStart, exitedAt: null, exitedToStatus: '',
+      reason: currentReason || cycleLastReason || '',
+      assigneeAtEntry: cycleStartAssignee || '',
+    });
   }
 
   return cycles;

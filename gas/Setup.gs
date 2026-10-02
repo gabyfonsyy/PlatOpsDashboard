@@ -127,6 +127,25 @@ function migrateAddSeWorkCyclesColumn() {
 }
 
 /**
+ * One-time migration: adds `on_hold_cycles_json` to every existing RAW_ST_<year> tab — same gap
+ * migrateAddSeWorkCyclesColumn closes (an already-provisioned tab's header row doesn't grow on its
+ * own, so without this the Sheets copy silently drops the column; the Supabase dual-write still
+ * gets it). ST-only, since `on_hold_cycles_json` is gated by `has_holding_reason`. Then run
+ * runStHoldingRebackfill (Backfill.gs) to fill it for tickets already synced. Safe to re-run.
+ */
+function migrateAddOnHoldCyclesColumn() {
+  const ss = getJiraDataSpreadsheet_();
+  getAllRawYearsForTeam_('ST').forEach((year) => {
+    const sheet = ss.getSheetByName(`RAW_ST_${year}`);
+    if (appendColumnIfMissing_(sheet, 'on_hold_cycles_json')) {
+      Logger.log(`RAW_ST_${year}: added on_hold_cycles_json.`);
+    } else {
+      Logger.log(`RAW_ST_${year}: on_hold_cycles_json already present.`);
+    }
+  });
+}
+
+/**
  * One-time migration: adds `l3_issue_key`, `l3_endorsed_at`, `l3_completed_at` to every existing
  * RAW_ST_<year> tab (getOrCreateRawTab_ only adds new RAW_TICKET_HEADERS columns to a BRAND-NEW
  * tab — same gap migrateAddSeWorkCyclesColumn/migrateAddPeerReviewCyclesColumn above exist to
