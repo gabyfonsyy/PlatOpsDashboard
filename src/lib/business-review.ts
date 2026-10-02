@@ -539,10 +539,10 @@ export async function getBusinessReview(
   if (isSe && seReports) {
     const [currentP1, previousP1, currentAuto, previousAuto, currentFcr, previousFcr, currentEte, previousEte, priorEte, priorFcr] = seReports;
 
-    // Cycle Time, for SE only, is the time from Backlog/To Do exit to Archived, Rejected, For
-    // Checking, For Product Team, or For Peer Review (per her explicit correction) — replaces
-    // the base specs array's single-stage placeholder above (which was only ever correct for
-    // DBA/DevOps, who have no validator stage at all and whose cycle_time_end is resolution).
+    // Cycle Time, for SE only, is END-TO-END: average Doer span (Backlog/To Do exit -> reached
+    // review) + average Validator (completed peer-review wait) — the same number as the team-page
+    // Cycle Time card and the cycle_time_total baseline (Gaby, 2026-10-02). Replaces the base specs
+    // array's single-stage value above, which is only right for DBA/DevOps (no validator stage).
     const cycleTimeSpec = specs.find((s) => s.key === "cycle_time")!;
     cycleTimeSpec.current = minutesToDays(currentEte.avgMinutes);
     cycleTimeSpec.previous = minutesToDays(previousEte.avgMinutes);
@@ -550,7 +550,7 @@ export async function getBusinessReview(
     cycleTimeSpec.history = priorEte.map((e) => minutesToDays(e.avgMinutes)).filter((n): n is number => n !== null);
     cycleTimeSpec.recordCount = currentEte.recordCount;
     cycleTimeSpec.calculation =
-      "Average days from when a ticket moved out of Backlog/To Do to when it reached Archived, Rejected, For Checking, For Product Team, or For Peer Review — for tickets whose cycle closed in the period.";
+      "End-to-end: average Doer time (moved out of Backlog/To Do → reached review: For Peer Review, For Checking, For Product Team, Archived or Rejected) plus average Validator time (completed peer-review wait) — for tickets whose cycle closed in the period. Same as the team-page Cycle Time card.";
 
     specs.push(
       {
