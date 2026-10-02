@@ -142,10 +142,10 @@ const MIX_SHIFT_NOTABLE_THRESHOLD = 0.3;
 export function buildDurationDriver(
   previousRows: DurationByKeyRow[],
   currentRows: DurationByKeyRow[]
-): { rows: DriverRow[]; verdict: DriverVerdict; mixShift: MixShiftFlag | null } {
+): { rows: DriverRow[]; verdict: DriverVerdict; mixShift: MixShiftFlag | null; overall: { previous: number; current: number } | null } {
   const totalCountCurr = currentRows.reduce((s, r) => s + r.count, 0);
   const totalCountPrev = previousRows.reduce((s, r) => s + r.count, 0);
-  if (!totalCountCurr || !totalCountPrev) return { rows: [], verdict: "none", mixShift: null };
+  if (!totalCountCurr || !totalCountPrev) return { rows: [], verdict: "none", mixShift: null, overall: null };
 
   const overallPrev = previousRows.reduce((s, r) => s + r.avgValue * r.count, 0) / totalCountPrev;
   const overallCurr = currentRows.reduce((s, r) => s + r.avgValue * r.count, 0) / totalCountCurr;
@@ -200,7 +200,9 @@ export function buildDurationDriver(
       ? { deltaValue: round4(mixShiftDelta), pctOfTotalChange: round4(mixShiftPct) }
       : null;
 
-  return { rows, verdict, mixShift };
+  // Volume-weighted average over EVERY category (the same overallPrev/overallCurr the change is
+  // measured against) — the Business Review table's Total row for a duration metric.
+  return { rows, verdict, mixShift, overall: { previous: round4(overallPrev), current: round4(overallCurr) } };
 }
 
 export type AnomalyResult = { flagged: boolean; zScore: number };

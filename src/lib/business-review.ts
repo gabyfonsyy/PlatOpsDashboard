@@ -71,6 +71,12 @@ export type MetricComparison = {
    * ticket-volume-breakdown.ts's own doc comment for the canonical example (assigned vs all-created). */
   driverNote: string | null;
   driverBreakdown: DriverRow[];
+  /**
+   * The breakdown's Total row. "sum" for count breakdowns (rows add up exactly — anything past the
+   * top drivers is folded into "Other"); "average" for duration breakdowns, where it is the
+   * volume-weighted average across every category, since per-category averages can't be summed.
+   */
+  driverTotal: { previous: number; current: number; kind: "sum" | "average"; label: string } | null;
   driverVerdict: DriverVerdict;
   /** Set only for a duration driver (Lead/Cycle Time) when no single category's own pace explains
    * the change but a shift in ticket mix (toward inherently slower/faster categories) explains a
@@ -222,7 +228,7 @@ type MetricSpec = {
   current: number | null;
   previous: number | null;
   history: number[];
-  driver: { rows: DriverRow[]; verdict: DriverVerdict; dimensionLabel: string; mixShift?: MixShiftFlag | null } | null;
+  driver: { rows: DriverRow[]; verdict: DriverVerdict; dimensionLabel: string; mixShift?: MixShiftFlag | null; overall?: { previous: number; current: number } | null } | null;
   /** See MetricComparison.driverNote. Null falls back to a generic note in buildComparison. */
   driverNote?: string | null;
   source: string;
@@ -244,8 +250,21 @@ function buildDurationSpecDriver(
   previousRows: { issueType: string; count: number; avgMinutes: number }[],
   currentRows: { issueType: string; count: number; avgMinutes: number }[]
 ) {
-  const { rows, verdict, mixShift } = buildDurationDriver(toDurationDriverRows(previousRows), toDurationDriverRows(currentRows));
-  return { rows, verdict, mixShift, dimensionLabel: "Issue Type" };
+  const { rows, verdict, mixShift, overall } = buildDurationDriver(toDurationDriverRows(previousRows), toDurationDriverRows(currentRows));
+  return { rows, verdict, mixShift, overall, dimensionLabel: "Issue Type" };
+}
+
+function totalOf(spec: MetricSpec, rows: DriverRow[]): MetricComparison["driverTotal"] {
+  if (!spec.driver || !rows.length) return null;
+  const overall = spec.driver.overall;
+  if (spec.unit === "days") return overall ? { ...overall, kind: "average", label: "All issue types (avg)" } : null;
+  return {
+    previous: rows.reduce((n, r) => n + r.previous, 0),
+    current: rows.reduce((n, r) => n + r.current, 0),
+    kind: "sum",
+    // P1 holding reasons count one per hold, so a ticket held twice adds two.
+    label: spec.key === "p1_sla_compliance" ? "Total holds" : "Total",
+  };
 }
 
 async function buildComparison(spec: MetricSpec, theme: Theme, email: string | null): Promise<MetricComparison> {
@@ -285,6 +304,7 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
     driverDimensionLabel: spec.driver?.dimensionLabel ?? null,
     driverNote: spec.driver ? (spec.driverNote ?? defaultDriverNote(spec.unit)) : null,
     driverBreakdown: driverRows,
+    driverTotal: totalOf(spec, driverRows),
     driverVerdict,
     mixShift,
     anomaly,
