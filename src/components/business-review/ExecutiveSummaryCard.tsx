@@ -1,5 +1,5 @@
 import { Copy } from "@/components/ui/Copy";
-import { formatPct } from "@/lib/business-review-view";
+import { formatPct, changeTone } from "@/lib/business-review-view";
 import type { ExecutiveSummary } from "@/lib/business-review";
 
 /**
@@ -27,7 +27,7 @@ export function ExecutiveSummaryCard({ summary }: { summary: ExecutiveSummary })
                 </span>
                 <p className="text-neutral-700">
                   <span className="font-medium text-neutral-900">{change.label}</span>{" "}
-                  <span className={isUp ? "text-emerald-700" : isDown ? "text-red-600" : "text-neutral-500"}>
+                  <span className={changeTone(change.pctDiff, change.better)}>
                     {formatPct(change.pctDiff)}
                   </span>
                   {" — "}

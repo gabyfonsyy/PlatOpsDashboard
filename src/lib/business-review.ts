@@ -17,7 +17,7 @@ import {
   type AnomalyResult,
   type MixShiftFlag,
 } from "@/lib/business-review-drivers";
-import { buildInsightSentence } from "@/lib/business-review-view";
+import { buildInsightSentence, type Better } from "@/lib/business-review-view";
 import {
   getReviewPeriod,
   getReviewPeriodFromStart,
@@ -70,6 +70,11 @@ export type MetricComparison = {
    * headline. Shown right above the breakdown table. Null when there's no driver breakdown. See
    * ticket-volume-breakdown.ts's own doc comment for the canonical example (assigned vs all-created). */
   driverNote: string | null;
+  /** Which way is good for the headline (Lead/Cycle/Ageing lower; FCR/P1/Automated higher; volume neutral). */
+  better: Better;
+  /** Which way is good for the breakdown rows' counts — differs from `better` for P1, whose rows
+   * count breaches (more breaches = worse) while its headline is an on-time rate. */
+  driverBetter: Better;
   driverBreakdown: DriverRow[];
   /**
    * The breakdown's Total row. "sum" for count breakdowns (rows add up exactly — anything past the
@@ -77,6 +82,11 @@ export type MetricComparison = {
    * volume-weighted average across every category, since per-category averages can't be summed.
    */
   driverTotal: { previous: number; current: number; kind: "sum" | "average"; label: string } | null;
+  /**
+   * Ageing Rate only: each breakdown row's own rate (overdue ÷ resolved for that issue type, 0-1),
+   * keyed by row key, plus "__total" for the whole team (= the headline). Null elsewhere.
+   */
+  driverRates: Record<string, { previous: number | null; current: number | null }> | null;
   driverVerdict: DriverVerdict;
   /** Set only for a duration driver (Lead/Cycle Time) when no single category's own pace explains
    * the change but a shift in ticket mix (toward inherently slower/faster categories) explains a
@@ -95,7 +105,7 @@ export type MetricComparison = {
 };
 
 export type ExecutiveSummary = {
-  keyChanges: { metricKey: string; label: string; pctDiff: number | null; insight: string }[];
+  keyChanges: { metricKey: string; label: string; pctDiff: number | null; better: Better; insight: string }[];
   investigate: string[];
 };
 
@@ -229,6 +239,8 @@ type MetricSpec = {
   previous: number | null;
   history: number[];
   driver: { rows: DriverRow[]; verdict: DriverVerdict; dimensionLabel: string; mixShift?: MixShiftFlag | null; overall?: { previous: number; current: number } | null } | null;
+  /** Per-key denominators (resolved tickets by issue type) for MetricComparison.driverRates. */
+  rateDenominators?: { previous: Record<string, number>; current: Record<string, number> };
   /** See MetricComparison.driverNote. Null falls back to a generic note in buildComparison. */
   driverNote?: string | null;
   source: string;
@@ -253,6 +265,41 @@ function buildDurationSpecDriver(
   const { rows, verdict, mixShift, overall } = buildDurationDriver(toDurationDriverRows(previousRows), toDurationDriverRows(currentRows));
   return { rows, verdict, mixShift, overall, dimensionLabel: "Issue Type" };
 }
+
+/**
+ * Rate per breakdown row = row count ÷ that key's denominator. "Other" (the roll-up of keys past
+ * the top drivers) uses every key not shown as its own row, so its rate is still exact.
+ */
+function ratesOf(
+  rows: DriverRow[],
+  den: { previous: Record<string, number>; current: Record<string, number> }
+): MetricComparison["driverRates"] {
+  const rate = (n: number, d: number) => (d ? Math.round((n / d) * 10000) / 10000 : null);
+  const sumOf = (m: Record<string, number>) => Object.values(m).reduce((a, b) => a + b, 0);
+  const named = rows.filter((r) => r.key !== "Other").map((r) => r.key);
+  const otherDen = (m: Record<string, number>) => sumOf(m) - named.reduce((a, k) => a + (m[k] || 0), 0);
+  const out: NonNullable<MetricComparison["driverRates"]> = {};
+  for (const r of rows) {
+    const dp = r.key === "Other" ? otherDen(den.previous) : den.previous[r.key] || 0;
+    const dc = r.key === "Other" ? otherDen(den.current) : den.current[r.key] || 0;
+    out[r.key] = { previous: rate(r.previous, dp), current: rate(r.current, dc) };
+  }
+  out.__total = {
+    previous: rate(rows.reduce((a, r) => a + r.previous, 0), sumOf(den.previous)),
+    current: rate(rows.reduce((a, r) => a + r.current, 0), sumOf(den.current)),
+  };
+  return out;
+}
+
+const METRIC_BETTER: Record<string, Better> = {
+  ticket_volume: "neutral",
+  lead_time: "lower",
+  cycle_time: "lower",
+  ageing_rate: "lower",
+  p1_sla_compliance: "higher",
+  automated_tickets: "higher",
+  fcr: "higher",
+};
 
 function totalOf(spec: MetricSpec, rows: DriverRow[]): MetricComparison["driverTotal"] {
   if (!spec.driver || !rows.length) return null;
@@ -303,8 +350,11 @@ async function buildComparison(spec: MetricSpec, theme: Theme, email: string | n
     driverAvailable: spec.driver !== null,
     driverDimensionLabel: spec.driver?.dimensionLabel ?? null,
     driverNote: spec.driver ? (spec.driverNote ?? defaultDriverNote(spec.unit)) : null,
+    better: METRIC_BETTER[spec.key] ?? "neutral",
+    driverBetter: spec.key === "p1_sla_compliance" ? "lower" : METRIC_BETTER[spec.key] ?? "neutral",
     driverBreakdown: driverRows,
     driverTotal: totalOf(spec, driverRows),
+    driverRates: spec.rateDenominators ? ratesOf(driverRows, spec.rateDenominators) : null,
     driverVerdict,
     mixShift,
     anomaly,
@@ -444,7 +494,8 @@ export async function getBusinessReview(
         dimensionLabel: "Issue Type",
       },
       driverNote:
-        "Previous/Current are counts of OVERDUE tickets by issue type — the composition behind the rate, not the rate itself. They won't sum to the headline percentage.",
+        "Previous/Current are counts of OVERDUE tickets by issue type, with that issue type's own Ageing Rate (overdue ÷ resolved for that type) underneath. The Total row's rate is the headline.",
+      rateDenominators: { previous: previousAging.resolvedByIssueType, current: currentAging.resolvedByIssueType },
       source: "Supabase tickets (resolved after due date)",
       calculation: "Share of tickets resolved in the period that were resolved after their due date; driver breakdown is the composition of those overdue tickets, by issue type.",
       recordCount: currentAging.resolvedInPeriod,
@@ -526,7 +577,7 @@ export async function getBusinessReview(
   const metrics = await Promise.all(specs.map((spec) => buildComparison(spec, theme, email ?? null)));
 
   const ranked = [...metrics].filter((m) => m.pctDiff !== null).sort((a, b) => Math.abs(b.pctDiff!) - Math.abs(a.pctDiff!));
-  const keyChanges = ranked.slice(0, 5).map((m) => ({ metricKey: m.key, label: m.label, pctDiff: m.pctDiff, insight: m.insight }));
+  const keyChanges = ranked.slice(0, 5).map((m) => ({ metricKey: m.key, label: m.label, pctDiff: m.pctDiff, better: m.better, insight: m.insight }));
   const investigate = metrics
     .filter((m) => m.anomaly?.flagged || (m.pctDiff !== null && Math.abs(m.pctDiff) >= NOTABLE_PCT_DIFF))
     .map((m) => m.insight);
