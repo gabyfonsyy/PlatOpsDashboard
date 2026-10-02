@@ -151,7 +151,11 @@ export function MetricComparisonCard({ metric, aiAvailable }: { metric: MetricCo
               {metric.driverNote && (
                 <p className="text-xs text-neutral-400 mb-2 leading-snug">{metric.driverNote}</p>
               )}
-              <DriverBreakdownTable rows={metric.driverBreakdown} dimensionLabel={metric.driverDimensionLabel ?? "Dimension"} />
+              <DriverBreakdownTable
+                rows={metric.driverBreakdown}
+                dimensionLabel={metric.driverDimensionLabel ?? "Dimension"}
+                showTotal={metric.key === "ticket_volume"}
+              />
             </>
           ) : (
             <p className="text-sm text-neutral-400 py-2">No driver breakdown is computed for this metric yet.</p>

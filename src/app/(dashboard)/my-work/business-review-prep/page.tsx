@@ -48,6 +48,10 @@ export default async function BusinessReviewPrepPage({
   const periodParam = typeof searchParams.period === "string" ? searchParams.period : undefined;
 
   const review = await getBusinessReview(team, mode, theme, periodParam, email);
+  // The client cards below seed useState from these props (insight text, checklist, talking
+  // points), so they are keyed by periodKey (team + mode + period): switching team or period must
+  // mount fresh ones. Keyed by metric.key alone, SE's insight sentences stayed on screen after
+  // switching to DBA/DevOps, and talking points added there would have saved to the wrong period.
 
   return (
     <div className="flex flex-col gap-6">
@@ -80,14 +84,14 @@ export default async function BusinessReviewPrepPage({
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {review.metrics.map((metric) => (
-            <MetricComparisonCard key={metric.key} metric={metric} aiAvailable={review.aiAvailable} />
+            <MetricComparisonCard key={`${review.periodKey}:${metric.key}`} metric={metric} aiAvailable={review.aiAvailable} />
           ))}
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ReviewPrepChecklist periodKey={review.periodKey} initialState={review.checklistState} />
-        <TalkingPoints periodKey={review.periodKey} initialPoints={review.talkingPoints} />
+        <ReviewPrepChecklist key={review.periodKey} periodKey={review.periodKey} initialState={review.checklistState} />
+        <TalkingPoints key={review.periodKey} periodKey={review.periodKey} initialPoints={review.talkingPoints} />
       </div>
     </div>
   );
